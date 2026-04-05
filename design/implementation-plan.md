@@ -197,8 +197,8 @@ preview with synthetic data, and shuts down cleanly.
 - **AIRBOT Play robot driver** (Python / C++):
   - `probe`: scan CAN interfaces for AIRBOT Play devices.
   - `validate`: ping device on CAN bus.
-  - `capabilities`: report DoF (6 + gripper), supported modes, connected
-    end-effectors.
+  - `capabilities`: report DoF: 6 (arm only; gripper is a separate G2
+    device), supported modes, and connected end-effectors as metadata.
   - `run`: enter free-drive or command-following mode. Publish joint states.
     Accept joint commands. FK via built-in URDF/kinematics. Internal control
     loop at vendor-recommended frequency.
@@ -271,10 +271,10 @@ preview with synthetic data, and shuts down cleanly.
 - _Hardware — AIRBOT Play driver (requires CAN + arm)_:
   - `probe` → JSON list with at least 1 entry.
   - `validate <id>` → exit code 0.
-  - `capabilities <id>` → JSON shows `dof: 7` (6 arm + gripper), lists
-    `free-drive` and `command-following` modes.
+  - `capabilities <id>` → JSON shows `dof: 6` (arm only; gripper is a
+    separate G2 device), lists `free-drive` and `command-following` modes.
   - `run --mode free-drive`: collect 200 state messages over 1s. Verify
-    7 joint positions per message, timestamps monotonic, publishing rate
+    6 joint positions per message, timestamps monotonic, publishing rate
     ≥ 100 Hz.
 - _Smoke — single-command launch_:
   - `rollio collect -c config.example.toml` (2 pseudo cameras, 2 pseudo
@@ -484,7 +484,8 @@ on disk — video files, Parquet tabular data, and metadata.
   - Receive `video_ready` events from Encoder(s). Once all expected videos are
     received, begin assembly.
   - Resample robot states to nominal FPS.
-  - Compute the `action` vector from teleop pair data.
+  - Capture action vectors by subscribing to follower command topics (the
+    same topics the Teleop Router publishes to).
   - Write Parquet file (columns: timestamp, frame_index, episode_index, index,
     per-robot state columns, action).
   - Write `meta/info.json` with features, FPS, episode/frame counts, video
@@ -630,8 +631,8 @@ be used directly with `rollio collect`.
     FPS, pixel format. Robot: control mode, etc.
   - **Step 4 — Pairing**: assign leader/follower relationships. Choose mapping
     strategy per pair.
-  - **Step 5 — Storage & format**: select storage backend (local / HTTP /
-    S3), set output path or endpoint, select episode format (LeRobot v2.1 /
+  - **Step 5 — Storage & format**: select storage backend (local / HTTP),
+    set output path or endpoint, select episode format (LeRobot v2.1 /
     v3.0 / mcap). If HTTP: test endpoint availability.
   - **Step 6 — Preview page**: launch all selected devices in their configured
     modes. Show the same layout as `rollio collect` (camera previews + robot
@@ -803,18 +804,16 @@ threshold: < 28)". Fix the config, restart — warning disappears.
 
 ---
 
-## Sprint 8 — Remote Storage Backends
+## Sprint 8 — Remote Storage Backend
 
-**Goal**: episodes can be uploaded via HTTP or S3 in addition to local
-storage.
+**Goal**: episodes can be uploaded via HTTP in addition to local storage.
+(S3 support is deferred to a future sprint.)
 
 **Modules built**:
 
 - **Storage** — additions:
   - **HTTP upload backend**: POST episode files to configured endpoint with
     configurable auth headers. Retry on transient failures.
-  - **S3 backend**: upload episode directory to an S3 bucket using standard
-    S3 API (aws-sdk-s3 or equivalent).
   - Backend selection from config.
 - **Companion HTTP receive server** (Rust, separate binary):
   - A minimal HTTP server that accepts episode uploads and writes them to a
@@ -847,14 +846,6 @@ storage.
     interleaving or corruption).
   - Start server with a read-only output directory. Verify upload returns
     a 500 error with a descriptive message.
-- _Unit — S3 backend_:
-  - Mock S3 endpoint (e.g. using a local MinIO or mock server). Upload a
-    mock episode. Verify the correct S3 PutObject calls are made with the
-    right bucket, key prefix, and content.
-  - Verify the episode directory structure is preserved in the S3 key
-    hierarchy (e.g. `s3://bucket/dataset/data/chunk-000/episode_000000.parquet`).
-  - Simulate S3 returning `SlowDown` (throttling). Verify exponential
-    backoff retry.
 - _Unit — Availability test_:
   - Companion server running → availability test returns success.
   - Companion server not running → availability test returns failure with
@@ -1117,7 +1108,7 @@ remains operational.
 | 5      | Episode Assembler + local Storage       | Valid LeRobot v2.1 episodes on disk                |
 | 6      | Setup wizard                            | `rollio setup` generates usable config             |
 | 7      | Monitor                                 | Threshold warnings visible in UI                   |
-| 8      | Remote storage (HTTP / S3)              | Episodes uploaded to companion server              |
+| 8      | Remote storage (HTTP)                   | Episodes uploaded to companion server              |
 | 9      | Additional hardware (V4L2, G2/E2)       | Expanded device support, full hardware mix         |
 | 10     | Replay + LeRobot v3.0 + mcap            | `rollio replay` drives robots; multi-format output |
 | 11     | Hardening + packaging                   | Install from archive, 50-episode stress test       |

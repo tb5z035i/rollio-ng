@@ -56,10 +56,11 @@ recorded.
 Camera ──[iceoryx2: raw frames]──┬──► Encoder (one per stream) ──► video file on disk
                                  └──► Visualizer ──[WebSocket]──► UI
 
-All Robots ──[iceoryx2: joint states]──┬──► Episode Assembler (buffers in memory)
+All Robots ──[iceoryx2: joint states]──┬──► Episode Assembler (buffers observations)
 (leaders + followers)                  └──► Visualizer ──[WebSocket]──► UI
 
-Leader Robot ──[iceoryx2: state]──► Teleop Router ──[iceoryx2: cmd]──► Follower Robot
+Leader Robot ──[iceoryx2: state]──► Teleop Router ──[iceoryx2: cmd]──┬──► Follower Robot
+                                                                     └──► Episode Assembler (buffers actions)
 ```
 
 iceoryx2 pub-sub fan-out delivers frames to both Encoder and Visualizer
@@ -80,7 +81,7 @@ Episode Assembler:
   3. Organizes directory layout per chosen format (LeRobot 2.1 / 3.0 / mcap)
   4. Notifies Storage with completed episode path
 
-Storage ──► writes to backend (local / S3 / HTTP)
+Storage ──► writes to backend (local / HTTP)
         ──[iceoryx2: episode_stored]──► Controller
 ```
 
@@ -122,10 +123,11 @@ sensor type is a separate driver implementation behind a common interface.
 - `capabilities <id>`: report supported (width, height, fps) combinations,
   pixel formats (MJPEG, YUYV, etc.), available streams (color, depth,
   infrared), and device metadata (serial number, firmware version).
-- `run <id> --stream <stream> --width <W> --height <H> --fps <F> ...`:
-  open the device, capture frames with the given parameters, and publish raw
+- `run --config <path>` or `run --config-inline <toml>`:
+  open the device with the given parameters, capture frames, and publish raw
   frames to an iceoryx2 topic. Listen for iceoryx2 shutdown events to exit
-  gracefully.
+  gracefully. Configuration specifies the device ID, stream, resolution,
+  FPS, pixel format, and iceoryx2 topic name.
 
 A single physical sensor (e.g. RealSense D435i) can produce multiple streams
 (color + depth + infrared). Each stream is published to a **separate iceoryx2
@@ -154,8 +156,10 @@ Python SDK.
 - `capabilities <id>`: report device serial number, number of joints,
   supported control modes, connected sub-devices (e.g. end-effector type),
   and other type-specific metadata.
-- `run <id> --mode <free-drive|command-following> ...`:
+- `run --config <path>` or `run --config-inline <toml>`:
   open the device, enter the specified control mode, and:
+  Configuration specifies the device ID, control mode, iceoryx2 topic names,
+  and any driver-specific parameters.
   1. **Publish state** (joint positions, velocities, efforts, and optionally
      end-effector pose via FK) to iceoryx2 topics continuously, with minimal
      latency.
@@ -228,8 +232,10 @@ to hardware encoder sessions (NVENC, VAAPI).
 
 - `probe`: report available codecs and hardware acceleration support (NVENC,
   VAAPI, software). Output as structured JSON.
-- `run --topic <iceoryx2_topic> --codec <codec> --output <path> ...`:
+- `run --config <path>` or `run --config-inline <toml>`:
   subscribe to raw frames on iceoryx2, encode, and write to a video file.
+  Configuration specifies the iceoryx2 topic, codec, output path, and
+  queue parameters.
   The Encoder runs continuously but only writes when it receives a
   `recording_start` event. On `recording_stop`, it flushes the pipeline and
   closes the file, then publishes a `video_ready` event with the output path.
@@ -252,13 +258,17 @@ data into a structured dataset format. Supports **multiple format backends**.
 
 **Responsibilities**:
 
-1. Subscribe to **all** robot state topics on iceoryx2 during recording
+1. Subscribe to **all robot state topics** on iceoryx2 during recording
    (both leaders and followers) and buffer timestamped data in memory.
-2. On `recording_stop`, freeze the buffer.
-3. Wait for `video_ready` events from all Encoder processes for the episode.
-4. Resample robot state data to the nominal FPS (aligning timestamps).
-5. Compute the `action` vector from teleop pair data (leader commands that
-   were sent to the follower).
+   These become the `observation.state.*` columns in the output.
+2. Subscribe to **follower command topics** on iceoryx2 during recording.
+   These are the same topics the Teleop Router publishes to and the follower
+   robot driver reads from. The captured commands become the `action` column
+   in the output.
+3. On `recording_stop`, freeze both buffers.
+4. Wait for `video_ready` events from all Encoder processes for the episode.
+5. Resample robot state and action data to the nominal FPS (aligning
+   timestamps).
 6. Write tabular data (Parquet).
 7. Write metadata (format-specific: `info.json` for LeRobot, headers for
    mcap, etc.).
@@ -283,13 +293,16 @@ episode without writing anything.
 Writes completed episodes to storage backends. Decoupled from episode format —
 it receives a directory (or file set) and persists it.
 
-**Supported backends**:
+**Supported backends** (initial):
 
 - **Local filesystem**: move/copy the episode directory to a configured output
   path.
-- **S3-compatible remote storage**: upload via the S3 API.
 - **HTTP upload**: POST to a configured endpoint. A companion **simple HTTP
   receive server** is provided for the receiving end.
+
+**Future backends** (deferred):
+
+- **S3-compatible remote storage**: upload via the S3 API.
 
 **Internal queue**: configurable size. When full, rejects new episodes and
 publishes a `backpressure` event to the Controller. For HTTP upload, endpoint
@@ -398,6 +411,15 @@ The Controller is the **`rollio` CLI entry point** itself. The top-level
 `rollio` binary dispatches to subcommands (`setup`, `collect`, `replay`), each
 of which orchestrates a different subset of modules.
 
+**Driver discovery**: device driver executables are expected to be available
+on `PATH` using a naming convention (e.g. `rollio-camera-realsense`,
+`rollio-camera-pseudo`, `rollio-robot-airbot-play`). During setup, the
+Controller attempts to invoke each known driver name with the `probe`
+subcommand. If a driver binary is not found, the Controller emits a warning
+(e.g. "RealSense driver not installed — skipping") and continues with the
+remaining drivers. No manifest file or special installation step is required
+beyond placing the binaries on `PATH`.
+
 ---
 
 ### 10. Monitor (Rust)
@@ -498,7 +520,7 @@ configurable test patterns). Supports all probe/validate/capabilities/run
 subcommands. Publishes frames to iceoryx2 at a configurable resolution and
 FPS, identical to a real camera driver.
 
-### Pseudo Robot (Python or Rust)
+### Pseudo Robot (Rust)
 
 Simulates a robot arm with configurable degrees of freedom. In free-drive
 mode, joint states follow a slow random walk or a sine pattern. In
@@ -530,6 +552,16 @@ preview updates.
 The only exception is the **Visualizer ↔ UI** path, which uses WebSocket
 (since the UI is a Node.js process and iceoryx2 does not have native
 JavaScript bindings).
+
+**Cross-language shared types**: iceoryx2 message payloads are defined as
+Rust structs with `#[repr(C)]` and `#[derive(ZeroCopySend)]`, annotated with
+`#[type_name("...")]` for a stable service-level type name. For C++ modules
+(camera drivers), matching C/C++ struct headers are maintained alongside the
+Rust definitions with identical layout. iceoryx2 enforces compatible type
+names and sizes at the service layer. Python modules (robot drivers) use
+iceoryx2's Python bindings (PyO3-based). All shared type definitions live in
+a dedicated crate/directory in the repo; C/C++ headers are kept in sync
+manually (validated by CI tests comparing sizes and alignment).
 
 ### 3. Probe Output Format
 
@@ -601,7 +633,7 @@ Each module is an **independent subproject** with its own build system:
 | Controller        | Rust           | Cargo                |
 
 The Rust modules (Teleop Router, Encoder, Episode Assembler, Storage,
-Visualizer, Controller) may share a **Cargo workspace** for convenience
+Visualizer, Monitor, Controller) may share a **Cargo workspace** for convenience
 (shared dependency versions, unified build cache) while still producing
 separate binaries. Each module can also be built independently.
 

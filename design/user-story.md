@@ -233,6 +233,10 @@ recorded episode**. This serves two purposes:
 The embedding mechanism stores the full configuration content as part of the
 episode metadata, alongside the standard LeRobot format metadata.
 
+**Note**: device ID remapping for replay (e.g. replaying on a replacement
+robot with a different serial/ID) is deferred to a later iteration. Initially,
+device IDs in the embedded config must match the connected hardware exactly.
+
 ---
 
 ## Non-Functional Requirements
