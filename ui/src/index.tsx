@@ -1,8 +1,5 @@
 import React from "react";
-import { render, Text } from "ink";
-
-function App() {
-  return <Text>rollio-ui stub</Text>;
-}
+import { render } from "ink";
+import { App } from "./App.js";
 
 render(<App />);
