@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  rust:
+    name: Rust – build, test, lint, format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt (check)
+        run: cargo fmt --all -- --check
+
+      - name: cargo build (workspace)
+        run: cargo build --workspace
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace -- -D warnings
+
+  cpp:
+    name: C++ – build & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: clang-format check
+        run: |
+          find cpp -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \
+            | xargs clang-format --dry-run --Werror --style=file
+
+      - name: cmake configure
+        run: cmake -B cpp/build -S cpp
+
+      - name: cmake build
+        run: cmake --build cpp/build
+
+  ui:
+    name: UI – build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: npm ci
+        working-directory: ui
+        run: npm ci
+
+      - name: npm run build
+        working-directory: ui
+        run: npm run build
+
+  python:
+    name: Python – lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check --exclude third_party .
+
+      - name: ruff format (check)
+        run: ruff format --check --exclude third_party .

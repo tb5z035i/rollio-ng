@@ -1,1 +1,14 @@
-external/
+# Rust
+target/
+
+# C++
+cpp/build/
+
+# Node / UI
+ui/node_modules/
+ui/dist/
+
+# Editor
+.vscode/
+*.swp
+*.swo

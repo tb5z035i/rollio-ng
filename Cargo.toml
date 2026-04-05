@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "rollio-types",
+    "controller",
+    "visualizer",
+    "teleop-router",
+    "encoder",
+    "episode-assembler",
+    "storage",
+    "monitor",
+    "pseudo-robot",
+    "test-publisher",
+]
+exclude = ["third_party"]

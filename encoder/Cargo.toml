@@ -1,0 +1,8 @@
+[package]
+name = "rollio-encoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rollio-types = { path = "../rollio-types" }
+iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }

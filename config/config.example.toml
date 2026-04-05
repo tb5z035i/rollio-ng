@@ -1,0 +1,74 @@
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+
+# --- Devices ---
+
+[[devices]]
+name = "camera_top"
+type = "camera"
+driver = "pseudo"
+id = "pseudo_cam_0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+
+[[devices]]
+name = "camera_side"
+type = "camera"
+driver = "pseudo"
+id = "pseudo_cam_1"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+
+[[devices]]
+name = "leader_arm"
+type = "robot"
+driver = "pseudo"
+id = "pseudo_robot_0"
+dof = 6
+mode = "free-drive"
+
+[[devices]]
+name = "follower_arm"
+type = "robot"
+driver = "pseudo"
+id = "pseudo_robot_1"
+dof = 6
+mode = "command-following"
+
+# --- Pairing ---
+
+[[pairing]]
+leader = "leader_arm"
+follower = "follower_arm"
+mapping = "direct-joint"
+
+# --- Encoder ---
+
+[encoder]
+codec = "libx264"
+queue_size = 32
+
+# --- Storage ---
+
+[storage]
+backend = "local"
+output_path = "./output"
+
+# --- Monitor ---
+
+[monitor]
+metrics_frequency_hz = 1.0
+
+[monitor.thresholds."camera_top".actual_fps]
+explanation = "Top camera FPS dropped below target"
+lt = 28.0
+
+[monitor.thresholds."encoder.camera_top".queue_depth]
+explanation = "Encoder queue for top camera is nearly full"
+gt = 80.0

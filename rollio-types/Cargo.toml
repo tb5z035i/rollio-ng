@@ -1,0 +1,10 @@
+[package]
+name = "rollio-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.8", features = ["parse", "display"] }
+thiserror = "2"
