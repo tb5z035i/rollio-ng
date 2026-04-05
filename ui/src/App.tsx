@@ -45,11 +45,9 @@ export function App() {
   const contentWidth = isWide ? columns - infoPanelWidth : columns;
   const contentHeight = Math.max(1, rows - 2); // minus title + status bars
 
-  // Camera panel sizing: each camera gets equal share of content width
+  // Camera panel sizing
   const cameraNames = Array.from(frames.keys());
   const camKeys = cameraNames.length > 0 ? cameraNames : ["camera_0", "camera_1"];
-  const numCameras = camKeys.length;
-  const cameraWidth = Math.max(10, Math.floor(contentWidth / numCameras));
 
   // Allocate vertical space
   const robotPanelHeight = isWide
@@ -122,7 +120,7 @@ export function App() {
       {/* Camera row (pre-composed ANSI lines, bypasses Ink width measurement) */}
       <CameraRow
         cameras={cameraData}
-        panelWidth={cameraWidth}
+        totalWidth={contentWidth}
         panelHeight={cameraPanelHeight}
         infoPanelLines={infoPanelLines}
       />

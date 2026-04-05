@@ -20,7 +20,8 @@ interface DecodedFrame {
 
 interface CameraRowProps {
   cameras: Array<{ name: string; frame: CameraFrame | undefined }>;
-  panelWidth: number;
+  /** Total width available for ALL cameras combined (excluding info panel). */
+  totalWidth: number;
   panelHeight: number;
   infoPanelLines?: string[];
 }
@@ -30,26 +31,31 @@ interface CameraRowProps {
  *
  * Instead of using Ink's flexbox (which can't measure ANSI escape codes),
  * this component manually merges each camera's ANSI lines into single
- * combined strings. Each output <Text> contains exactly the right number
- * of visible characters, so Ink's layout stays correct.
+ * combined strings. Each output <Text> has the correct visible width.
+ *
+ * Width math:
+ *   With N cameras and (N-1) separator │ chars:
+ *   perCameraWidth = floor((totalWidth - (N-1)) / N)
+ *   Each camera's ANSI content is exactly perCameraWidth visible chars wide.
+ *   Headers and bottom borders match this width.
  */
 export function CameraRow({
   cameras,
-  panelWidth,
+  totalWidth,
   panelHeight,
   infoPanelLines,
 }: CameraRowProps) {
-  const contentWidth = Math.max(1, panelWidth - 2);
-  const contentCharHeight = Math.max(1, panelHeight - 2);
-  const targetPixelWidth = Math.max(1, contentWidth);
-  const targetPixelHeight = Math.max(2, contentCharHeight * 2);
+  const numCams = cameras.length;
+  const separators = numCams - 1;
+  const perCamWidth = Math.max(4, Math.floor((totalWidth - separators) / numCams));
+  const contentCharHeight = Math.max(1, panelHeight - 2); // minus top/bottom border
+  const targetPixelHeight = Math.max(2, contentCharHeight * 2); // ×2 for half-block
 
   // Track decoded frames for all cameras in a single state object
-  const [decodedFrames, setDecodedFrames] = useState<
-    Map<string, DecodedFrame>
-  >(() => new Map());
+  const [decodedFrames, setDecodedFrames] = useState<Map<string, DecodedFrame>>(
+    () => new Map(),
+  );
   const lastJpegsRef = useRef<Map<string, Buffer | null>>(new Map());
-  const seqRef = useRef(0);
 
   // Single effect that decodes all cameras
   useEffect(() => {
@@ -59,7 +65,6 @@ export function CameraRow({
       const jpegData = cam.frame?.jpegData ?? null;
       const lastJpeg = lastJpegsRef.current.get(cam.name) ?? null;
 
-      // Skip if same buffer reference
       if (jpegData === lastJpeg) continue;
       lastJpegsRef.current.set(cam.name, jpegData);
 
@@ -73,10 +78,9 @@ export function CameraRow({
       }
 
       const camName = cam.name;
-      const seq = ++seqRef.current;
 
       sharp(jpegData)
-        .resize(targetPixelWidth, targetPixelHeight, { fit: "fill" })
+        .resize(perCamWidth, targetPixelHeight, { fit: "fill" })
         .removeAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true })
@@ -95,62 +99,58 @@ export function CameraRow({
     return () => {
       cancelled = true;
     };
-  }, [cameras, targetPixelWidth, targetPixelHeight]);
+  }, [cameras, perCamWidth, targetPixelHeight]);
 
   // Build merged output lines
   const outputLines = useMemo(() => {
     const result: string[] = [];
 
-    // Top border line
+    // === Top border ===
     let topLine = "";
-    for (let c = 0; c < cameras.length; c++) {
+    for (let c = 0; c < numCams; c++) {
       const name = cameras[c].name;
-      const headerText = `── ${name} `;
-      const pad = Math.max(0, panelWidth - headerText.length - 1);
-      topLine +=
-        headerText + "─".repeat(pad) + (c < cameras.length - 1 ? "┬" : "");
+      const label = `── ${name} `;
+      const remaining = Math.max(0, perCamWidth - label.length);
+      topLine += label + "─".repeat(remaining);
+      if (c < numCams - 1) topLine += "┬";
     }
     result.push(topLine);
 
-    // Content lines
+    // === Content lines ===
     for (let row = 0; row < contentCharHeight; row++) {
       let line = "";
-      for (let c = 0; c < cameras.length; c++) {
+      for (let c = 0; c < numCams; c++) {
         const decoded = decodedFrames.get(cameras[c].name);
         if (decoded && row < decoded.lines.length) {
-          line += decoded.lines[row];
+          // ANSI content — exactly perCamWidth visible chars
+          line += decoded.lines[row] + "\x1b[0m";
         } else {
-          // Placeholder line
+          // Placeholder
           if (row === Math.floor(contentCharHeight / 2)) {
             const msg = "╌ No signal ╌";
-            const pad = Math.max(0, contentWidth - msg.length);
+            const pad = Math.max(0, perCamWidth - msg.length);
             const left = Math.floor(pad / 2);
             const right = pad - left;
             line += " ".repeat(left) + msg + " ".repeat(right);
           } else {
-            line += " ".repeat(contentWidth);
+            line += " ".repeat(perCamWidth);
           }
         }
-        // Reset + separator between cameras
-        if (c < cameras.length - 1) {
-          line += "\x1b[0m│";
-        } else {
-          line += "\x1b[0m";
-        }
+        if (c < numCams - 1) line += "│";
       }
       result.push(line);
     }
 
-    // Bottom border line
+    // === Bottom border ===
     let bottomLine = "";
-    for (let c = 0; c < cameras.length; c++) {
-      bottomLine +=
-        "─".repeat(panelWidth) + (c < cameras.length - 1 ? "┴" : "");
+    for (let c = 0; c < numCams; c++) {
+      bottomLine += "─".repeat(perCamWidth);
+      if (c < numCams - 1) bottomLine += "┴";
     }
     result.push(bottomLine);
 
     return result;
-  }, [cameras, decodedFrames, panelWidth, contentCharHeight, contentWidth]);
+  }, [cameras, decodedFrames, numCams, perCamWidth, contentCharHeight]);
 
   // Merge info panel lines on the right if provided
   const finalLines = useMemo(() => {
