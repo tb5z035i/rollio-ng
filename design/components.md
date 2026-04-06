@@ -332,6 +332,9 @@ A single multiplexed WebSocket connection carries both preview data
 (high-bandwidth, binary) and control messages (low-bandwidth, JSON), using the
 binary protocol's type field for discrimination.
 
+Detailed wire-format documentation for this channel lives in
+`design/websocket-protocol.md`.
+
 **Robustness**: the Visualizer runs even without connected UI clients or
 active data sources. It begins serving as soon as either side becomes
 available.

@@ -5,16 +5,22 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "tsx --test test/**/*.test.ts",
+    "bench:ascii": "tsx test/render-bench.ts",
+    "render:latency": "tsx scripts/render-latency.ts"
   },
   "dependencies": {
-    "ink": "^5.1.0",
-    "react": "^18.3.1",
+    "ink": "^6.8.0",
+    "react": "^19.2.4",
+    "sharp": "^0.34.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.18",
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.2.14",
     "@types/ws": "^8.18.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.7.0"
   }
 }

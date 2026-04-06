@@ -1,7 +1,7 @@
 .PHONY: all build test clean fmt lint
 .PHONY: rust cpp ui
 .PHONY: rust-build rust-test rust-fmt rust-lint
-.PHONY: cpp-build ui-build ui-install
+.PHONY: cpp-build ui-build ui-install ui-test ui-bench-ascii
 
 all: build
 
@@ -53,3 +53,9 @@ ui-install:
 
 ui-build: ui-install
 	cd ui && npm run build
+
+ui-test: ui-install
+	cd ui && npm test
+
+ui-bench-ascii: ui-install
+	cd ui && npm run bench:ascii

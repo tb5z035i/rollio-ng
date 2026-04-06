@@ -13,13 +13,13 @@ repos:
         exclude: ^third_party/
       - id: check-merge-conflict
 
-  # Rust – format
+  # Rust – format (auto-fix)
   - repo: local
     hooks:
       - id: cargo-fmt
         name: cargo fmt
         language: system
-        entry: cargo fmt --all -- --check
+        entry: cargo fmt --all
         types: [rust]
         pass_filenames: false
 
@@ -33,6 +33,17 @@ repos:
         types: [rust]
         pass_filenames: false
 
+  # Rust – test
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: cargo test
+        language: system
+        entry: cargo test --workspace
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
   # C++ – format
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v19.1.7
@@ -41,6 +52,16 @@ repos:
         files: ^cpp/
         types_or: [c, c++]
         args: [--style=file]
+
+  # UI – build
+  - repo: local
+    hooks:
+      - id: ui-build
+        name: ui build
+        language: system
+        entry: bash -c 'cd ui && npm run build'
+        files: ^ui/src/
+        pass_filenames: false
 
   # Python – lint & format
   - repo: https://github.com/astral-sh/ruff-pre-commit

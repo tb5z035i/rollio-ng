@@ -1,8 +1,8 @@
 import React from "react";
-import { render, Text } from "ink";
+import { render } from "ink";
+import { App } from "./App.js";
 
-function App() {
-  return <Text>rollio-ui stub</Text>;
-}
-
-render(<App />);
+render(<App />, {
+  maxFps: 60,
+  incrementalRendering: true,
+});

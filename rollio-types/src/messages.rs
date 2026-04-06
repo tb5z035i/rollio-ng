@@ -124,6 +124,18 @@ pub struct CameraFrameHeader {
     pub frame_index: u64,
 }
 
+impl Default for CameraFrameHeader {
+    fn default() -> Self {
+        Self {
+            timestamp_ns: 0,
+            width: 0,
+            height: 0,
+            pixel_format: PixelFormat::Rgb24,
+            frame_index: 0,
+        }
+    }
+}
+
 impl CameraFrameHeader {
     pub fn payload_size(&self) -> usize {
         self.width as usize * self.height as usize * self.pixel_format.bytes_per_pixel()

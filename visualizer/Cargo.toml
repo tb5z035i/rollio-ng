@@ -6,3 +6,14 @@ edition = "2021"
 [dependencies]
 rollio-types = { path = "../rollio-types" }
 iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+turbojpeg = "1"
+fast_image_resize = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+crossbeam-channel = "0.5"
