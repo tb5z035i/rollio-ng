@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import type { DebugSnapshot, TimingMetricSnapshot } from "../lib/debug-metrics.js";
 import type { StreamInfoMessage } from "../lib/protocol.js";
 
-const DEBUG_PANEL_CONTENT_LINES = 16;
+const DEBUG_PANEL_CONTENT_LINES = 17;
 export const DEBUG_PANEL_HEIGHT = DEBUG_PANEL_CONTENT_LINES + 2;
 const FPS_WINDOW_MS = 1000;
 const FPS_LAG_TOLERANCE = 0.25;
@@ -180,6 +180,12 @@ export function DebugPanel({ width, snapshot, streamInfo }: DebugPanelProps) {
     },
     {
       text: padLine(
+        formatHarriWorkerSummary(rendererBackend, snapshot),
+        innerWidth,
+      ),
+    },
+    {
+      text: padLine(
         ` Source/JPEG: ${formatCameraSourceStats(cameraNames, snapshot, streamInfo)}`,
         innerWidth,
       ),
@@ -319,6 +325,29 @@ function formatBytes(value: number | null | undefined): string {
     return `${(numericValue / 1024).toFixed(1)}KiB`;
   }
   return `${numericValue.toFixed(0)}B`;
+}
+
+function formatGaugeMs(snapshot: DebugSnapshot, name: string): string {
+  const value = numericGaugeValue(snapshot, name, Number.NaN);
+  return Number.isFinite(value) ? formatMs(value) : "n/a";
+}
+
+function formatHarriWorkerSummary(
+  rendererBackend: string,
+  snapshot: DebugSnapshot,
+): string {
+  if (rendererBackend !== "ts-harri") {
+    return ` Harri worker: inactive | last=${gaugeValue(snapshot, "stream.harri_worker.state", "n/a")} | log=${gaugeValue(snapshot, "stream.harri_worker.last_log", "n/a")}`;
+  }
+
+  return (
+    ` Harri worker: mode=${gaugeValue(snapshot, "stream.harri_worker.mode", "n/a")}` +
+    ` | state=${gaugeValue(snapshot, "stream.harri_worker.state", "n/a")}` +
+    ` | tid=${gaugeValue(snapshot, "stream.harri_worker.thread_id", "n/a")}` +
+    ` | pending=${gaugeValue(snapshot, "stream.harri_worker.pending_requests", "0")}` +
+    ` | rt=${formatGaugeMs(snapshot, "stream.harri_worker.last_roundtrip_ms")}` +
+    ` | log=${gaugeValue(snapshot, "stream.harri_worker.last_log", "n/a")}`
+  );
 }
 
 function formatRatioValue(value: number | null | undefined): string {

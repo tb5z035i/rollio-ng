@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Box, useInput, useStdout } from "ink";
+import { Box, useInput, useStdin, useStdout } from "ink";
 import { useWebSocket } from "./lib/websocket.js";
 import { encodeSetPreviewSize } from "./lib/protocol.js";
+import { resolveCameraNames } from "./lib/camera-layout.js";
+import { getTerminalMetrics } from "./lib/terminal-geometry.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { StatusBar } from "./components/StatusBar.js";
 import {
   CameraRow,
   describeCameraPreviewRaster,
 } from "./components/StreamPanel.js";
+import {
+  getAsciiRendererLabel,
+  nextAsciiRendererId,
+  type AsciiRendererId,
+} from "./lib/renderers/index.js";
 import { RobotStatePanel } from "./components/RobotStatePanel.js";
 import { InfoPanel } from "./components/InfoPanel.js";
 import { DebugPanel, DEBUG_PANEL_HEIGHT } from "./components/DebugPanel.js";
@@ -19,37 +26,42 @@ import {
   type DebugSnapshot,
 } from "./lib/debug-metrics.js";
 
-function useTerminalSize() {
+function useTerminalMetrics() {
   const { stdout } = useStdout();
-  const [size, setSize] = useState({
-    columns: stdout.columns || 80,
-    rows: stdout.rows || 24,
-  });
+  const [metrics, setMetrics] = useState(() => getTerminalMetrics(stdout));
 
   useEffect(() => {
     const onResize = () => {
-      setSize({
-        columns: stdout.columns || 80,
-        rows: stdout.rows || 24,
-      });
+      setMetrics(getTerminalMetrics(stdout));
     };
 
+    onResize();
     stdout.on("resize", onResize);
     return () => {
       stdout.off("resize", onResize);
     };
   }, [stdout]);
 
-  return size;
+  return metrics;
 }
 
-export function App() {
+type AppProps = {
+  websocketUrl: string;
+  initialAsciiRendererId: AsciiRendererId;
+};
+
+export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
   const renderStartMs = nowMs();
-  const { columns, rows } = useTerminalSize();
+  const { columns, rows, cellGeometry } = useTerminalMetrics();
+  const { isRawModeSupported } = useStdin();
+  const supportsInteractiveInput = isRawModeSupported === true;
   const { frames, robotStates, streamInfo, connected, send } = useWebSocket(
-    "ws://localhost:9090",
+    websocketUrl,
   );
   const [showDebug, setShowDebug] = useState(false);
+  const [cameraRendererId, setCameraRendererId] = useState<AsciiRendererId>(
+    initialAsciiRendererId,
+  );
   const lastPreviewNegotiationKeyRef = useRef<string | null>(null);
   const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshot>(() =>
     snapshotDebugMetrics(),
@@ -58,12 +70,21 @@ export function App() {
   // Derive health status
   const health = connected ? ("normal" as const) : ("degraded" as const);
 
-  useInput((input, key) => {
-    if (!key.ctrl && !key.meta && input.toLowerCase() === "d") {
-      setShowDebug((prev) => !prev);
-      return;
-    }
-  });
+  useInput(
+    (input, key) => {
+      if (key.ctrl || key.meta) {
+        return;
+      }
+
+      const normalized = input.toLowerCase();
+      if (normalized === "d") {
+        setShowDebug((prev) => !prev);
+      } else if (normalized === "r") {
+        setCameraRendererId((previous) => nextAsciiRendererId(previous));
+      }
+    },
+    { isActive: supportsInteractiveInput },
+  );
 
   // Layout constants
   const isWide = columns >= 120;
@@ -75,11 +96,7 @@ export function App() {
   // Camera panel sizing
   const cameraNames = Array.from(frames.keys());
   const configuredCameraNames = streamInfo?.cameras.map((camera) => camera.name) ?? [];
-  const camKeys = cameraNames.length > 0
-    ? cameraNames
-    : configuredCameraNames.length > 0
-      ? configuredCameraNames
-      : ["camera_0", "camera_1"];
+  const camKeys = resolveCameraNames(configuredCameraNames, cameraNames);
 
   // Allocate vertical space
   const robotPanelHeight = isWide
@@ -98,13 +115,18 @@ export function App() {
         contentWidth,
         cameraPanelHeight,
         camKeys.length,
+        cellGeometry,
+        cameraRendererId,
       ),
     [
       camKeys.length,
+      cameraRendererId,
+      cellGeometry,
       cameraPanelHeight,
       contentWidth,
     ],
   );
+  const rendererLabel = getAsciiRendererLabel(cameraRendererId);
   const cameraInfoByName = useMemo(
     () => new Map((streamInfo?.cameras ?? []).map((camera) => [camera.name, camera])),
     [streamInfo],
@@ -220,7 +242,8 @@ export function App() {
     setGauge("ui.camera_count", frames.size);
     setGauge("ui.robot_count", robotStates.size);
     setGauge("ui.debug_enabled", showDebug ? "On" : "Off");
-    setGauge("ui.camera_renderer", "ts-harri");
+    setGauge("ui.camera_renderer", cameraRendererId);
+    setGauge("ui.camera_renderer_label", rendererLabel);
     setGauge(
       "ui.stream_info_available",
       streamInfo ? "Ready" : "Waiting",
@@ -235,13 +258,20 @@ export function App() {
         ? `${streamInfo.active_preview_width}x${streamInfo.active_preview_height}`
         : "Waiting",
     );
+    setGauge(
+      "ui.cell_geometry",
+      `${cellGeometry.pixelWidth.toFixed(2)}x${cellGeometry.pixelHeight.toFixed(2)}`,
+    );
   }, [
+    cellGeometry,
     columns,
     rows,
     isWide,
     frames.size,
     robotStates.size,
     showDebug,
+    cameraRendererId,
+    rendererLabel,
     streamInfo,
     cameraPreviewRaster.height,
     cameraPreviewRaster.width,
@@ -273,6 +303,8 @@ export function App() {
       <CameraRow
         cameras={cameraData}
         previewRaster={cameraPreviewRaster}
+        cellGeometry={cellGeometry}
+        rendererId={cameraRendererId}
         infoPanelLines={infoPanelLines}
         hasRightPanel={isWide}
       />
@@ -328,7 +360,7 @@ export function App() {
         health={health}
         width={columns}
         debugEnabled={showDebug}
-        rendererLabel="Harri"
+        rendererLabel={rendererLabel}
       />
     </Box>
   );

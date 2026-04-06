@@ -37,7 +37,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
   cpp:
-    name: C++ – build & format
+    name: C++ – build, format, test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,14 +46,17 @@ jobs:
 
       - name: clang-format check
         run: |
-          find cpp -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \
+          find cameras cpp/common \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
             | xargs clang-format --dry-run --Werror --style=file
 
       - name: cmake configure
-        run: cmake -B cpp/build -S cpp
+        run: cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
 
       - name: cmake build
-        run: cmake --build cpp/build
+        run: cmake --build cameras/build
+
+      - name: ctest
+        run: ctest --test-dir cameras/build --output-on-failure
 
   ui:
     name: UI – build
@@ -69,12 +72,16 @@ jobs:
         working-directory: ui
         run: npm ci
 
+      - name: npm test
+        working-directory: ui
+        run: npm test
+
       - name: npm run build
         working-directory: ui
         run: npm run build
 
   python:
-    name: Python – lint & format
+    name: Python – lint, format, test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,11 +90,14 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install Python tooling
+        run: pip install pytest ruff
 
       - name: ruff check
         run: ruff check --exclude third_party .
 
       - name: ruff format (check)
         run: ruff format --check --exclude third_party .
+
+      - name: pytest
+        run: PYTHONPATH="$GITHUB_WORKSPACE/robots/airbot_play/src" python -m pytest robots/airbot_play/tests

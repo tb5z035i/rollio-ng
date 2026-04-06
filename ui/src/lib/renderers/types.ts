@@ -3,6 +3,20 @@ export interface AsciiRenderLayout {
   rows: number;
 }
 
+export interface AsciiCellGeometry {
+  pixelWidth: number;
+  pixelHeight: number;
+}
+
+export const DEFAULT_ASCII_CELL_GEOMETRY: AsciiCellGeometry = {
+  pixelWidth: 1,
+  pixelHeight: 2,
+};
+
+export interface AsciiRendererOptions {
+  cellGeometry?: AsciiCellGeometry;
+}
+
 export interface AsciiRasterDimensions {
   width: number;
   height: number;
@@ -48,7 +62,7 @@ export interface AsciiRenderResult {
 export interface AsciiRendererBackend {
   id: string;
   label: string;
-  kind: "typescript" | "rust" | "wasm";
+  kind: "typescript" | "rust" | "wasm" | "worker";
   algorithm: string;
   describeRaster(layout: AsciiRenderLayout): AsciiRasterDimensions;
   layoutForRaster(raster: AsciiRasterDimensions): AsciiRenderLayout;

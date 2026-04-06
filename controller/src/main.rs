@@ -1,3 +1,6 @@
 fn main() {
-    println!("{} stub", env!("CARGO_PKG_NAME"));
+    if let Err(error) = rollio::run_cli() {
+        eprintln!("rollio: {error}");
+        std::process::exit(1);
+    }
 }

@@ -1,0 +1,58 @@
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+
+[controller]
+shutdown_timeout_ms = 3000
+child_poll_interval_ms = 100
+
+[visualizer]
+port = 9090
+max_preview_width = 320
+max_preview_height = 240
+jpeg_quality = 80
+preview_fps = 30
+
+[[devices]]
+name = "camera_webcam_front"
+type = "camera"
+driver = "v4l2"
+id = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+stream = "color"
+transport = "usb"
+
+[[devices]]
+name = "camera_d435i_rgb"
+type = "camera"
+driver = "realsense"
+id = "332322071743"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+stream = "color"
+transport = "usb"
+
+[encoder]
+codec = "libx264"
+queue_size = 32
+
+[storage]
+backend = "local"
+output_path = "./output/v4l2-realsense-rgb"
+
+[monitor]
+metrics_frequency_hz = 1.0
+
+[monitor.thresholds."camera_webcam_front".actual_fps]
+explanation = "Webcam FPS dropped below target"
+lt = 28.0
+
+[monitor.thresholds."camera_d435i_rgb".actual_fps]
+explanation = "RealSense RGB FPS dropped below target"
+lt = 28.0

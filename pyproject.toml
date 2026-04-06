@@ -19,7 +19,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["rollio"]
+known-first-party = ["rollio", "rollio_airbot_play"]
 
 [tool.ruff.format]
 quote-style = "double"

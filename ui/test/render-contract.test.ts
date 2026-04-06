@@ -97,3 +97,76 @@ test("ts-harri produces visible ASCII glyphs for shaped input", async () => {
     await disposeBackends([backend]);
   }
 });
+
+test("ts-harri uses the worker-backed path by default", async () => {
+  const backend = createAsciiRendererBackend("ts-harri");
+  await backend.prepare?.();
+
+  try {
+    assert.equal(backend.kind, "worker");
+    const layout: AsciiRenderLayout = { columns: 8, rows: 4 };
+    const raster = backend.describeRaster(layout);
+    const result = await backend.render({
+      pixels: new Uint8Array(raster.width * raster.height * 3),
+      width: raster.width,
+      height: raster.height,
+      layout,
+    });
+    assert.equal(backend.kind, "worker");
+    assert.notEqual(result.stats.timings.adapterMs, undefined);
+  } finally {
+    await disposeBackends([backend]);
+  }
+});
+
+test("ts-half-block emits truecolor ANSI for paired pixels", async () => {
+  const backend = createAsciiRendererBackend("ts-half-block");
+  const result = await backend.render({
+    pixels: Uint8Array.from([
+      255,
+      32,
+      16,
+      12,
+      200,
+      240,
+    ]),
+    width: 1,
+    height: 2,
+    layout: { columns: 1, rows: 1 },
+  });
+
+  assert.equal(result.lines.length, 1);
+  assert.match(result.lines[0], /\x1b\[48;2;255;32;16m/);
+  assert.match(result.lines[0], /\x1b\[38;2;12;200;240m/);
+  assert.equal(stripAnsi(result.lines[0]), "▄");
+});
+
+test("ts-harri dispose during in-flight render avoids unhandled rejections", async () => {
+  const backend = createAsciiRendererBackend("ts-harri");
+  await backend.prepare?.();
+
+  const unhandled: string[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason instanceof Error ? reason.message : String(reason));
+  };
+
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const layout: AsciiRenderLayout = { columns: 96, rows: 28 };
+    const raster = backend.describeRaster(layout);
+    const renderPromise = backend.render({
+      pixels: new Uint8Array(raster.width * raster.height * 3),
+      width: raster.width,
+      height: raster.height,
+      layout,
+    });
+    const disposePromise = backend.dispose?.() ?? Promise.resolve();
+
+    await Promise.allSettled([renderPromise, disposePromise]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await backend.dispose?.();
+  }
+});

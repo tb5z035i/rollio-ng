@@ -14,7 +14,7 @@ export class TypeScriptHalfBlockRenderer implements AsciiRendererBackend {
   readonly id = "ts-half-block";
   readonly label = "TypeScript Half Block";
   readonly kind = "typescript" as const;
-  readonly algorithm = "half-block";
+  readonly algorithm = "half-block-truecolor";
 
   describeRaster(layout: AsciiRenderLayout): AsciiRasterDimensions {
     return {
@@ -34,7 +34,9 @@ export class TypeScriptHalfBlockRenderer implements AsciiRendererBackend {
     assertExpectedRaster(this, input.width, input.height, input.layout);
 
     const ansiStartMs = nowMs();
-    const ansiResult = renderToAnsiLines(input.pixels, input.width, input.height);
+    const ansiResult = renderToAnsiLines(input.pixels, input.width, input.height, {
+      colorMode: "truecolor",
+    });
     const ansiMs = nowMs() - ansiStartMs;
 
     return {

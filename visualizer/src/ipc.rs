@@ -5,6 +5,7 @@
 /// of shared memory once (unavoidable since we release the sample), while
 /// robot state is a small fixed-size Copy type.
 use iceoryx2::prelude::*;
+use rollio_bus::{camera_frames_service_name, robot_state_service_name};
 use rollio_types::messages::{CameraFrameHeader, RobotState};
 
 /// A message received from iceoryx2.
@@ -51,7 +52,7 @@ impl IpcPoller {
 
         let mut camera_subs = Vec::with_capacity(camera_names.len());
         for name in camera_names {
-            let service_name_str = format!("camera/{name}/frames");
+            let service_name_str = camera_frames_service_name(name);
             let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
             let service = node
@@ -71,7 +72,7 @@ impl IpcPoller {
 
         let mut robot_subs = Vec::with_capacity(robot_names.len());
         for name in robot_names {
-            let service_name_str = format!("robot/{name}/state");
+            let service_name_str = robot_state_service_name(name);
             let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
             let service = node

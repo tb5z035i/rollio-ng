@@ -148,10 +148,9 @@ fn preview_worker_loop(
         let pending_frame = take_latest_frame(&camera_states, &camera_name);
         if let Some(pending_frame) = pending_frame {
             let preview_size = preview_config.current_size();
-            match compressor.compress(
+            match compressor.compress_frame(
+                &pending_frame.header,
                 &pending_frame.data,
-                pending_frame.header.width,
-                pending_frame.header.height,
                 preview_size.width,
                 preview_size.height,
             ) {
@@ -171,7 +170,11 @@ fn preview_worker_loop(
                 }
                 Err(error) => {
                     log::warn!(
-                        "preview worker {worker_idx} failed to compress {camera_name}: {error}"
+                        "preview worker {worker_idx} failed to compress {camera_name}: {error} (format={:?}, frame={}x{}, payload={} bytes)",
+                        pending_frame.header.pixel_format,
+                        pending_frame.header.width,
+                        pending_frame.header.height,
+                        pending_frame.data.len(),
                     );
                 }
             }

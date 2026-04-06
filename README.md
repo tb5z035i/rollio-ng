@@ -13,7 +13,7 @@ See `design/` for architecture docs and sprint plans.
 | Tool       | Minimum version | Purpose              |
 |------------|-----------------|----------------------|
 | Rust       | 1.85+           | Cargo workspace      |
-| CMake      | 3.16+           | C++ modules          |
+| CMake      | 3.22+           | C++ modules          |
 | g++ / clang| C++17 support   | C++ modules          |
 | NASM       | recent          | `libjpeg-turbo` SIMD build used by `turbojpeg` |
 | Node.js    | 18+             | UI (TypeScript/Ink)  |
@@ -44,12 +44,16 @@ sudo apt-get install -y build-essential cmake nasm
 cargo build --workspace
 cargo test --workspace
 
-# C++
-cmake -B cpp/build -S cpp
-cmake --build cpp/build
+# Camera drivers (C++)
+cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
+cmake --build cameras/build
+ctest --test-dir cameras/build --output-on-failure
 
 # UI
 cd ui && npm install && npm run build && cd ..
+
+# Python AIRBOT driver tests
+PYTHONPATH="$PWD/robots/airbot_play/src" python3 -m pytest robots/airbot_play/tests
 ```
 
 If `cargo build --workspace` or `make` fails while compiling `turbojpeg-sys`
@@ -66,10 +70,26 @@ This enables automatic checks before each commit:
 Rust formatting/linting, C++ formatting, Python linting/formatting,
 and general file hygiene (trailing whitespace, TOML/YAML syntax, etc.).
 
+## Sprint 2 Validation
+
+```bash
+# Full validation loop
+make test
+
+# Controller-managed pseudo-device smoke
+make smoke-pseudo
+```
+
+`make smoke-pseudo` launches the Sprint 2 stack through the new `rollio collect`
+entrypoint using `config/config.example.toml`. The expected checkpoint is that
+the pseudo camera previews and robot status appear in the TUI, and the stack
+shuts down cleanly when you press `Ctrl+C`.
+
 ## Project layout
 
 ```
-rollio-types/         Shared iceoryx2 message types + config schema (Rust lib)
+rollio-bus/           Shared iceoryx2 topic/service naming helpers (Rust lib)
+rollio-types/         Shared iceoryx2 message types + controller config surface
 controller/           CLI entry point and process orchestrator (Rust)
 visualizer/           iceoryx2 <-> WebSocket bridge (Rust)
 teleop-router/        Leader-follower command forwarding (Rust)
@@ -77,9 +97,10 @@ encoder/              Video encoding per camera stream (Rust)
 episode-assembler/    Assembles episodes from video + state data (Rust)
 storage/              Local and remote storage backends (Rust)
 monitor/              Health/performance metrics evaluator (Rust)
-pseudo-robot/         Mock robot driver for testing (Rust)
 test-publisher/       Synthetic iceoryx2 data publisher (Rust)
-cpp/                  C++ camera drivers (pseudo, RealSense, V4L2)
+cameras/              In-repo camera drivers + camera-driver extension docs
+robots/               In-repo robot drivers + robot-driver extension docs
+cpp/                  Shared C++ interop headers and legacy wrapper entrypoint
 ui/                   Terminal UI built with React/Ink (TypeScript)
 config/               Example configuration files
 design/               Architecture docs and sprint plans

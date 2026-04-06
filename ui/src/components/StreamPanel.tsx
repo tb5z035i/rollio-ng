@@ -10,7 +10,9 @@ import {
 } from "../lib/debug-metrics.js";
 import {
   createAsciiRendererBackend,
+  type AsciiCellGeometry,
   type AsciiRenderLayout,
+  type AsciiRendererId,
 } from "../lib/renderers/index.js";
 
 const RESET = "\x1b[0m";
@@ -20,7 +22,6 @@ const TARGET_TOTAL_DECODE_FPS = 360;
 const MAX_DECODE_FPS_PER_CAMERA = 60;
 const MIN_DECODE_FPS_PER_CAMERA = 30;
 const BLACK_BACKGROUND = { r: 0, g: 0, b: 0, alpha: 1 };
-const CAMERA_RENDERER_ID = "ts-harri";
 
 sharp.concurrency(SHARP_DECODE_CONCURRENCY);
 
@@ -50,6 +51,8 @@ interface PendingDecode {
 interface CameraRowProps {
   cameras: Array<{ name: string; frame: CameraFrame | undefined }>;
   previewRaster: CameraPreviewRaster;
+  cellGeometry: AsciiCellGeometry;
+  rendererId: AsciiRendererId;
   infoPanelLines?: string[];
   hasRightPanel?: boolean;
 }
@@ -87,9 +90,13 @@ export function describeCameraPreviewRaster(
   totalWidth: number,
   panelHeight: number,
   numCameras: number,
+  cellGeometry: AsciiCellGeometry,
+  rendererId: AsciiRendererId,
 ): CameraPreviewRaster {
   const grid = describeCameraCellGrid(totalWidth, panelHeight, numCameras);
-  const raster = createAsciiRendererBackend(CAMERA_RENDERER_ID).describeRaster({
+  const raster = createAsciiRendererBackend(rendererId, {
+    cellGeometry,
+  }).describeRaster({
     columns: grid.columns,
     rows: grid.rows,
   });
@@ -103,6 +110,8 @@ export function describeCameraPreviewRaster(
 export function CameraRow({
   cameras,
   previewRaster,
+  cellGeometry,
+  rendererId,
   infoPanelLines,
   hasRightPanel = false,
 }: CameraRowProps) {
@@ -129,8 +138,8 @@ export function CameraRow({
   );
   const perCameraDecodeIntervalMs = 1000 / perCameraDecodeFps;
   const asciiRendererBackend = useMemo(
-    () => createAsciiRendererBackend(CAMERA_RENDERER_ID),
-    [],
+    () => createAsciiRendererBackend(rendererId, { cellGeometry }),
+    [cellGeometry, rendererId],
   );
 
   const [presentedFrames, setPresentedFrames] = useState<Map<string, PresentedFrame>>(
@@ -227,7 +236,7 @@ export function CameraRow({
     return () => {
       isMountedRef.current = false;
       clearInterval(flushPresentedFrames);
-      void asciiRendererBackend.dispose?.();
+      void asciiRendererBackend.dispose?.().catch(() => undefined);
       presentedFramesRef.current.clear();
       presentedFramesDirtyRef.current = false;
       committedFrameKeyRef.current.clear();
@@ -242,7 +251,7 @@ export function CameraRow({
   }, [asciiRendererBackend]);
 
   useEffect(() => {
-    void asciiRendererBackend.prepare?.();
+    void asciiRendererBackend.prepare?.().catch(() => undefined);
   }, [asciiRendererBackend]);
 
   useEffect(() => {
@@ -349,8 +358,13 @@ export function CameraRow({
                 continue;
               }
 
+              setGauge("stream.renderer_kind", asciiRendererBackend.kind);
+              setGauge("stream.renderer_algorithm", asciiRendererBackend.algorithm);
+              const useMainThreadRenderQueue = asciiRendererBackend.kind !== "worker";
               const renderQueueWaitStartMs = nowMs();
-              const releaseRenderTurn = await waitForRenderTurn(cameraName);
+              const releaseRenderTurn = useMainThreadRenderQueue
+                ? await waitForRenderTurn(cameraName)
+                : () => undefined;
               let renderResult;
               try {
                 const renderQueueWaitMs = nowMs() - renderQueueWaitStartMs;
@@ -439,6 +453,11 @@ export function CameraRow({
               }
               recordTiming("stream.decode.total", totalDecodeDurationMs);
               recordTiming(`stream.decode.total.${cameraName}`, totalDecodeDurationMs);
+              if (requestedDecodeKeyRef.current.get(cameraName) !== pending.key) {
+                incrementGauge("stream.render_stale_drops");
+                incrementGauge(`stream.render_stale_drops.${cameraName}`);
+              }
+              setGauge(`stream.render_error.${cameraName}`, "None");
               setGauge(
                 `stream.preview_resolution.${cameraName}`,
                 `${pending.previewWidth}x${pending.previewHeight}`,
@@ -494,7 +513,13 @@ export function CameraRow({
                 outputBytes: renderResult.stats.outputBytes,
               });
               presentedFramesDirtyRef.current = true;
-            } catch {
+            } catch (error) {
+              incrementGauge("stream.render_errors");
+              incrementGauge(`stream.render_errors.${cameraName}`);
+              setGauge(
+                `stream.render_error.${cameraName}`,
+                error instanceof Error ? error.message : String(error),
+              );
               if (!isMountedRef.current) {
                 return;
               }
@@ -673,7 +698,7 @@ export function CameraRow({
   );
 }
 
-async function prepareRendererRaster(
+export async function prepareRendererRaster(
   jpegData: Buffer,
   targetWidth: number,
   targetHeight: number,
@@ -684,64 +709,73 @@ async function prepareRendererRaster(
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  if (
-    decoded.info.channels === 3 &&
-    decoded.info.width === targetWidth &&
-    decoded.info.height === targetHeight
-  ) {
-    return {
-      data: decoded.data,
-      width: decoded.info.width,
-      height: decoded.info.height,
-    };
-  }
-
-  if (
-    decoded.info.channels === 3 &&
-    decoded.info.width <= targetWidth &&
-    decoded.info.height <= targetHeight
-  ) {
-    return centerPadRgbRaster(
-      decoded.data,
-      decoded.info.width,
-      decoded.info.height,
-      targetWidth,
-      targetHeight,
-    );
-  }
-
-  return await resizePreparedRaster(
+  const normalized = normalizeDecodedRasterToRgb(
     decoded.data,
     decoded.info.width,
     decoded.info.height,
     decoded.info.channels as 1 | 2 | 3 | 4,
+  );
+
+  if (
+    normalized.width === targetWidth &&
+    normalized.height === targetHeight
+  ) {
+    return {
+      data: normalized.data,
+      width: normalized.width,
+      height: normalized.height,
+    };
+  }
+
+  return await resizePreparedRaster(
+    normalized.data,
+    normalized.width,
+    normalized.height,
     targetWidth,
     targetHeight,
   );
 }
 
-function centerPadRgbRaster(
+function normalizeDecodedRasterToRgb(
   data: Buffer,
   sourceWidth: number,
   sourceHeight: number,
-  targetWidth: number,
-  targetHeight: number,
+  channels: 1 | 2 | 3 | 4,
 ): PreparedRaster {
-  const output = Buffer.alloc(targetWidth * targetHeight * 3, 0);
-  const offsetX = Math.floor((targetWidth - sourceWidth) / 2);
-  const offsetY = Math.floor((targetHeight - sourceHeight) / 2);
-  const sourceStride = sourceWidth * 3;
+  if (channels === 3) {
+    return {
+      data,
+      width: sourceWidth,
+      height: sourceHeight,
+    };
+  }
 
-  for (let row = 0; row < sourceHeight; row++) {
-    const sourceStart = row * sourceStride;
-    const targetStart = ((offsetY + row) * targetWidth + offsetX) * 3;
-    data.copy(output, targetStart, sourceStart, sourceStart + sourceStride);
+  const pixelCount = sourceWidth * sourceHeight;
+  const output = Buffer.alloc(pixelCount * 3);
+
+  for (let idx = 0; idx < pixelCount; idx++) {
+    const sourceOffset = idx * channels;
+    const targetOffset = idx * 3;
+
+    if (channels === 1 || channels === 2) {
+      const value = channels === 2
+        ? Math.round((data[sourceOffset] * data[sourceOffset + 1]) / 255)
+        : data[sourceOffset];
+      output[targetOffset] = value;
+      output[targetOffset + 1] = value;
+      output[targetOffset + 2] = value;
+      continue;
+    }
+
+    output[targetOffset] = data[sourceOffset];
+    output[targetOffset + 1] = data[sourceOffset + 1];
+    output[targetOffset + 2] = data[sourceOffset + 2];
   }
 
   return {
     data: output,
-    width: targetWidth,
-    height: targetHeight,
+    width: sourceWidth,
+    height: sourceHeight,
   };
 }
 
@@ -749,7 +783,6 @@ async function resizePreparedRaster(
   data: Buffer,
   sourceWidth: number,
   sourceHeight: number,
-  channels: 1 | 2 | 3 | 4,
   targetWidth: number,
   targetHeight: number,
 ): Promise<PreparedRaster> {
@@ -757,11 +790,11 @@ async function resizePreparedRaster(
     raw: {
       width: sourceWidth,
       height: sourceHeight,
-      channels,
+      channels: 3,
     },
   })
     .resize(targetWidth, targetHeight, {
-      fit: "contain",
+      fit: "cover",
       position: "centre",
       background: BLACK_BACKGROUND,
       kernel: sharp.kernel.nearest,

@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <string_view>
 
 namespace rollio {
 
@@ -36,6 +38,48 @@ enum class PixelFormat : uint32_t {
     Depth16 = 4,
     Gray8 = 5,
 };
+
+inline auto pixel_format_to_string(const PixelFormat pixel_format) -> const char* {
+    switch (pixel_format) {
+        case PixelFormat::Rgb24:
+            return "rgb24";
+        case PixelFormat::Bgr24:
+            return "bgr24";
+        case PixelFormat::Yuyv:
+            return "yuyv";
+        case PixelFormat::Mjpeg:
+            return "mjpeg";
+        case PixelFormat::Depth16:
+            return "depth16";
+        case PixelFormat::Gray8:
+            return "gray8";
+    }
+
+    return "rgb24";
+}
+
+inline auto pixel_format_from_string(const std::string_view value) -> std::optional<PixelFormat> {
+    if (value == "rgb24") {
+        return PixelFormat::Rgb24;
+    }
+    if (value == "bgr24") {
+        return PixelFormat::Bgr24;
+    }
+    if (value == "yuyv") {
+        return PixelFormat::Yuyv;
+    }
+    if (value == "mjpeg") {
+        return PixelFormat::Mjpeg;
+    }
+    if (value == "depth16") {
+        return PixelFormat::Depth16;
+    }
+    if (value == "gray8") {
+        return PixelFormat::Gray8;
+    }
+
+    return std::nullopt;
+}
 
 // ---------------------------------------------------------------------------
 // CameraFrameHeader — user header for raw-frame publish-subscribe

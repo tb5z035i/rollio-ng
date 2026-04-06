@@ -4,7 +4,7 @@
 
 ### Overview
 
-Rollio is a multi-process CLI framework for robotic teleoperation data collection. It is a Cargo workspace (10 Rust crates) + a C++ CMake project (`cpp/`) + a TypeScript/React Ink terminal UI (`ui/`). All inter-process communication uses iceoryx2 (zero-copy shared-memory IPC) via a git submodule at `third_party/iceoryx2`.
+Rollio is a multi-process CLI framework for robotic teleoperation data collection. It is a Cargo workspace (11 Rust crates) + C++ camera drivers under `cameras/` with shared interop headers in `cpp/common/` + a TypeScript/React Ink terminal UI (`ui/`). All inter-process communication uses iceoryx2 (zero-copy shared-memory IPC) via a git submodule at `third_party/iceoryx2`.
 
 The project is in early development — most binary crates are stubs. The `rollio-types` library crate has real integration tests for config parsing and message types.
 
@@ -16,7 +16,7 @@ See `Makefile` and `README.md` for standard commands. Key shortcuts:
 - **Rust only:** `cargo build --workspace` / `cargo test --workspace`
 - **Lint:** `cargo clippy --workspace -- -D warnings`
 - **Format check:** `cargo fmt --all -- --check`
-- **C++ build:** `cmake -B cpp/build -S cpp -DCMAKE_CXX_COMPILER=g++ && cmake --build cpp/build`
+- **C++ build:** `cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++ && cmake --build cameras/build`
 - **UI:** `cd ui && npm install && npm run build`
 - **UI run:** `cd ui && node dist/index.js`
 

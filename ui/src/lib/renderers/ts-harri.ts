@@ -2,22 +2,26 @@ import sharp from "sharp";
 import { nowMs } from "../debug-metrics.js";
 import { nearestAnsi256 } from "../color-palette.js";
 import {
+  DEFAULT_ASCII_CELL_GEOMETRY,
+  type AsciiCellGeometry,
   measureOutputBytes,
   type AsciiRenderInput,
   type AsciiRenderLayout,
   type AsciiRenderResult,
   type AsciiRendererBackend,
+  type AsciiRendererOptions,
   type AsciiRasterDimensions,
 } from "./types.js";
 
 const RESET = "\x1b[0m";
 const FG_SGR = Array.from({ length: 256 }, (_, idx) => `\x1b[38;5;${idx}m`);
-const CELL_WIDTH = 8;
-const CELL_HEIGHT = 12;
+const DEFAULT_CELL_WIDTH = 8;
+const MIN_CELL_HEIGHT = 8;
+const MAX_CELL_HEIGHT = 32;
 const CIRCLE_RADIUS = 0.24;
 const GLOBAL_CONTRAST_EXPONENT = 1.55;
 const DIRECTIONAL_CONTRAST_EXPONENT = 1.45;
-const LOOKUP_RANGE = 10;
+const LOOKUP_RANGE = 8;
 const ASCII_GLYPHS = Array.from({ length: 95 }, (_, idx) =>
   String.fromCharCode(32 + idx),
 );
@@ -74,37 +78,47 @@ const AFFECTING_EXTERNAL_INDICES = [
   [5, 7, 8, 9],
 ];
 
-const INTERNAL_MASKS = INTERNAL_CIRCLES.map((circle) =>
-  buildMask(circle, CELL_WIDTH, CELL_HEIGHT),
-);
-const EXTERNAL_MASKS = EXTERNAL_CIRCLES.map((circle) =>
-  buildMask(circle, CELL_WIDTH, CELL_HEIGHT),
-);
-
-let glyphDatabasePromise: Promise<GlyphDatabase> | null = null;
-
 export class TypeScriptHarriRenderer implements AsciiRendererBackend {
   readonly id = "ts-harri";
   readonly label = "TypeScript Harri";
   readonly kind = "typescript" as const;
   readonly algorithm = "shape-lookup";
+  private readonly cellWidth: number;
+  private readonly cellHeight: number;
+  private readonly internalMasks: SamplePoint[][];
+  private readonly externalMasks: SamplePoint[][];
+  private glyphDatabasePromise: Promise<GlyphDatabase> | null = null;
+
+  constructor(options: AsciiRendererOptions = {}) {
+    const geometry = normalizeCellGeometry(options.cellGeometry);
+    this.cellWidth = DEFAULT_CELL_WIDTH;
+    this.cellHeight = clampCellHeight(
+      Math.round((this.cellWidth * geometry.pixelHeight) / geometry.pixelWidth),
+    );
+    this.internalMasks = INTERNAL_CIRCLES.map((circle) =>
+      buildMask(circle, this.cellWidth, this.cellHeight),
+    );
+    this.externalMasks = EXTERNAL_CIRCLES.map((circle) =>
+      buildMask(circle, this.cellWidth, this.cellHeight),
+    );
+  }
 
   describeRaster(layout: AsciiRenderLayout): AsciiRasterDimensions {
     return {
-      width: layout.columns * CELL_WIDTH,
-      height: layout.rows * CELL_HEIGHT,
+      width: layout.columns * this.cellWidth,
+      height: layout.rows * this.cellHeight,
     };
   }
 
   layoutForRaster(raster: AsciiRasterDimensions): AsciiRenderLayout {
     return {
-      columns: Math.max(1, Math.ceil(raster.width / CELL_WIDTH)),
-      rows: Math.max(1, Math.ceil(raster.height / CELL_HEIGHT)),
+      columns: Math.max(1, Math.ceil(raster.width / this.cellWidth)),
+      rows: Math.max(1, Math.ceil(raster.height / this.cellHeight)),
     };
   }
 
   async prepare(): Promise<void> {
-    await getGlyphDatabase();
+    await this.getGlyphDatabase();
   }
 
   async render(input: AsciiRenderInput): Promise<AsciiRenderResult> {
@@ -116,12 +130,20 @@ export class TypeScriptHarriRenderer implements AsciiRendererBackend {
       );
     }
 
-    const glyphDb = await getGlyphDatabase();
+    const glyphDb = await this.getGlyphDatabase();
     const totalStartMs = nowMs();
 
     const sampleStartMs = nowMs();
     const luminancePlane = buildLuminancePlane(input.pixels, input.width, input.height);
-    const sampledCells = sampleCells(luminancePlane, input.width, input.layout);
+    const sampledCells = sampleCells(
+      luminancePlane,
+      input.width,
+      input.layout,
+      this.cellWidth,
+      this.cellHeight,
+      this.internalMasks,
+      this.externalMasks,
+    );
     const sampleMs = nowMs() - sampleStartMs;
 
     const lookupStartMs = nowMs();
@@ -196,7 +218,7 @@ export class TypeScriptHarriRenderer implements AsciiRendererBackend {
         sampleCount:
           input.layout.columns *
           input.layout.rows *
-          (INTERNAL_MASKS.length + EXTERNAL_MASKS.length),
+          (this.internalMasks.length + this.externalMasks.length),
         lookupCount: input.layout.columns * input.layout.rows,
         sgrChangeCount,
         cacheHits,
@@ -210,43 +232,49 @@ export class TypeScriptHarriRenderer implements AsciiRendererBackend {
       },
     };
   }
-}
 
-async function getGlyphDatabase(): Promise<GlyphDatabase> {
-  if (!glyphDatabasePromise) {
-    glyphDatabasePromise = buildGlyphDatabase();
-  }
-  return await glyphDatabasePromise;
-}
-
-async function buildGlyphDatabase(): Promise<GlyphDatabase> {
-  const rawGlyphs: GlyphEntry[] = [];
-  const maxComponents = new Array<number>(INTERNAL_MASKS.length).fill(0);
-
-  for (const char of ASCII_GLYPHS) {
-    const glyphMask = await rasterizeGlyph(char);
-    const vector = INTERNAL_MASKS.map((mask) => sampleScalarMask(glyphMask, mask));
-    vector.forEach((value, index) => {
-      maxComponents[index] = Math.max(maxComponents[index], value);
-    });
-    rawGlyphs.push({ char, vector });
+  private async getGlyphDatabase(): Promise<GlyphDatabase> {
+    if (!this.glyphDatabasePromise) {
+      this.glyphDatabasePromise = this.buildGlyphDatabase();
+    }
+    return await this.glyphDatabasePromise;
   }
 
-  return {
-    glyphs: rawGlyphs.map((glyph) => ({
-      char: glyph.char,
-      vector: glyph.vector.map((value, index) =>
-        maxComponents[index] > 0 ? value / maxComponents[index] : 0,
-      ),
-    })),
-    cache: new Map(),
-  };
+  private async buildGlyphDatabase(): Promise<GlyphDatabase> {
+    const rawGlyphs: GlyphEntry[] = [];
+    const maxComponents = new Array<number>(this.internalMasks.length).fill(0);
+
+    for (const char of ASCII_GLYPHS) {
+      const glyphMask = await rasterizeGlyph(char, this.cellWidth, this.cellHeight);
+      const vector = this.internalMasks.map((mask) =>
+        sampleScalarMask(glyphMask, mask, this.cellWidth, this.cellHeight),
+      );
+      vector.forEach((value, index) => {
+        maxComponents[index] = Math.max(maxComponents[index], value);
+      });
+      rawGlyphs.push({ char, vector });
+    }
+
+    return {
+      glyphs: rawGlyphs.map((glyph) => ({
+        char: glyph.char,
+        vector: glyph.vector.map((value, index) =>
+          maxComponents[index] > 0 ? value / maxComponents[index] : 0,
+        ),
+      })),
+      cache: new Map(),
+    };
+  }
 }
 
-async function rasterizeGlyph(char: string): Promise<Float32Array> {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CELL_WIDTH}" height="${CELL_HEIGHT}" viewBox="0 0 ${CELL_WIDTH} ${CELL_HEIGHT}">
+async function rasterizeGlyph(
+  char: string,
+  cellWidth: number,
+  cellHeight: number,
+): Promise<Float32Array> {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cellWidth}" height="${cellHeight}" viewBox="0 0 ${cellWidth} ${cellHeight}">
 <rect width="100%" height="100%" fill="black"/>
-<text x="50%" y="56%" text-anchor="middle" dominant-baseline="middle" fill="white" font-family="monospace" font-size="${CELL_HEIGHT * 0.9}">${escapeXml(char)}</text>
+<text x="50%" y="56%" text-anchor="middle" dominant-baseline="middle" fill="white" font-family="monospace" font-size="${cellHeight * 0.9}">${escapeXml(char)}</text>
 </svg>`;
   const { data, info } = await sharp(Buffer.from(svg))
     .greyscale()
@@ -309,6 +337,10 @@ function sampleCells(
   plane: Float32Array,
   width: number,
   layout: AsciiRenderLayout,
+  cellWidth: number,
+  cellHeight: number,
+  internalMasks: SamplePoint[][],
+  externalMasks: SamplePoint[][],
 ): Array<{
   internalVector: number[];
   externalVector: number[];
@@ -321,13 +353,13 @@ function sampleCells(
   }> = [];
 
   for (let row = 0; row < layout.rows; row++) {
-    const originY = row * CELL_HEIGHT;
+    const originY = row * cellHeight;
     for (let column = 0; column < layout.columns; column++) {
-      const originX = column * CELL_WIDTH;
-      const internalVector = INTERNAL_MASKS.map((mask) =>
+      const originX = column * cellWidth;
+      const internalVector = internalMasks.map((mask) =>
         samplePlaneMask(plane, width, originX, originY, mask),
       );
-      const externalVector = EXTERNAL_MASKS.map((mask) =>
+      const externalVector = externalMasks.map((mask) =>
         samplePlaneMask(plane, width, originX, originY, mask),
       );
       const averageLuminance =
@@ -367,22 +399,42 @@ function samplePlaneMask(
   return count > 0 ? sum / count : 0;
 }
 
-function sampleScalarMask(values: Float32Array, mask: SamplePoint[]): number {
+function sampleScalarMask(
+  values: Float32Array,
+  mask: SamplePoint[],
+  cellWidth: number,
+  cellHeight: number,
+): number {
   let sum = 0;
   let count = 0;
   for (const point of mask) {
     if (
       point.dx < 0 ||
       point.dy < 0 ||
-      point.dx >= CELL_WIDTH ||
-      point.dy >= CELL_HEIGHT
+      point.dx >= cellWidth ||
+      point.dy >= cellHeight
     ) {
       continue;
     }
-    sum += values[point.dy * CELL_WIDTH + point.dx];
+    sum += values[point.dy * cellWidth + point.dx];
     count += 1;
   }
   return count > 0 ? sum / count : 0;
+}
+
+function normalizeCellGeometry(cellGeometry: AsciiCellGeometry | undefined): AsciiCellGeometry {
+  const geometry = cellGeometry ?? DEFAULT_ASCII_CELL_GEOMETRY;
+  const pixelWidth = Number.isFinite(geometry.pixelWidth) && geometry.pixelWidth > 0
+    ? geometry.pixelWidth
+    : DEFAULT_ASCII_CELL_GEOMETRY.pixelWidth;
+  const pixelHeight = Number.isFinite(geometry.pixelHeight) && geometry.pixelHeight > 0
+    ? geometry.pixelHeight
+    : DEFAULT_ASCII_CELL_GEOMETRY.pixelHeight;
+  return { pixelWidth, pixelHeight };
+}
+
+function clampCellHeight(value: number): number {
+  return Math.max(MIN_CELL_HEIGHT, Math.min(MAX_CELL_HEIGHT, value));
 }
 
 function applyDirectionalContrast(
@@ -416,7 +468,7 @@ function quantizeVector(vector: number[]): number {
   for (const value of vector) {
     const quantized = Math.min(
       LOOKUP_RANGE - 1,
-      Math.max(0, Math.floor(value * LOOKUP_RANGE)),
+      Math.max(0, Math.round(value * (LOOKUP_RANGE - 1))),
     );
     key = key * LOOKUP_RANGE + quantized;
   }

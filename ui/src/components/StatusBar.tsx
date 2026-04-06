@@ -38,7 +38,7 @@ export function StatusBar({
 }: StatusBarProps) {
   const connStatus = connected ? "Connected" : "Disconnected";
   const debugStatus = debugEnabled ? "On" : "Off";
-  const rendererStatus = rendererLabel ? ` | Render ${rendererLabel}` : "";
+  const rendererStatus = rendererLabel ? ` | r:Render ${rendererLabel}` : "";
   const left =
     ` ${mode} | ${state} | Ep: ${episodeCount} | WS: ${connStatus}` +
     ` | d:Debug ${debugStatus}${rendererStatus}`;

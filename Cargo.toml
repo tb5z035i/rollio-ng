@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "rollio-bus",
     "rollio-types",
     "controller",
     "visualizer",
@@ -9,7 +10,8 @@ members = [
     "episode-assembler",
     "storage",
     "monitor",
-    "pseudo-robot",
+    "robots/pseudo",
     "test-publisher",
+    "cameras/v4l2",
 ]
 exclude = ["third_party"]

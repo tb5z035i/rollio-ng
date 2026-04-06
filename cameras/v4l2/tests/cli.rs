@@ -1,0 +1,107 @@
+use std::process::Command;
+
+fn bin() -> &'static str {
+    env!("CARGO_BIN_EXE_rollio-camera-v4l2")
+}
+
+#[test]
+fn probe_outputs_json_array() {
+    let output = Command::new(bin())
+        .arg("probe")
+        .output()
+        .expect("probe command should run");
+
+    assert!(
+        output.status.success(),
+        "probe should succeed, stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with('[') && trimmed.ends_with(']'),
+        "probe output should be a JSON array, got {trimmed:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_non_v4l2_path() {
+    let output = Command::new(bin())
+        .args(["validate", "/dev/null"])
+        .output()
+        .expect("validate command should run");
+
+    assert!(
+        !output.status.success(),
+        "validate should fail for /dev/null"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a V4L2 capture device")
+            || stderr.contains("Inappropriate ioctl")
+            || stderr.contains("rollio-camera-v4l2"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn run_rejects_non_rgb_output_format() {
+    let config = r#"name = "cam"
+type = "camera"
+driver = "v4l2"
+id = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "mjpeg"
+"#;
+
+    let output = Command::new(bin())
+        .args(["run", "--config-inline", config])
+        .output()
+        .expect("run command should run");
+
+    assert!(
+        !output.status.success(),
+        "run should fail for mjpeg output config"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rgb24 or bgr24"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn run_rejects_non_device_path() {
+    let config = r#"name = "cam"
+type = "camera"
+driver = "v4l2"
+id = "/dev/null"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+"#;
+
+    let output = Command::new(bin())
+        .args(["run", "--config-inline", config])
+        .output()
+        .expect("run command should run");
+
+    assert!(
+        !output.status.success(),
+        "run should fail for non-device path"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a V4L2 capture device")
+            || stderr.contains("Inappropriate ioctl")
+            || stderr.contains("rollio-camera-v4l2"),
+        "unexpected stderr: {stderr}"
+    );
+}

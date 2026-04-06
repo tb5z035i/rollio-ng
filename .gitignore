@@ -3,6 +3,7 @@ target/
 
 # C++
 cpp/build/
+cameras/build/
 
 # Node / UI
 ui/node_modules/
@@ -12,3 +13,5 @@ ui/dist/
 .vscode/
 *.swp
 *.swo
+
+external/

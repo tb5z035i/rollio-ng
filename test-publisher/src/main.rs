@@ -3,6 +3,7 @@ mod video_file;
 
 use clap::{Parser, ValueHint};
 use iceoryx2::prelude::*;
+use rollio_bus::{camera_frames_service_name, robot_state_service_name};
 use rollio_types::messages::{CameraFrameHeader, PixelFormat, RobotState};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -103,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cam_publishers = Vec::new();
     for i in 0..args.cameras {
         let name = format!("camera_{i}");
-        let service_name_str = format!("camera/{name}/frames");
+        let service_name_str = camera_frames_service_name(&name);
         let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
         let service = node
@@ -126,7 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut robot_publishers = Vec::new();
     for i in 0..args.robots {
         let name = format!("robot_{i}");
-        let service_name_str = format!("robot/{name}/state");
+        let service_name_str = robot_state_service_name(&name);
         let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
         let service = node

@@ -1,4 +1,5 @@
 use iceoryx2::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_JOINTS: usize = 16;
 pub const MAX_PROCESS_ID_LEN: usize = 64;
@@ -82,7 +83,8 @@ impl Default for FixedString256 {
 // Pixel format
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 #[type_name("PixelFormat")]
 #[repr(C)]
 pub enum PixelFormat {

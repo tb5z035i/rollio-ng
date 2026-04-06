@@ -8,12 +8,14 @@ mod websocket;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use iceoryx2::node::NodeWaitFailure;
+use rollio_types::config::VisualizerRuntimeConfig;
 use tokio::sync::broadcast;
 
 use crate::ipc::{IpcMessage, IpcPoller};
@@ -26,34 +28,42 @@ use crate::websocket::BroadcastMessage;
 #[command(name = "rollio-visualizer")]
 #[command(about = "iceoryx2 subscriber → WebSocket bridge with JPEG compression")]
 struct Args {
+    /// TOML file containing VisualizerRuntimeConfig
+    #[arg(long, value_name = "PATH", conflicts_with = "config_inline")]
+    config: Option<PathBuf>,
+
+    /// Inline TOML containing VisualizerRuntimeConfig
+    #[arg(long, value_name = "TOML", conflicts_with = "config")]
+    config_inline: Option<String>,
+
     /// WebSocket server port
-    #[arg(long, default_value_t = 9090)]
-    port: u16,
+    #[arg(long)]
+    port: Option<u16>,
 
     /// Comma-separated camera names to subscribe to
-    #[arg(long, default_value = "camera_0,camera_1")]
-    cameras: String,
+    #[arg(long)]
+    cameras: Option<String>,
 
     /// Comma-separated robot names to subscribe to
-    #[arg(long, default_value = "robot_0")]
-    robots: String,
+    #[arg(long)]
+    robots: Option<String>,
 
     /// Maximum preview width for JPEG downsampling
-    #[arg(long, default_value_t = 320)]
-    max_preview_width: u32,
+    #[arg(long)]
+    max_preview_width: Option<u32>,
 
     /// Maximum preview height for JPEG downsampling
-    #[arg(long, default_value_t = 240)]
-    max_preview_height: u32,
+    #[arg(long)]
+    max_preview_height: Option<u32>,
 
     /// JPEG quality (1-100)
-    #[arg(long, default_value_t = 30)]
-    jpeg_quality: i32,
+    #[arg(long)]
+    jpeg_quality: Option<i32>,
 
     /// Maximum preview frames per second per camera. Set to 0 to disable
     /// throttling.
-    #[arg(long, default_value_t = 60)]
-    preview_fps: u32,
+    #[arg(long)]
+    preview_fps: Option<u32>,
 
     /// Number of preview worker threads used for JPEG compression.
     #[arg(long)]
@@ -67,25 +77,86 @@ struct IpcPollConfig {
     preview_workers: usize,
 }
 
+fn split_name_list(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn legacy_runtime_config(args: &Args) -> VisualizerRuntimeConfig {
+    let defaults = VisualizerRuntimeConfig::default();
+    VisualizerRuntimeConfig {
+        port: args.port.unwrap_or(defaults.port),
+        cameras: args
+            .cameras
+            .as_deref()
+            .map(split_name_list)
+            .unwrap_or_else(|| split_name_list("camera_0,camera_1")),
+        robots: args
+            .robots
+            .as_deref()
+            .map(split_name_list)
+            .unwrap_or_else(|| split_name_list("robot_0")),
+        max_preview_width: args.max_preview_width.unwrap_or(defaults.max_preview_width),
+        max_preview_height: args
+            .max_preview_height
+            .unwrap_or(defaults.max_preview_height),
+        jpeg_quality: args.jpeg_quality.unwrap_or(defaults.jpeg_quality),
+        preview_fps: args.preview_fps.unwrap_or(defaults.preview_fps),
+        preview_workers: args.preview_workers.or(defaults.preview_workers),
+    }
+}
+
+fn load_runtime_config(args: &Args) -> Result<VisualizerRuntimeConfig, Box<dyn std::error::Error>> {
+    let mut config = if let Some(config_path) = &args.config {
+        std::fs::read_to_string(config_path)?.parse::<VisualizerRuntimeConfig>()?
+    } else if let Some(config_inline) = &args.config_inline {
+        config_inline.parse::<VisualizerRuntimeConfig>()?
+    } else {
+        legacy_runtime_config(args)
+    };
+
+    if let Some(port) = args.port {
+        config.port = port;
+    }
+    if let Some(cameras) = args.cameras.as_deref() {
+        config.cameras = split_name_list(cameras);
+    }
+    if let Some(robots) = args.robots.as_deref() {
+        config.robots = split_name_list(robots);
+    }
+    if let Some(max_preview_width) = args.max_preview_width {
+        config.max_preview_width = max_preview_width;
+    }
+    if let Some(max_preview_height) = args.max_preview_height {
+        config.max_preview_height = max_preview_height;
+    }
+    if let Some(jpeg_quality) = args.jpeg_quality {
+        config.jpeg_quality = jpeg_quality;
+    }
+    if let Some(preview_fps) = args.preview_fps {
+        config.preview_fps = preview_fps;
+    }
+    if let Some(preview_workers) = args.preview_workers {
+        config.preview_workers = Some(preview_workers);
+    }
+
+    config.validate()?;
+    Ok(config)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    let runtime_config = load_runtime_config(&args)?;
 
-    let camera_names: Vec<String> = args
-        .cameras
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let robot_names: Vec<String> = args
-        .robots
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let preview_workers = args
+    let camera_names = runtime_config.cameras.clone();
+    let robot_names = runtime_config.robots.clone();
+    let preview_workers = runtime_config
         .preview_workers
         .unwrap_or_else(|| default_preview_workers(camera_names.len()))
         .max(1);
@@ -94,11 +165,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cameras: {:?}, robots: {:?}, port: {}, max_preview={}x{}, jpeg_quality: {}, preview_fps: {}, preview_workers: {}",
         camera_names,
         robot_names,
-        args.port,
-        args.max_preview_width,
-        args.max_preview_height,
-        args.jpeg_quality,
-        args.preview_fps,
+        runtime_config.port,
+        runtime_config.max_preview_width,
+        runtime_config.max_preview_height,
+        runtime_config.jpeg_quality,
+        runtime_config.preview_fps,
         preview_workers,
     );
 
@@ -107,19 +178,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream_info = Arc::new(Mutex::new(StreamInfoRegistry::new(
         &camera_names,
         &robot_names,
-        args.preview_fps,
-        args.max_preview_width,
-        args.max_preview_height,
+        runtime_config.preview_fps,
+        runtime_config.max_preview_width,
+        runtime_config.max_preview_height,
         preview_workers,
-        args.jpeg_quality,
+        runtime_config.jpeg_quality,
     )));
     let preview_config = Arc::new(RuntimePreviewConfig::new(
-        args.max_preview_width,
-        args.max_preview_height,
+        runtime_config.max_preview_width,
+        runtime_config.max_preview_height,
     ));
 
     // Start WebSocket server
-    let ws_addr: SocketAddr = ([0, 0, 0, 0], args.port).into();
+    let ws_addr: SocketAddr = ([0, 0, 0, 0], runtime_config.port).into();
     let ws_broadcast_tx = broadcast_tx.clone();
     let ws_stream_info = stream_info.clone();
     let ws_preview_config = preview_config.clone();
@@ -135,8 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // shutdown, which can make Ctrl+C appear stuck if the poll loop is inside
     // a blocking iceoryx wait.
     let ipc_config = IpcPollConfig {
-        jpeg_quality: args.jpeg_quality,
-        preview_fps: args.preview_fps,
+        jpeg_quality: runtime_config.jpeg_quality,
+        preview_fps: runtime_config.preview_fps,
         preview_workers,
     };
     let ipc_broadcast_tx = broadcast_tx.clone();
@@ -257,4 +328,64 @@ fn default_preview_workers(camera_count: usize) -> usize {
         .map(|count| count.get())
         .unwrap_or(1);
     camera_count.max(1).min(available_parallelism)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_args() -> Args {
+        Args {
+            config: None,
+            config_inline: None,
+            port: None,
+            cameras: None,
+            robots: None,
+            max_preview_width: None,
+            max_preview_height: None,
+            jpeg_quality: None,
+            preview_fps: None,
+            preview_workers: None,
+        }
+    }
+
+    #[test]
+    fn legacy_runtime_defaults_match_previous_cli_behavior() {
+        let config = load_runtime_config(&empty_args()).expect("legacy runtime config should load");
+        assert_eq!(config.port, 9090);
+        assert_eq!(
+            config.cameras,
+            vec!["camera_0".to_string(), "camera_1".to_string()]
+        );
+        assert_eq!(config.robots, vec!["robot_0".to_string()]);
+    }
+
+    #[test]
+    fn config_inline_runtime_overrides_legacy_lists() {
+        let mut args = empty_args();
+        args.config_inline = Some(
+            r#"
+port = 9910
+cameras = ["camera_top"]
+robots = ["leader_arm", "follower_arm"]
+max_preview_width = 160
+max_preview_height = 90
+jpeg_quality = 45
+preview_fps = 15
+"#
+            .to_string(),
+        );
+
+        let config = load_runtime_config(&args).expect("inline runtime config should load");
+        assert_eq!(config.port, 9910);
+        assert_eq!(config.cameras, vec!["camera_top".to_string()]);
+        assert_eq!(
+            config.robots,
+            vec!["leader_arm".to_string(), "follower_arm".to_string()]
+        );
+        assert_eq!(config.max_preview_width, 160);
+        assert_eq!(config.max_preview_height, 90);
+        assert_eq!(config.jpeg_quality, 45);
+        assert_eq!(config.preview_fps, 15);
+    }
 }
