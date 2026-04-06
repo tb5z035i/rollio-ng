@@ -13,6 +13,8 @@ import sharp from "sharp";
 import { renderToAnsiLines } from "../lib/ansi-renderer.js";
 import type { CameraFrame } from "../lib/websocket.js";
 
+const RESET = "\x1b[0m";
+
 /** Decoded camera frame as ANSI lines. */
 interface DecodedFrame {
   lines: string[];
@@ -20,6 +22,11 @@ interface DecodedFrame {
   decodedWidth: number;
   /** The pixel height these lines were decoded at. */
   decodedHeight: number;
+}
+
+interface PendingDecode {
+  key: string;
+  jpegData: Buffer;
 }
 
 interface CameraRowProps {
@@ -65,58 +72,118 @@ export function CameraRow({
   const [decodedFrames, setDecodedFrames] = useState<Map<string, DecodedFrame>>(
     () => new Map(),
   );
-  // Track last JPEG data AND dimensions to trigger re-decode on resize
-  const lastDecodeKeyRef = useRef<Map<string, string>>(new Map());
+  const requestedDecodeKeyRef = useRef<Map<string, string>>(new Map());
+  const pendingDecodeRef = useRef<Map<string, PendingDecode>>(new Map());
+  const activeDecodeRef = useRef<Set<string>>(new Set());
+  const isMountedRef = useRef(true);
+
+  const clearDecodedFrame = (camName: string) => {
+    setDecodedFrames((prev) => {
+      if (!prev.has(camName)) return prev;
+      const next = new Map(prev);
+      next.delete(camName);
+      return next;
+    });
+  };
 
   useEffect(() => {
-    let cancelled = false;
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      requestedDecodeKeyRef.current.clear();
+      pendingDecodeRef.current.clear();
+      activeDecodeRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const black = { r: 0, g: 0, b: 0 };
+    const activeNames = new Set(cameras.map((cam) => cam.name));
+
+    const pumpDecode = (camName: string) => {
+      if (activeDecodeRef.current.has(camName)) return;
+      const initialPending = pendingDecodeRef.current.get(camName);
+      if (!initialPending) return;
+
+      activeDecodeRef.current.add(camName);
+
+      void (async () => {
+        try {
+          let pending: PendingDecode | undefined = initialPending;
+
+          while (isMountedRef.current && pending) {
+            pendingDecodeRef.current.delete(camName);
+
+            try {
+              const { data, info } = await sharp(pending.jpegData)
+                .flatten({ background: black })
+                .resize(perCamWidth, targetPixelHeight, {
+                  fit: "fill",
+                  kernel: sharp.kernel.nearest,
+                })
+                .raw()
+                .toBuffer({ resolveWithObject: true });
+
+              if (!isMountedRef.current) return;
+              if (requestedDecodeKeyRef.current.get(camName) !== pending.key) {
+                pending = pendingDecodeRef.current.get(camName);
+                continue;
+              }
+
+              const lines = renderToAnsiLines(data, info.width, info.height);
+              setDecodedFrames((prev) => {
+                const next = new Map(prev);
+                next.set(camName, {
+                  lines,
+                  decodedWidth: info.width,
+                  decodedHeight: info.height,
+                });
+                return next;
+              });
+            } catch {
+              if (!isMountedRef.current) return;
+            }
+
+            pending = pendingDecodeRef.current.get(camName);
+          }
+        } finally {
+          activeDecodeRef.current.delete(camName);
+          if (isMountedRef.current && pendingDecodeRef.current.has(camName)) {
+            pumpDecode(camName);
+          }
+        }
+      })();
+    };
 
     for (const cam of cameras) {
-      const jpegData = cam.frame?.jpegData ?? null;
+      const frame = cam.frame;
 
-      // Build a decode key that includes dimensions so resize triggers re-decode
-      const dataId = jpegData ? `${jpegData.length}:${jpegData[0]}:${jpegData[jpegData.length - 1]}` : "null";
-      const decodeKey = `${dataId}:${perCamWidth}x${targetPixelHeight}`;
-      const lastKey = lastDecodeKeyRef.current.get(cam.name);
-
-      if (decodeKey === lastKey) continue;
-      lastDecodeKeyRef.current.set(cam.name, decodeKey);
-
-      if (!jpegData || jpegData.length === 0) {
-        setDecodedFrames((prev) => {
-          const next = new Map(prev);
-          next.delete(cam.name);
-          return next;
-        });
+      if (!frame?.jpegData || frame.jpegData.length === 0) {
+        requestedDecodeKeyRef.current.delete(cam.name);
+        pendingDecodeRef.current.delete(cam.name);
+        clearDecodedFrame(cam.name);
         continue;
       }
 
-      const camName = cam.name;
+      const decodeKey = `${frame.sequence}:${perCamWidth}x${targetPixelHeight}`;
+      if (requestedDecodeKeyRef.current.get(cam.name) === decodeKey) {
+        continue;
+      }
 
-      sharp(jpegData)
-        .resize(perCamWidth, targetPixelHeight, { fit: "fill" })
-        .removeAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true })
-        .then(({ data, info }) => {
-          if (cancelled) return;
-          const lines = renderToAnsiLines(data, info.width, info.height);
-          setDecodedFrames((prev) => {
-            const next = new Map(prev);
-            next.set(camName, {
-              lines,
-              decodedWidth: perCamWidth,
-              decodedHeight: targetPixelHeight,
-            });
-            return next;
-          });
-        })
-        .catch(() => {});
+      requestedDecodeKeyRef.current.set(cam.name, decodeKey);
+      pendingDecodeRef.current.set(cam.name, {
+        key: decodeKey,
+        jpegData: frame.jpegData,
+      });
+      pumpDecode(cam.name);
     }
 
-    return () => {
-      cancelled = true;
-    };
+    for (const name of Array.from(requestedDecodeKeyRef.current.keys())) {
+      if (activeNames.has(name)) continue;
+      requestedDecodeKeyRef.current.delete(name);
+      pendingDecodeRef.current.delete(name);
+      clearDecodedFrame(name);
+    }
   }, [cameras, perCamWidth, targetPixelHeight]);
 
   // Build merged output lines with proper box-drawing borders
@@ -175,18 +242,22 @@ export function CameraRow({
 
   // Merge info panel lines on the right if provided
   const finalLines = useMemo(() => {
-    if (!infoPanelLines || infoPanelLines.length === 0) return outputLines;
+    if (!infoPanelLines || infoPanelLines.length === 0) {
+      return outputLines.map((line) => line + RESET);
+    }
 
     return outputLines.map((line, i) => {
       const infoLine = i < infoPanelLines.length ? infoPanelLines[i] : "";
-      return line + infoLine;
+      return line + infoLine + RESET;
     });
   }, [outputLines, infoPanelLines]);
 
   return (
     <Box flexDirection="column">
       {finalLines.map((line, i) => (
-        <Text key={i}>{line}</Text>
+        <Text key={i} wrap="end">
+          {line}
+        </Text>
       ))}
     </Box>
   );

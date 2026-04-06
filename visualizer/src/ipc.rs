@@ -45,7 +45,9 @@ impl IpcPoller {
         camera_names: &[String],
         robot_names: &[String],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let node = NodeBuilder::new().create::<ipc::Service>()?;
+        let node = NodeBuilder::new()
+            .signal_handling_mode(SignalHandlingMode::Disabled)
+            .create::<ipc::Service>()?;
 
         let mut camera_subs = Vec::with_capacity(camera_names.len());
         for name in camera_names {

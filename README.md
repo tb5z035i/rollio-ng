@@ -15,6 +15,7 @@ See `design/` for architecture docs and sprint plans.
 | Rust       | 1.85+           | Cargo workspace      |
 | CMake      | 3.16+           | C++ modules          |
 | g++ / clang| C++17 support   | C++ modules          |
+| NASM       | recent          | `libjpeg-turbo` SIMD build used by `turbojpeg` |
 | Node.js    | 18+             | UI (TypeScript/Ink)  |
 | npm        | 9+              | UI dependency mgmt   |
 | Python     | 3.10+           | Robot drivers        |
@@ -35,6 +36,10 @@ See `design/` for architecture docs and sprint plans.
 git clone --recursive <repo-url>
 cd rollio-ng
 
+# Debian/Ubuntu build tools
+sudo apt-get update
+sudo apt-get install -y build-essential cmake nasm
+
 # Rust
 cargo build --workspace
 cargo test --workspace
@@ -46,6 +51,9 @@ cmake --build cpp/build
 # UI
 cd ui && npm install && npm run build && cd ..
 ```
+
+If `cargo build --workspace` or `make` fails while compiling `turbojpeg-sys`
+with `No CMAKE_ASM_NASM_COMPILER could be found`, install `nasm` and retry.
 
 ## Pre-commit hooks (optional)
 

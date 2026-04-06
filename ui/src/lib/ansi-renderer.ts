@@ -9,7 +9,10 @@
  *
  * Optimizations:
  * - O(1) color lookup via pre-computed LUT (color-palette.ts)
- * - Batches same-color runs to reduce escape code count
+ *
+ * Note: We intentionally emit full fg/bg SGR codes for every cell instead of
+ * relying on previous color state. This matches the safer prototype behavior
+ * and avoids color bleed when downstream renderers split or reflow ANSI rows.
  */
 
 import { nearestAnsi256 } from "./color-palette.js";
@@ -44,9 +47,6 @@ export function renderToAnsiLines(
     const botRowY = cy * 2 + 1;
     const parts: string[] = [];
 
-    let prevBg = -1;
-    let prevFg = -1;
-
     for (let x = 0; x < imgWidth; x++) {
       const topIdx = (topRowY * imgWidth + x) * 3;
       const bgAnsi = nearestAnsi256(
@@ -62,18 +62,7 @@ export function renderToAnsiLines(
         rgbPixels[botIdx + 2],
       );
 
-      if (bgAnsi !== prevBg && fgAnsi !== prevFg) {
-        parts.push(`\x1b[48;5;${bgAnsi};38;5;${fgAnsi}m${HALF_BLOCK}`);
-      } else if (bgAnsi !== prevBg) {
-        parts.push(`\x1b[48;5;${bgAnsi}m${HALF_BLOCK}`);
-      } else if (fgAnsi !== prevFg) {
-        parts.push(`\x1b[38;5;${fgAnsi}m${HALF_BLOCK}`);
-      } else {
-        parts.push(HALF_BLOCK);
-      }
-
-      prevBg = bgAnsi;
-      prevFg = fgAnsi;
+      parts.push(`\x1b[48;5;${bgAnsi}m\x1b[38;5;${fgAnsi}m${HALF_BLOCK}`);
     }
 
     parts.push(RESET);

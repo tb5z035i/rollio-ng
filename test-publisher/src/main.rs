@@ -1,9 +1,13 @@
 mod frames;
+mod video_file;
 
-use clap::Parser;
+use clap::{Parser, ValueHint};
 use iceoryx2::prelude::*;
 use rollio_types::messages::{CameraFrameHeader, PixelFormat, RobotState};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::video_file::LocalVideoFileSource;
 
 #[derive(Parser, Debug)]
 #[command(name = "rollio-test-publisher")]
@@ -28,16 +32,27 @@ struct Args {
     /// Frame height in pixels
     #[arg(long, default_value_t = 480)]
     height: u32,
+
+    /// Optional local video file to decode and publish for every camera.
+    /// The file is looped indefinitely and resampled to `--fps`, `--width`,
+    /// and `--height`.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+    camera_file: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let payload_len = args.width as usize * args.height as usize * 3;
     let frame_duration = Duration::from_secs_f64(1.0 / args.fps as f64);
+    let camera_source = args
+        .camera_file
+        .as_ref()
+        .map(|path| format!("file={}", path.display()))
+        .unwrap_or_else(|| "synthetic=color-bars".to_string());
 
     eprintln!(
-        "test-publisher: cameras={}, robots={}, fps={}, {}x{}, payload={}B",
-        args.cameras, args.robots, args.fps, args.width, args.height, payload_len
+        "test-publisher: cameras={}, robots={}, fps={}, {}x{}, payload={}B, camera_source={}",
+        args.cameras, args.robots, args.fps, args.width, args.height, payload_len, camera_source,
     );
 
     // Create iceoryx2 node
@@ -88,6 +103,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (we need a temp buffer because write_from_fn is per-byte, and burning
     //  in the counter requires reading back neighboring pixels)
     let mut frame_buf = vec![0u8; payload_len];
+    let mut video_source = match (&args.camera_file, args.cameras) {
+        (Some(path), cameras) if cameras > 0 => Some(LocalVideoFileSource::new(
+            path.clone(),
+            args.width,
+            args.height,
+            args.fps,
+        )?),
+        _ => None,
+    };
 
     eprintln!("publishing at {} fps...", args.fps);
 
@@ -98,15 +122,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frames_since_status: u64 = 0;
 
     loop {
-        // Generate time-varying frame with scrolling bars + timestamp
         let elapsed_secs = start_time.elapsed().as_secs_f64();
-        frames::generate_color_bars(
-            &mut frame_buf,
-            args.width,
-            args.height,
-            elapsed_secs,
-            frame_index,
-        );
+        if !cam_publishers.is_empty() {
+            if let Some(source) = video_source.as_mut() {
+                source.fill_next_frame(&mut frame_buf)?;
+            } else {
+                // Generate time-varying frame with scrolling bars + timestamp
+                frames::generate_color_bars(
+                    &mut frame_buf,
+                    args.width,
+                    args.height,
+                    elapsed_secs,
+                    frame_index,
+                );
+            }
+        }
 
         let timestamp_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)

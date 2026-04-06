@@ -76,10 +76,11 @@ export function App() {
     if (!isWide) return undefined;
 
     const w = infoPanelWidth;
+    const innerW = Math.max(0, w - 1);
     const lines: string[] = [];
     const pad = (s: string) => {
-      const trimmed = s.substring(0, w);
-      return trimmed + " ".repeat(Math.max(0, w - trimmed.length));
+      const trimmed = s.substring(0, innerW);
+      return trimmed + " ".repeat(Math.max(0, innerW - trimmed.length));
     };
 
     // Top border (connects to camera panel's ┬ on the left)

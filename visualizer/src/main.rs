@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
+use iceoryx2::node::NodeWaitFailure;
 use tokio::sync::broadcast;
 
 use crate::ipc::{IpcMessage, IpcPoller};
@@ -81,24 +82,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shared shutdown flag
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    // Spawn iceoryx2 poll loop on a blocking thread
+    // Run the iceoryx2 poll loop on a dedicated OS thread instead of
+    // `spawn_blocking()`. Tokio waits for blocking tasks during runtime
+    // shutdown, which can make Ctrl+C appear stuck if the poll loop is inside
+    // a blocking iceoryx wait.
     let max_preview_width = args.max_preview_width;
     let jpeg_quality = args.jpeg_quality;
     let ipc_broadcast_tx = broadcast_tx.clone();
     let ipc_shutdown = shutdown.clone();
 
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = ipc_poll_loop(
-            &camera_names,
-            &robot_names,
-            max_preview_width,
-            jpeg_quality,
-            ipc_broadcast_tx,
-            &ipc_shutdown,
-        ) {
-            log::error!("IPC poll loop failed: {e}");
-        }
-    });
+    std::thread::Builder::new()
+        .name("rollio-visualizer-ipc".to_string())
+        .spawn(move || {
+            if let Err(e) = ipc_poll_loop(
+                &camera_names,
+                &robot_names,
+                max_preview_width,
+                jpeg_quality,
+                ipc_broadcast_tx,
+                &ipc_shutdown,
+            ) {
+                log::error!("IPC poll loop failed: {e}");
+            }
+        })?;
 
     // Wait for Ctrl+C
     tokio::signal::ctrl_c().await?;
@@ -159,8 +165,15 @@ fn ipc_poll_loop(
             }
         }
 
-        // Wait briefly for more data (1ms — low latency, minimal CPU when idle)
-        let _ = poller.node().wait(Duration::from_millis(1));
+        // Wait briefly for more data (1ms — low latency, minimal CPU when idle).
+        // Stop promptly if the sleep is interrupted by a termination signal.
+        match poller.node().wait(Duration::from_millis(1)) {
+            Ok(()) => {}
+            Err(NodeWaitFailure::Interrupt | NodeWaitFailure::TerminationRequest) => {
+                log::info!("IPC poll loop interrupted by shutdown signal");
+                break;
+            }
+        }
     }
 
     log::info!("IPC poll loop stopped");

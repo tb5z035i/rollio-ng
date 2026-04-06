@@ -21,6 +21,7 @@ export interface CameraFrame {
   jpegData: Buffer;
   width: number;
   height: number;
+  sequence: number;
 }
 
 /** Return type of the useWebSocket hook. */
@@ -55,6 +56,7 @@ export function useWebSocket(url: string): WebSocketState {
   const robotStatesRef = useRef<Map<string, RobotStateMessage>>(new Map());
   const dirtyRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const frameSequenceRef = useRef(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -97,10 +99,12 @@ export function useWebSocket(url: string): WebSocketState {
         if (isBinary && Buffer.isBuffer(data)) {
           const msg = parseBinaryMessage(data);
           if (msg) {
+            const sequence = ++frameSequenceRef.current;
             framesRef.current.set(msg.name, {
               jpegData: msg.jpegData,
               width: msg.width,
               height: msg.height,
+              sequence,
             });
             dirtyRef.current = true;
           }
