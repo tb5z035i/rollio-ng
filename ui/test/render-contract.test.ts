@@ -10,6 +10,7 @@ import {
   BENCHMARK_CASES,
   FIXTURES,
   benchmarkBackendForFixture,
+  channelsForBackend,
   disposeBackends,
   stripAnsi,
   visibleWidth,
@@ -42,7 +43,9 @@ test("all configured backends render fixture cases with expected dimensions", as
 
           const raster = backend.describeRaster(benchmarkCase.layout);
           const result = await backend.render({
-            pixels: new Uint8Array(raster.width * raster.height * 3),
+            pixels: new Uint8Array(
+              raster.width * raster.height * channelsForBackend(backend),
+            ),
             width: raster.width,
             height: raster.height,
             layout: benchmarkCase.layout,
@@ -57,6 +60,74 @@ test("all configured backends render fixture cases with expected dimensions", as
     }
   } finally {
     await disposeBackends(backends);
+  }
+});
+
+test("native-rust uses the worker-backed native path", async () => {
+  const backend = createAsciiRendererBackend("native-rust");
+  await backend.prepare?.();
+
+  try {
+    assert.equal(backend.kind, "worker");
+    assert.equal(backend.algorithm, "shape-lookup-rust-native-harri");
+    assert.equal(backend.pixelFormat, "luma8");
+    const layout: AsciiRenderLayout = { columns: 8, rows: 4 };
+    const raster = backend.describeRaster(layout);
+    const result = await backend.render({
+      pixels: new Uint8Array(raster.width * raster.height),
+      width: raster.width,
+      height: raster.height,
+      layout,
+    });
+    assert.equal(result.backendId, "native-rust");
+    assert.equal(result.lines.length, layout.rows);
+    assert.match(result.lines[0] ?? "", /\x1b\[38;5;\d+m/);
+    assert.notEqual(result.stats.timings.adapterMs, undefined);
+  } finally {
+    await disposeBackends([backend]);
+  }
+});
+
+test("native-rust matches ts-harri on deterministic grayscale input", async () => {
+  const nativeBackend = createAsciiRendererBackend("native-rust");
+  const tsBackend = createAsciiRendererBackend("ts-harri");
+  await nativeBackend.prepare?.();
+  await tsBackend.prepare?.();
+
+  try {
+    const layout: AsciiRenderLayout = { columns: 16, rows: 6 };
+    const nativeRaster = nativeBackend.describeRaster(layout);
+    const tsRaster = tsBackend.describeRaster(layout);
+    assert.deepEqual(nativeRaster, tsRaster);
+
+    const lumaPixels = new Uint8Array(nativeRaster.width * nativeRaster.height);
+    const rgbPixels = new Uint8Array(tsRaster.width * tsRaster.height * 3);
+    for (let y = 0; y < nativeRaster.height; y++) {
+      for (let x = 0; x < nativeRaster.width; x++) {
+        const value = Math.round((x / Math.max(1, nativeRaster.width - 1)) * 255);
+        lumaPixels[y * nativeRaster.width + x] = value;
+        const offset = (y * tsRaster.width + x) * 3;
+        rgbPixels[offset] = value;
+        rgbPixels[offset + 1] = value;
+        rgbPixels[offset + 2] = value;
+      }
+    }
+
+    const nativeResult = await nativeBackend.render({
+      pixels: lumaPixels,
+      width: nativeRaster.width,
+      height: nativeRaster.height,
+      layout,
+    });
+    const tsResult = await tsBackend.render({
+      pixels: rgbPixels,
+      width: tsRaster.width,
+      height: tsRaster.height,
+      layout,
+    });
+    assert.deepEqual(nativeResult.lines, tsResult.lines);
+  } finally {
+    await disposeBackends([nativeBackend, tsBackend]);
   }
 });
 

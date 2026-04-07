@@ -112,6 +112,7 @@ function cloneTransferablePixels(pixels: Buffer | Uint8Array): Uint8Array {
 export class WorkerThreadHarriRenderer implements AsciiRendererBackend {
   readonly id = "ts-harri";
   readonly label = "Harri (Worker)";
+  readonly pixelFormat = "rgb24" as const;
 
   private readonly geometryRenderer: TypeScriptHarriRenderer;
   private fallbackRenderer: TypeScriptHarriRenderer | null = null;

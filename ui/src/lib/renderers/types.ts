@@ -22,6 +22,8 @@ export interface AsciiRasterDimensions {
   height: number;
 }
 
+export type AsciiPixelFormat = "rgb24" | "luma8";
+
 export interface AsciiRenderInput {
   pixels: Buffer | Uint8Array;
   width: number;
@@ -64,6 +66,7 @@ export interface AsciiRendererBackend {
   label: string;
   kind: "typescript" | "rust" | "wasm" | "worker";
   algorithm: string;
+  pixelFormat: AsciiPixelFormat;
   describeRaster(layout: AsciiRenderLayout): AsciiRasterDimensions;
   layoutForRaster(raster: AsciiRasterDimensions): AsciiRenderLayout;
   prepare?(): Promise<void>;

@@ -17,6 +17,7 @@ clean:
 	rm -rf cpp/build
 	rm -rf cameras/build
 	rm -rf ui/dist
+	rm -rf ui/native
 
 fmt: rust-fmt
 

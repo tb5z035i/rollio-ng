@@ -10,6 +10,7 @@ import {
 } from "../lib/debug-metrics.js";
 import {
   createAsciiRendererBackend,
+  type AsciiPixelFormat,
   type AsciiCellGeometry,
   type AsciiRenderLayout,
   type AsciiRendererId,
@@ -171,6 +172,7 @@ export function CameraRow({
     setGauge("stream.renderer_backend", asciiRendererBackend.id);
     setGauge("stream.renderer_kind", asciiRendererBackend.kind);
     setGauge("stream.renderer_algorithm", asciiRendererBackend.algorithm);
+    setGauge("stream.renderer_pixel_format", asciiRendererBackend.pixelFormat);
     setGauge("stream.output_columns", renderLayout.columns);
     setGauge("stream.output_rows", renderLayout.rows);
     setGauge("stream.target_width", rendererRaster.width);
@@ -345,6 +347,7 @@ export function CameraRow({
                 pending.jpegData,
                 rendererRaster.width,
                 rendererRaster.height,
+                asciiRendererBackend.pixelFormat,
               );
               const resizeDurationMs = nowMs() - resizeStartMs;
 
@@ -702,7 +705,12 @@ export async function prepareRendererRaster(
   jpegData: Buffer,
   targetWidth: number,
   targetHeight: number,
+  pixelFormat: AsciiPixelFormat = "rgb24",
 ): Promise<PreparedRaster> {
+  if (pixelFormat === "luma8") {
+    return await prepareGrayscaleRaster(jpegData, targetWidth, targetHeight);
+  }
+
   const decoded = await sharp(jpegData, {
     sequentialRead: true,
   })
@@ -733,6 +741,46 @@ export async function prepareRendererRaster(
     normalized.height,
     targetWidth,
     targetHeight,
+    3,
+  );
+}
+
+async function prepareGrayscaleRaster(
+  jpegData: Buffer,
+  targetWidth: number,
+  targetHeight: number,
+): Promise<PreparedRaster> {
+  const decoded = await sharp(jpegData, {
+    sequentialRead: true,
+  })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const normalized = normalizeDecodedRasterToLuma(
+    decoded.data,
+    decoded.info.width,
+    decoded.info.height,
+    decoded.info.channels as 1 | 2 | 3 | 4,
+  );
+
+  if (
+    normalized.width === targetWidth &&
+    normalized.height === targetHeight
+  ) {
+    return {
+      data: normalized.data,
+      width: normalized.width,
+      height: normalized.height,
+    };
+  }
+
+  return await resizePreparedRaster(
+    normalized.data,
+    normalized.width,
+    normalized.height,
+    targetWidth,
+    targetHeight,
+    1,
   );
 }
 
@@ -779,18 +827,60 @@ function normalizeDecodedRasterToRgb(
   };
 }
 
+function normalizeDecodedRasterToLuma(
+  data: Buffer,
+  sourceWidth: number,
+  sourceHeight: number,
+  channels: 1 | 2 | 3 | 4,
+): PreparedRaster {
+  if (channels === 1) {
+    return {
+      data,
+      width: sourceWidth,
+      height: sourceHeight,
+    };
+  }
+
+  const pixelCount = sourceWidth * sourceHeight;
+  const output = Buffer.alloc(pixelCount);
+
+  for (let idx = 0; idx < pixelCount; idx++) {
+    const sourceOffset = idx * channels;
+    if (channels === 2) {
+      output[idx] = Math.round((data[sourceOffset] * data[sourceOffset + 1]) / 255);
+      continue;
+    }
+
+    const r = data[sourceOffset];
+    const g = data[sourceOffset + 1];
+    const b = data[sourceOffset + 2];
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (channels === 4) {
+      luma = (luma * data[sourceOffset + 3]) / 255;
+    }
+    output[idx] = Math.round(luma);
+  }
+
+  return {
+    data: output,
+    width: sourceWidth,
+    height: sourceHeight,
+  };
+}
+
 async function resizePreparedRaster(
   data: Buffer,
   sourceWidth: number,
   sourceHeight: number,
   targetWidth: number,
   targetHeight: number,
+  channels: 1 | 3,
 ): Promise<PreparedRaster> {
-  const resized = await sharp(data, {
+  let pipeline = sharp(data, {
     raw: {
       width: sourceWidth,
       height: sourceHeight,
-      channels: 3,
+      channels,
     },
   })
     .resize(targetWidth, targetHeight, {
@@ -798,9 +888,11 @@ async function resizePreparedRaster(
       position: "centre",
       background: BLACK_BACKGROUND,
       kernel: sharp.kernel.nearest,
-    })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+    });
+  if (channels === 1) {
+    pipeline = pipeline.extractChannel(0);
+  }
+  const resized = await pipeline.raw().toBuffer({ resolveWithObject: true });
 
   return {
     data: resized.data,

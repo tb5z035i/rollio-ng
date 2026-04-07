@@ -106,6 +106,7 @@ function readLastError(exports: HarriWasmExports): Error {
 export class RustWasmHarriRenderer implements AsciiRendererBackend {
   readonly kind = "wasm" as const;
   readonly algorithm = "shape-lookup-rust-wasm";
+  readonly pixelFormat = "rgb24" as const;
   readonly id: string;
   readonly label: string;
 

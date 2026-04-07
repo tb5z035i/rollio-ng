@@ -91,6 +91,7 @@ export class TypeScriptHarriRenderer implements AsciiRendererBackend {
   readonly label = "TypeScript Harri";
   readonly kind = "typescript" as const;
   readonly algorithm = "shape-lookup";
+  readonly pixelFormat = "rgb24" as const;
   private readonly cellWidth: number;
   private readonly cellHeight: number;
   private readonly internalMasks: SamplePoint[][];

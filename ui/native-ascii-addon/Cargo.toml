@@ -1,0 +1,18 @@
+[package]
+name = "rollio-native-ascii-addon"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rollio-harri-wasm-core = { version = "0.1.0", path = "../harri-wasm-core" }
+napi = { version = "3.8.4", default-features = false, features = ["napi6"] }
+napi-derive = "3.5.3"
+
+[build-dependencies]
+napi-build = "2.3.1"

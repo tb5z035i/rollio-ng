@@ -17,6 +17,7 @@ export interface AsciiWasmRendererModule {
 export class WasmAsciiRendererAdapter implements AsciiRendererBackend {
   readonly kind = "wasm" as const;
   readonly algorithm: string;
+  readonly pixelFormat = "rgb24" as const;
 
   constructor(
     readonly id: string,

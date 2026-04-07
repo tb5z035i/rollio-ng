@@ -75,6 +75,20 @@ struct Renderer {
     last_lookup_count: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeHarriRenderStats {
+    pub sgr_change_count: u32,
+    pub cache_hits: u32,
+    pub cache_misses: u32,
+    pub sample_count: u32,
+    pub lookup_count: u32,
+    pub output_bytes: u32,
+}
+
+pub struct NativeHarriRenderer {
+    renderer: Renderer,
+}
+
 impl Renderer {
     fn new(cell_width: usize, cell_height: usize) -> Self {
         let internal_masks = std::array::from_fn(|index| {
@@ -161,17 +175,7 @@ impl Renderer {
         columns: usize,
         rows: usize,
     ) -> Result<(), String> {
-        let expected_width = columns
-            .checked_mul(self.cell_width)
-            .ok_or_else(|| "render width overflowed".to_string())?;
-        let expected_height = rows
-            .checked_mul(self.cell_height)
-            .ok_or_else(|| "render height overflowed".to_string())?;
-        if width != expected_width || height != expected_height {
-            return Err(format!(
-                "ts-harri expected raster {expected_width}x{expected_height}, received {width}x{height}"
-            ));
-        }
+        self.validate_render_dimensions(width, height, columns, rows)?;
         let expected_pixels = width
             .checked_mul(height)
             .and_then(|value| value.checked_mul(3))
@@ -187,6 +191,64 @@ impl Renderer {
         }
 
         let luminance_plane = build_luminance_plane(pixels, width, height);
+        self.render_luminance_plane(&luminance_plane, width, height, columns, rows)
+    }
+
+    fn render_luma(
+        &mut self,
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        columns: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        self.validate_render_dimensions(width, height, columns, rows)?;
+        let expected_pixels = width
+            .checked_mul(height)
+            .ok_or_else(|| "pixel buffer length overflowed".to_string())?;
+        if pixels.len() != expected_pixels {
+            return Err(format!(
+                "expected {expected_pixels} grayscale bytes, received {}",
+                pixels.len()
+            ));
+        }
+        if self.glyphs.is_empty() {
+            return Err("Harri glyph database not initialized".into());
+        }
+
+        let luminance_plane = build_luminance_plane_from_luma(pixels, width, height);
+        self.render_luminance_plane(&luminance_plane, width, height, columns, rows)
+    }
+
+    fn validate_render_dimensions(
+        &self,
+        width: usize,
+        height: usize,
+        columns: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        let expected_width = columns
+            .checked_mul(self.cell_width)
+            .ok_or_else(|| "render width overflowed".to_string())?;
+        let expected_height = rows
+            .checked_mul(self.cell_height)
+            .ok_or_else(|| "render height overflowed".to_string())?;
+        if width != expected_width || height != expected_height {
+            return Err(format!(
+                "ts-harri expected raster {expected_width}x{expected_height}, received {width}x{height}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn render_luminance_plane(
+        &mut self,
+        luminance_plane: &[f32],
+        width: usize,
+        height: usize,
+        columns: usize,
+        rows: usize,
+    ) -> Result<(), String> {
         let mut output = Vec::with_capacity(
             columns
                 .checked_mul(rows)
@@ -204,25 +266,13 @@ impl Renderer {
                 let origin_x = (column * self.cell_width) as i32;
                 let mut internal_vector = [0.0; INTERNAL_MASK_COUNT];
                 for (index, mask) in self.internal_masks.iter().enumerate() {
-                    internal_vector[index] = sample_plane_mask(
-                        &luminance_plane,
-                        width,
-                        height,
-                        origin_x,
-                        origin_y,
-                        mask,
-                    );
+                    internal_vector[index] =
+                        sample_plane_mask(luminance_plane, width, height, origin_x, origin_y, mask);
                 }
                 let mut external_vector = [0.0; EXTERNAL_MASK_COUNT];
                 for (index, mask) in self.external_masks.iter().enumerate() {
-                    external_vector[index] = sample_plane_mask(
-                        &luminance_plane,
-                        width,
-                        height,
-                        origin_x,
-                        origin_y,
-                        mask,
-                    );
+                    external_vector[index] =
+                        sample_plane_mask(luminance_plane, width, height, origin_x, origin_y, mask);
                 }
 
                 let average_luminance =
@@ -271,6 +321,54 @@ impl Renderer {
     }
 }
 
+impl NativeHarriRenderer {
+    pub fn new(cell_width: usize, cell_height: usize) -> Result<Self, String> {
+        if cell_width == 0 || cell_height == 0 {
+            return Err("Harri renderer cell dimensions must be non-zero".into());
+        }
+        Ok(Self {
+            renderer: Renderer::new(cell_width, cell_height),
+        })
+    }
+
+    pub fn set_glyphs(
+        &mut self,
+        glyph_chars: &[u8],
+        glyph_vectors_bytes: &[u8],
+        vector_size: usize,
+    ) -> Result<(), String> {
+        self.renderer
+            .set_glyphs(glyph_chars, glyph_vectors_bytes, vector_size)
+    }
+
+    pub fn render_luma(
+        &mut self,
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        columns: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        self.renderer
+            .render_luma(pixels, width, height, columns, rows)
+    }
+
+    pub fn output_text(&self) -> String {
+        String::from_utf8_lossy(&self.renderer.last_output).into_owned()
+    }
+
+    pub fn stats(&self) -> NativeHarriRenderStats {
+        NativeHarriRenderStats {
+            sgr_change_count: self.renderer.last_sgr_change_count,
+            cache_hits: self.renderer.last_cache_hits,
+            cache_misses: self.renderer.last_cache_misses,
+            sample_count: self.renderer.last_sample_count,
+            lookup_count: self.renderer.last_lookup_count,
+            output_bytes: saturating_u32(self.renderer.last_output.len()),
+        }
+    }
+}
+
 fn build_mask(
     cx: f32,
     cy: f32,
@@ -308,6 +406,14 @@ fn build_luminance_plane(pixels: &[u8], width: usize, height: usize) -> Vec<f32>
         let g = chunk[1] as f32;
         let b = chunk[2] as f32;
         plane.push((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0);
+    }
+    plane
+}
+
+fn build_luminance_plane_from_luma(pixels: &[u8], width: usize, height: usize) -> Vec<f32> {
+    let mut plane = Vec::with_capacity(width.saturating_mul(height));
+    for &value in pixels {
+        plane.push(value as f32 / 255.0);
     }
     plane
 }

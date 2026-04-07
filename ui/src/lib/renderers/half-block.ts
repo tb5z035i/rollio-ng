@@ -15,6 +15,7 @@ export class TypeScriptHalfBlockRenderer implements AsciiRendererBackend {
   readonly label = "TypeScript Half Block";
   readonly kind = "typescript" as const;
   readonly algorithm = "half-block-truecolor";
+  readonly pixelFormat = "rgb24" as const;
 
   describeRaster(layout: AsciiRenderLayout): AsciiRasterDimensions {
     return {

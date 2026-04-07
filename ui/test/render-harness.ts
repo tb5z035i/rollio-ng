@@ -76,6 +76,10 @@ export const BENCHMARK_CASES: BenchmarkCase[] = [
     name: "large",
     layout: { columns: 96, rows: 28 },
   },
+  {
+    name: "307x129",
+    layout: { columns: 307, rows: 129 },
+  },
 ];
 
 export const CLI_RASTER_CASES: RasterBenchmarkCase[] = [
@@ -142,15 +146,13 @@ export async function benchmarkBackendForFixture(
   const raster = backend.describeRaster(benchmarkCase.layout);
 
   const resizeStartMs = nowMs();
-  const { data, info } = await sharp(fixtureBytes)
-    .resize(raster.width, raster.height, {
-      fit: "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 1 },
-      kernel: sharp.kernel.nearest,
-    })
-    .removeAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  let pipeline = sharp(fixtureBytes).resize(raster.width, raster.height, {
+    fit: "contain",
+    background: { r: 0, g: 0, b: 0, alpha: 1 },
+    kernel: sharp.kernel.nearest,
+  });
+  pipeline = backend.pixelFormat === "luma8" ? pipeline.greyscale() : pipeline.removeAlpha();
+  const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
   const resizeMs = nowMs() - resizeStartMs;
 
   const renderStartMs = nowMs();
@@ -212,9 +214,13 @@ async function warmBackend(backend: AsciiRendererBackend): Promise<void> {
   const layout = { columns: 4, rows: 2 };
   const raster = backend.describeRaster(layout);
   await backend.render({
-    pixels: new Uint8Array(raster.width * raster.height * 3),
+    pixels: new Uint8Array(raster.width * raster.height * channelsForBackend(backend)),
     width: raster.width,
     height: raster.height,
     layout,
   });
+}
+
+export function channelsForBackend(backend: AsciiRendererBackend): 1 | 3 {
+  return backend.pixelFormat === "luma8" ? 1 : 3;
 }

@@ -9,6 +9,7 @@ cameras/build/
 ui/node_modules/
 ui/dist/
 ui/wasm/
+ui/native/
 
 # Editor
 .vscode/
@@ -16,3 +17,5 @@ ui/wasm/
 *.swo
 
 external/reference
+
+**/__pycache__/

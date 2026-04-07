@@ -11,10 +11,10 @@ test("resolveRuntimeConfig falls back to the default websocket endpoint", () => 
 test("resolveRuntimeConfig prefers environment configuration", () => {
   const runtimeConfig = resolveRuntimeConfig([], {
     ROLLIO_VISUALIZER_WS: "ws://127.0.0.1:9911",
-    ROLLIO_ASCII_RENDERER: "wasm-harri",
+    ROLLIO_ASCII_RENDERER: "native-rust",
   });
   assert.equal(runtimeConfig.websocketUrl, "ws://127.0.0.1:9911");
-  assert.equal(runtimeConfig.asciiRendererId, "wasm-harri");
+  assert.equal(runtimeConfig.asciiRendererId, "native-rust");
 });
 
 test("resolveRuntimeConfig lets CLI flags override environment values", () => {
