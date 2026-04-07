@@ -15,4 +15,4 @@ ui/wasm/
 *.swp
 *.swo
 
-external/
+external/reference
