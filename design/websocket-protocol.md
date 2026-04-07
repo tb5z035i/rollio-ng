@@ -259,8 +259,8 @@ between:
 
 - `visualizer/src/protocol.rs`
 - `visualizer/src/websocket.rs`
-- `ui/src/lib/protocol.ts`
-- `ui/src/lib/websocket.ts`
+- `ui/terminal/src/lib/protocol.ts`
+- `ui/terminal/src/lib/websocket.ts`
 
 Breaking changes should be introduced carefully. Preferred strategies:
 
@@ -302,8 +302,8 @@ Implementation files for the current protocol:
 - `visualizer/src/protocol.rs`
 - `visualizer/src/websocket.rs`
 - `visualizer/src/stream_info.rs`
-- `ui/src/lib/protocol.ts`
-- `ui/src/lib/websocket.ts`
+- `ui/terminal/src/lib/protocol.ts`
+- `ui/terminal/src/lib/websocket.ts`
 
 This document is intended to stay in sync with those files and serve as the
 human-readable design reference.

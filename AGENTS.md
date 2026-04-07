@@ -4,7 +4,7 @@
 
 ### Overview
 
-Rollio is a multi-process CLI framework for robotic teleoperation data collection. It is a Cargo workspace (11 Rust crates) + C++ camera drivers under `cameras/` with shared interop headers in `cpp/common/` + a TypeScript/React Ink terminal UI (`ui/`). All inter-process communication uses iceoryx2 (zero-copy shared-memory IPC) via a git submodule at `third_party/iceoryx2`.
+Rollio is a multi-process CLI framework for robotic teleoperation data collection. It is a Cargo workspace (Rust crates under the repo root and `test/`) + C++ camera drivers under `cameras/` with shared interop headers in `cpp/common/` + a TypeScript/React Ink terminal UI (`ui/terminal/`). All inter-process communication uses iceoryx2 (zero-copy shared-memory IPC) via a git submodule at `third_party/iceoryx2`. The `ascii-video-renderer` submodule lives at `third_party/ascii-video-renderer` and is used by the terminal UI’s native ASCII N-API addon (not a root workspace member).
 
 The project is in early development — most binary crates are stubs. The `rollio-types` library crate has real integration tests for config parsing and message types.
 
@@ -17,12 +17,12 @@ See `Makefile` and `README.md` for standard commands. Key shortcuts:
 - **Lint:** `cargo clippy --workspace -- -D warnings`
 - **Format check:** `cargo fmt --all -- --check`
 - **C++ build:** `cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++ && cmake --build cameras/build`
-- **UI:** `cd ui && npm install && npm run build`
-- **UI run:** `cd ui && node dist/index.js`
+- **UI:** `cd ui/terminal && npm install && npm run build`
+- **UI run:** `cd ui/terminal && node dist/index.js`
 
 ### Non-obvious caveats
 
-- **Git submodule required:** The iceoryx2 submodule at `third_party/iceoryx2` must be initialized before Rust builds will succeed. Run `git submodule update --init --recursive` if the directory is empty.
+- **Git submodules required:** Initialize `third_party/iceoryx2` and `third_party/ascii-video-renderer` before builds that compile the full stack. Run `git submodule update --init --recursive` if directories are empty.
 - **C++ compiler:** The default `c++` symlink points to Clang 18, which may fail to find `<iostream>` on this platform. Use `-DCMAKE_CXX_COMPILER=g++` when running CMake to use GCC instead.
 - **Rust 1.85+:** The workspace requires Rust 1.85 or newer. The VM default may be older; use `rustup install 1.85.0 && rustup default 1.85.0` if needed.
 - **libstdc++ symlink:** If Clang linker fails with `cannot find -lstdc++`, create the symlink: `sudo ln -sf /usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so /usr/lib/x86_64-linux-gnu/libstdc++.so`.

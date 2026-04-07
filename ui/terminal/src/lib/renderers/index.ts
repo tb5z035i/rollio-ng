@@ -1,20 +1,14 @@
 import { TypeScriptHalfBlockRenderer } from "./half-block.js";
 import { WorkerThreadNativeRustRenderer } from "./native-rust.js";
-import { RustWasmHarriRenderer } from "./wasm-harri.js";
 import type { AsciiRendererBackend, AsciiRendererOptions } from "./types.js";
 
-export const ASCII_RENDERER_IDS = [
-  "ts-half-block",
-  "native-rust",
-  "wasm-harri",
-] as const;
+export const ASCII_RENDERER_IDS = ["ts-half-block", "native-rust"] as const;
 
 export type AsciiRendererId = (typeof ASCII_RENDERER_IDS)[number];
 
 export const ASCII_RENDERER_LABELS: Record<AsciiRendererId, string> = {
   "ts-half-block": "Half Block",
   "native-rust": "Rust (Native)",
-  "wasm-harri": "Harri (WASM)",
 };
 
 export function createAsciiRendererBackend(
@@ -26,11 +20,6 @@ export function createAsciiRendererBackend(
       return new TypeScriptHalfBlockRenderer();
     case "native-rust":
       return new WorkerThreadNativeRustRenderer(options);
-    case "wasm-harri":
-      return new RustWasmHarriRenderer(options, {
-        rendererId: "wasm-harri",
-        label: ASCII_RENDERER_LABELS["wasm-harri"],
-      });
   }
 }
 
@@ -43,7 +32,7 @@ export function defaultAsciiRendererId(): AsciiRendererId {
   if (selected && isAsciiRendererId(selected)) {
     return selected;
   }
-  return "ts-half-block";
+  return "native-rust";
 }
 
 export function isAsciiRendererId(value: string): value is AsciiRendererId {
@@ -72,4 +61,3 @@ export type {
   AsciiRendererOptions,
   AsciiRasterDimensions,
 } from "./types.js";
-export { WasmAsciiRendererAdapter, type AsciiWasmRendererModule } from "./wasm-adapter.js";

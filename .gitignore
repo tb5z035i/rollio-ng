@@ -5,11 +5,12 @@ target/
 cpp/build/
 cameras/build/
 
-# Node / UI
+# Node / terminal UI
 ui/node_modules/
-ui/dist/
-ui/wasm/
-ui/native/
+ui/terminal/node_modules/
+ui/terminal/dist/
+ui/terminal/wasm/
+ui/terminal/native/
 
 # Editor
 .vscode/

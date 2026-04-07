@@ -16,8 +16,8 @@ clean:
 	cargo clean
 	rm -rf cpp/build
 	rm -rf cameras/build
-	rm -rf ui/dist
-	rm -rf ui/native
+	rm -rf ui/terminal/dist
+	rm -rf ui/terminal/native
 
 fmt: rust-fmt
 
@@ -55,16 +55,16 @@ cpp-test: cpp-build
 ui: ui-build
 
 ui-install:
-	cd ui && npm install
+	cd ui/terminal && npm install
 
 ui-build: ui-install
-	cd ui && npm run build
+	cd ui/terminal && npm run build
 
 ui-test: ui-install
-	cd ui && npm test
+	cd ui/terminal && npm test
 
 ui-bench-ascii: ui-install
-	cd ui && npm run bench:ascii
+	cd ui/terminal && npm run bench:ascii
 
 # ── Python ────────────────────────────────────────────────────────────
 

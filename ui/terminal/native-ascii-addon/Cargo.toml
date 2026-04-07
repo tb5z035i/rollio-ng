@@ -10,7 +10,7 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
-ascii-video-renderer = { path = "../../external/ascii-video-renderer" }
+ascii-video-renderer = { path = "../../../third_party/ascii-video-renderer" }
 napi = { version = "3.8.4", default-features = false, features = ["napi6"] }
 napi-derive = "3.5.3"
 

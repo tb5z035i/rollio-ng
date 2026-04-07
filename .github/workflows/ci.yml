@@ -63,25 +63,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: npm ci
-        working-directory: ui
+        working-directory: ui/terminal
         run: npm ci
 
       - name: npm test
-        working-directory: ui
+        working-directory: ui/terminal
         run: npm test
 
       - name: npm run build
-        working-directory: ui
+        working-directory: ui/terminal
         run: npm run build
 
   python:

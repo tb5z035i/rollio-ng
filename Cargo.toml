@@ -11,8 +11,7 @@ members = [
     "storage",
     "monitor",
     "robots/pseudo",
-    "test-publisher",
+    "test/test-publisher",
     "cameras/v4l2",
-    "external/ascii-video-renderer",
 ]
 exclude = ["third_party"]

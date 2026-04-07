@@ -180,7 +180,7 @@ export function DebugPanel({ width, snapshot, streamInfo }: DebugPanelProps) {
     },
     {
       text: padLine(
-        formatHarriWorkerSummary(rendererBackend, snapshot),
+        formatNativeAsciiSummary(rendererBackend),
         innerWidth,
       ),
     },
@@ -332,19 +332,11 @@ function formatGaugeMs(snapshot: DebugSnapshot, name: string): string {
   return Number.isFinite(value) ? formatMs(value) : "n/a";
 }
 
-function formatHarriWorkerSummary(
-  rendererBackend: string,
-  snapshot: DebugSnapshot,
-): string {
-  if (rendererBackend === "wasm-harri") {
-    return " Harri worker: retired | renderer=shared-engine wasm";
-  }
-
+function formatNativeAsciiSummary(rendererBackend: string): string {
   if (rendererBackend === "native-rust") {
-    return " Harri worker: retired | renderer=shared-engine native";
+    return " Native ASCII: Node worker + N-API (ascii-video-renderer)";
   }
-
-  return ` Harri worker: inactive | last=${gaugeValue(snapshot, "stream.harri_worker.state", "n/a")} | log=${gaugeValue(snapshot, "stream.harri_worker.last_log", "n/a")}`;
+  return " Native ASCII: inactive (half-block path)";
 }
 
 function formatRatioValue(value: number | null | undefined): string {

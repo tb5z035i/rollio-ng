@@ -78,7 +78,7 @@ export class WorkerThreadNativeRustRenderer implements AsciiRendererBackend {
   readonly id = "native-rust";
   readonly label = "Rust (Native)";
   readonly kind = "worker" as const;
-  readonly algorithm = "shape-lookup-rust-native-harri";
+  readonly algorithm = "ascii-video-renderer-native";
   readonly pixelFormat = "luma8" as const;
 
   private readonly geometry: HarriGeometry;

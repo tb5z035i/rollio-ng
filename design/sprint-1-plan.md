@@ -59,10 +59,10 @@ UI -> Visualizer (stub, Sprint 1):
 
 ## 1. Test Publisher
 
-**File:** [test-publisher/src/main.rs](test-publisher/src/main.rs)
-**New file:** `test-publisher/src/frames.rs` (color bar generator)
+**File:** [test/test-publisher/src/main.rs](test/test-publisher/src/main.rs)
+**New file:** `test/test-publisher/src/frames.rs` (color bar generator)
 
-**Dependencies to add** to [test-publisher/Cargo.toml](test-publisher/Cargo.toml):
+**Dependencies to add** to [test/test-publisher/Cargo.toml](test/test-publisher/Cargo.toml):
 - `clap` (CLI args: `--cameras`, `--robots`, `--fps`, `--width`, `--height`)
 
 **Implementation:**
@@ -148,20 +148,20 @@ graph TD
 
 ## 3. UI
 
-**Files to modify:** [ui/src/index.tsx](ui/src/index.tsx), [ui/package.json](ui/package.json)
+**Files to modify:** [ui/terminal/src/index.tsx](ui/terminal/src/index.tsx), [ui/terminal/package.json](ui/terminal/package.json)
 **New files:**
-- `ui/src/App.tsx` -- main layout component (title bar, content, status bar)
-- `ui/src/components/TitleBar.tsx` -- app name, mode, wizard step indicator
-- `ui/src/components/StatusBar.tsx` -- mode, state, episode count, health indicator
-- `ui/src/components/InfoPanel.tsx` -- device parameters and config summary
-- `ui/src/components/StreamPanel.tsx` -- JPEG -> ANSI half-block camera preview
-- `ui/src/components/RobotStatePanel.tsx` -- bar/gauge joint display
-- `ui/src/lib/websocket.ts` -- WebSocket client with auto-reconnect
-- `ui/src/lib/protocol.ts` -- message type definitions, binary parser
-- `ui/src/lib/ansi-renderer.ts` -- JPEG decode + pixel -> ANSI 256-color half-block
-- `ui/src/lib/color-palette.ts` -- RGB -> nearest ANSI 256-color mapping
+- `ui/terminal/src/App.tsx` -- main layout component (title bar, content, status bar)
+- `ui/terminal/src/components/TitleBar.tsx` -- app name, mode, wizard step indicator
+- `ui/terminal/src/components/StatusBar.tsx` -- mode, state, episode count, health indicator
+- `ui/terminal/src/components/InfoPanel.tsx` -- device parameters and config summary
+- `ui/terminal/src/components/StreamPanel.tsx` -- JPEG -> ANSI half-block camera preview
+- `ui/terminal/src/components/RobotStatePanel.tsx` -- bar/gauge joint display
+- `ui/terminal/src/lib/websocket.ts` -- WebSocket client with auto-reconnect
+- `ui/terminal/src/lib/protocol.ts` -- message type definitions, binary parser
+- `ui/terminal/src/lib/ansi-renderer.ts` -- JPEG decode + pixel -> ANSI 256-color half-block
+- `ui/terminal/src/lib/color-palette.ts` -- RGB -> nearest ANSI 256-color mapping
 
-**Dependencies to add** to [ui/package.json](ui/package.json):
+**Dependencies to add** to [ui/terminal/package.json](ui/terminal/package.json):
 - `jpeg-js` -- pure JS JPEG decoder (no native deps)
 - `ink-use-stdout-dimensions` (or custom hook) -- responsive terminal sizing
 - `@types/jpeg-js` -- types
@@ -394,7 +394,7 @@ Tests defined in the [implementation plan](implementation-plan.md) Sprint 1 sect
 - JPEG compression: 1920x1080 input -> smaller JPEG, decode back matches (PSNR > 30dB)
 - Control forwarding: send JSON command via WebSocket -> verify iceoryx2 ControlEvent
 
-**UI tests** (`ui/src/__tests__/`):
+**UI tests** (`ui/terminal/src/__tests__/`):
 - StreamPanel: red/green/blue stripe JPEG -> verify ANSI output has correct color codes; 1x1 JPEG edge case
 - RobotStatePanel: min/mid/max values -> verify 3 bars; empty array -> placeholder
 - Layout: 80x24 and 200x60 -> no crash
@@ -435,7 +435,7 @@ Checkpoints the developer should run manually at key milestones during implement
 6. **UI renders with live data** (the Sprint 1 end-to-end checkpoint):
    - Terminal 1: `cargo run -p rollio-test-publisher -- --cameras 2 --robots 1 --fps 30`
    - Terminal 2: `cargo run -p rollio-visualizer -- --port 9090 --cameras camera_0,camera_1 --robots robot_0`
-   - Terminal 3: `cd ui && npm start`
+   - Terminal 3: `cd ui/terminal && npm start`
    - Pass: within 2 seconds, the TUI shows:
      - Title bar with `rollio` and `Collect` mode.
      - Two side-by-side camera panels with ANSI half-block color bars updating at ~30fps.
@@ -469,7 +469,7 @@ Checkpoints the developer should run manually at key milestones during implement
 
 Update [Makefile](Makefile) to ensure `cargo build --workspace` still works (no changes needed since all crates are workspace members).
 
-Update `ui/package.json` with new deps -- `npm install` in the `ui-install` target handles this.
+Update `ui/terminal/package.json` with new deps -- `npm install` in the `ui-install` target handles this.
 
 ---
 
@@ -477,6 +477,6 @@ Update `ui/package.json` with new deps -- `npm install` in the `ui-install` targ
 
 | Deliverable | New/Modified Files |
 |---|---|
-| Test Publisher | `test-publisher/Cargo.toml` (add clap), `test-publisher/src/main.rs` (rewrite), `test-publisher/src/frames.rs` (new) |
+| Test Publisher | `test/test-publisher/Cargo.toml` (add clap), `test/test-publisher/src/main.rs` (rewrite), `test/test-publisher/src/frames.rs` (new) |
 | Visualizer | `visualizer/Cargo.toml` (add deps), `visualizer/src/main.rs` (rewrite), `visualizer/src/{ipc,websocket,jpeg,protocol}.rs` (new) |
-| UI | `ui/package.json` (add deps), `ui/src/index.tsx` (update), `ui/src/App.tsx` (new), `ui/src/components/{TitleBar,StatusBar,InfoPanel,StreamPanel,RobotStatePanel}.tsx` (new), `ui/src/lib/{websocket,protocol,ansi-renderer,color-palette}.ts` (new) |
+| UI | `ui/terminal/package.json` (add deps), `ui/terminal/src/index.tsx` (update), `ui/terminal/src/App.tsx` (new), `ui/terminal/src/components/{TitleBar,StatusBar,InfoPanel,StreamPanel,RobotStatePanel}.tsx` (new), `ui/terminal/src/lib/{websocket,protocol,ansi-renderer,color-palette}.ts` (new) |

@@ -8,7 +8,7 @@
 ## Existing Leverage
 - Reuse config parsing and validation already present in [`rollio-types/src/config.rs`](../rollio-types/src/config.rs); this is the natural base for Controller-side config loading.
 - Reuse shared IPC types already defined in [`rollio-types/src/messages.rs`](../rollio-types/src/messages.rs), especially `CameraFrameHeader`, `RobotState`, `RobotCommand`, and `ControlEvent::Shutdown`.
-- Treat [`visualizer/src/main.rs`](../visualizer/src/main.rs) and the current UI entrypoints in [`ui/package.json`](../ui/package.json) and [`ui/src/index.tsx`](../ui/src/index.tsx) as Sprint 1 assets to integrate under Controller ownership instead of rewriting.
+- Treat [`visualizer/src/main.rs`](../visualizer/src/main.rs) and the current UI entrypoints in [`ui/terminal/package.json`](../ui/terminal/package.json) and [`ui/terminal/src/index.tsx`](../ui/terminal/src/index.tsx) as Sprint 1 assets to integrate under Controller ownership instead of rewriting.
 - Replace the current stubs at [`controller/src/main.rs`](../controller/src/main.rs), [`pseudo-robot/src/main.rs`](../pseudo-robot/src/main.rs), and [`cpp/pseudo-camera/src/main.cpp`](../cpp/pseudo-camera/src/main.cpp).
 - Use the existing config example at [`config/config.example.toml`](../config/config.example.toml) as the seed for a richer device-focused config instead of inventing a separate Sprint 2 format.
 - Use [`external/airbot-driver-1/README.md`](../external/airbot-driver-1/README.md), [`external/airbot-driver-1/CMakeLists.txt`](../external/airbot-driver-1/CMakeLists.txt), [`external/airbot-driver-1/pyproject.toml`](../external/airbot-driver-1/pyproject.toml), and [`external/airbot-driver-1/example/ros2/src/airbot_hardware_ros2/README.md`](../external/airbot-driver-1/example/ros2/src/airbot_hardware_ros2/README.md) as the AIRBOT driver baseline: it already provides a native C++ hardware library, optional Python bindings, realtime-oriented comm/executor helpers, host-side CAN and udev setup, and concrete product examples for position control, MIT control, and upstream free-drive.
@@ -71,7 +71,7 @@ flowchart LR
 
 ## 5. Integrate The Existing Preview Stack
 - Add the thinnest possible controller-facing launch contract around [`visualizer/src/main.rs`](../visualizer/src/main.rs). The Visualizer is already functional, but it is still tuned for manual launch with flags, not Controller-managed config handoff.
-- Add a minimal launch/config surface for the UI rooted at [`ui/package.json`](../ui/package.json) and [`ui/src/index.tsx`](../ui/src/index.tsx), so the Controller can start it reproducibly with the correct WebSocket endpoint and runtime defaults.
+- Add a minimal launch/config surface for the UI rooted at [`ui/terminal/package.json`](../ui/terminal/package.json) and [`ui/terminal/src/index.tsx`](../ui/terminal/src/index.tsx), so the Controller can start it reproducibly with the correct WebSocket endpoint and runtime defaults.
 - Use the Sprint 1 Visualizer and UI as the explicit smoke-test surface for Sprint 2: camera streams should appear as preview panels, and robot state/status should appear in the existing TUI without inventing a second diagnostic path.
 - Do not mix in Sprint 3 work here. Sprint 2 only needs the preview path to survive Controller ownership and clean shutdown.
 

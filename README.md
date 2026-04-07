@@ -13,7 +13,6 @@ See `design/` for architecture docs and sprint plans.
 | Tool       | Minimum version | Purpose              |
 |------------|-----------------|----------------------|
 | Rust       | 1.85+           | Cargo workspace      |
-| Rust target | `wasm32-unknown-unknown` | Harri WASM renderer |
 | CMake      | 3.22+           | C++ modules          |
 | g++ / clang| C++17 support   | C++ modules          |
 | NASM       | recent          | `libjpeg-turbo` SIMD build used by `turbojpeg` |
@@ -44,15 +43,13 @@ sudo apt-get install -y build-essential cmake nasm
 # Rust
 cargo build --workspace
 cargo test --workspace
-rustup target add wasm32-unknown-unknown
-
 # Camera drivers (C++)
 cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
 cmake --build cameras/build
 ctest --test-dir cameras/build --output-on-failure
 
 # UI
-cd ui && npm install && npm run build && cd ..
+cd ui/terminal && npm install && npm run build && cd ../..
 
 # Python AIRBOT driver tests
 PYTHONPATH="$PWD/robots/airbot_play/src" python3 -m pytest robots/airbot_play/tests
@@ -99,12 +96,12 @@ encoder/              Video encoding per camera stream (Rust)
 episode-assembler/    Assembles episodes from video + state data (Rust)
 storage/              Local and remote storage backends (Rust)
 monitor/              Health/performance metrics evaluator (Rust)
-test-publisher/       Synthetic iceoryx2 data publisher (Rust)
+test/test-publisher/    Synthetic iceoryx2 data publisher (Rust)
 cameras/              In-repo camera drivers + camera-driver extension docs
 robots/               In-repo robot drivers + robot-driver extension docs
 cpp/                  Shared C++ interop headers and legacy wrapper entrypoint
-ui/                   Terminal UI built with React/Ink (TypeScript)
+ui/terminal/          Terminal UI built with React/Ink (TypeScript)
 config/               Example configuration files
 design/               Architecture docs and sprint plans
-third_party/          iceoryx2 git submodule
+third_party/          Submodules: iceoryx2, ascii-video-renderer
 ```

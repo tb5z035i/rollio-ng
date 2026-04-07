@@ -53,7 +53,7 @@ rollio-ng/
   pseudo-robot/                 # Pseudo Robot (mock device) — stub
     Cargo.toml
     src/main.rs
-  test-publisher/               # Test publisher utility (Sprint 1) — stub
+  test/test-publisher/          # Test publisher utility (Sprint 1) — stub
     Cargo.toml
     src/main.rs
   cpp/                          # C++ modules
@@ -63,7 +63,7 @@ rollio-ng/
     pseudo-camera/
       CMakeLists.txt
       src/main.cpp
-  ui/                           # UI (TypeScript / Ink)
+  ui/terminal/                  # Terminal UI (TypeScript / Ink)
     package.json
     tsconfig.json
     src/
@@ -121,7 +121,7 @@ strings for use in `#[repr(C)]` shared-memory structs.
 
 Each of the 9 binary crates (`controller`, `visualizer`, `teleop-router`,
 `encoder`, `episode-assembler`, `storage`, `monitor`, `pseudo-robot`,
-`test-publisher`) has a minimal `main.rs` that prints the crate name.
+`test/test-publisher`) has a minimal `main.rs` that prints the crate name.
 
 ## 2. C++ Skeleton
 
@@ -133,9 +133,9 @@ Each of the 9 binary crates (`controller`, `visualizer`, `teleop-router`,
 
 ## 3. UI Skeleton (TypeScript / Ink)
 
-- `ui/package.json` — dependencies: `ink`, `react`, `ws`, TypeScript.
-- `ui/tsconfig.json` — ES2022, Node16, JSX for Ink.
-- `ui/src/index.tsx` — minimal Ink app stub.
+- `ui/terminal/package.json` — dependencies: `ink`, `react`, `ws`, TypeScript.
+- `ui/terminal/tsconfig.json` — ES2022, Node16, JSX for Ink.
+- `ui/terminal/src/index.tsx` — minimal Ink app stub.
 - `npm run build` compiles TypeScript to `dist/`.
 
 ## 4. Example Config

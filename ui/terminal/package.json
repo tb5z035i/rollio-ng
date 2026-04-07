@@ -4,10 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:harri-wasm": "node scripts/build-harri-wasm.mjs",
     "build:native-ascii": "node scripts/build-native-ascii.mjs",
     "build:ts": "tsc",
-    "build": "npm run build:harri-wasm && npm run build:native-ascii && npm run build:ts",
+    "build": "npm run build:native-ascii && npm run build:ts",
     "start": "node dist/index.js",
     "test": "npm run build && tsx --test test/**/*.test.ts",
     "bench:ascii": "tsx test/render-bench.ts",

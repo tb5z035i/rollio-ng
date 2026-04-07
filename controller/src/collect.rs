@@ -111,10 +111,10 @@ fn build_collect_specs(
     }
 
     let ui_runtime_config = config.ui_runtime_config();
-    let ui_entrypoint = workspace_root.join("ui/dist/index.js");
+    let ui_entrypoint = workspace_root.join("ui/terminal/dist/index.js");
     if !ui_entrypoint.exists() {
         return Err(format!(
-            "UI bundle not found at {}. Run `cd ui && npm run build` first.",
+            "UI bundle not found at {}. Run `cd ui/terminal && npm run build` first.",
             ui_entrypoint.display()
         )
         .into());

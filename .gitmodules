@@ -1,6 +1,9 @@
 [submodule "third_party/iceoryx2"]
 	path = third_party/iceoryx2
 	url = https://github.com/eclipse-iceoryx/iceoryx2.git
-[submodule "external/ascii-video-renderer"]
-	path = external/ascii-video-renderer
+[submodule "third_party/ascii-video-renderer"]
+	path = third_party/ascii-video-renderer
 	url = https://github.com/tb5z035i/ascii-video-renderer.git
+[submodule "external/rollio"]
+	path = external/rollio
+	url = git@github.com:tb5z035i/rollio.git
