@@ -1,0 +1,9 @@
+python-can>=4.0
+pin
+iceoryx2
+
+[:python_version < "3.11"]
+tomli>=2.0.1
+
+[dev]
+pytest>=8.0.0

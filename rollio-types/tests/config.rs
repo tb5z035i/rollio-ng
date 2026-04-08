@@ -45,6 +45,7 @@ fn parse_hardware_example_config() {
 
     let robot = config.device_named("airbot_leader").unwrap();
     assert_eq!(robot.driver, "airbot-play");
+    assert_eq!(robot.id, "airbot_sn_here");
     assert_eq!(robot.mode, Some(RobotMode::FreeDrive));
     assert_eq!(robot.transport.as_deref(), Some("can"));
     assert_eq!(robot.interface.as_deref(), Some("can0"));

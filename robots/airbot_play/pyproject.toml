@@ -9,6 +9,9 @@ description = "AIRBOT Play Rollio driver"
 requires-python = ">=3.10"
 dependencies = [
     "tomli>=2.0.1; python_version < '3.11'",
+    "python-can>=4.0",
+    "pin",
+    "iceoryx2",
 ]
 
 [project.optional-dependencies]
@@ -24,3 +27,13 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rollio_airbot_play = [
+    "models/*.urdf",
+    "models/meshes/*.STL",
+]
+
+# Submodule version must stay aligned with the Rust workspace (see third_party/iceoryx2).
+[tool.uv.sources]
+iceoryx2 = { path = "../../third_party/iceoryx2/iceoryx2-ffi/python", editable = true }

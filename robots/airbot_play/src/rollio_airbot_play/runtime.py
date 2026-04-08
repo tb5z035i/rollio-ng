@@ -78,11 +78,7 @@ class AirbotRuntime:
                 snapshot.positions[: self._config.dof],
                 self._config.gravity_comp_torque_scales,
             )
-            self._backend.send_gravity_compensation(
-                torques,
-                kp=self._config.mit_kp,
-                kd=self._config.mit_kd,
-            )
+            self._backend.send_gravity_compensation(torques)
 
         self._ipc.publish_state(
             timestamp_ns=time.time_ns(),

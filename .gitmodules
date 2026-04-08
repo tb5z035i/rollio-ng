@@ -7,3 +7,6 @@
 [submodule "external/rollio"]
 	path = external/rollio
 	url = git@github.com:tb5z035i/rollio.git
+[submodule "third_party/airbot-play-rust"]
+	path = third_party/airbot-play-rust
+	url = https://github.com/tb5z035i/airbot-play-rust.git

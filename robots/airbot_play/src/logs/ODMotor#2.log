@@ -1,0 +1,509 @@
+2026-04-08 13:48:52.158842[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:48:52.158877[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:48:52.158883[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:49:01.105533[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:49:01.105538[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:49:01.105543[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:49:01.258704[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 13:49:01.258743[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 13:49:01.258750[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 13:49:01.258755[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 13:49:01.258760[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 13:49:01.258766[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 13:49:01.258771[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 13:49:01.258776[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 13:49:01.258781[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 13:49:01.258786[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 13:49:01.258791[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 13:49:01.258796[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 13:49:01.258801[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 13:49:01.258805[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 13:49:01.258810[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 13:49:01.258816[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 13:49:01.258821[INFO][ODMotor#2]                    power: 0.005164
+2026-04-08 13:49:01.258826[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 13:49:01.258831[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 13:49:01.258836[INFO][ODMotor#2]             pos_kd_store: 0.000040
+2026-04-08 13:49:01.258841[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 13:49:01.258845[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 13:49:01.258850[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 13:49:01.258855[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 13:49:01.258860[INFO][ODMotor#2]               position_1: 0.003143
+2026-04-08 13:49:01.258864[INFO][ODMotor#2]             pos_kp_store: 0.006000
+2026-04-08 13:49:01.258869[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 13:49:01.258874[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 13:49:01.258879[INFO][ODMotor#2]                 position: 0.003132
+2026-04-08 13:49:01.258888[INFO][ODMotor#2]             vel_kp_store: 0.006000
+2026-04-08 13:49:01.258902[INFO][ODMotor#2]             vel_ki_store: 0.100000
+2026-04-08 13:49:01.258906[INFO][ODMotor#2]      pos_kd_filter_store: 0.200000
+2026-04-08 13:49:01.258911[INFO][ODMotor#2]             vel_kd_store: 1.400000
+2026-04-08 13:49:01.258916[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 13:49:01.258920[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 13:49:01.258925[INFO][ODMotor#2]      vel_kd_filter_store: 1.000000
+2026-04-08 13:49:01.258930[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 13:49:01.258935[INFO][ODMotor#2]                 velocity: 0.004917
+2026-04-08 13:49:05.114652[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:49:05.114658[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:49:05.114662[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:50:26.687650[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:50:26.687659[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:50:26.687665[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:50:26.840821[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 13:50:26.840886[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 13:50:26.840895[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 13:50:26.840910[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 13:50:26.840929[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 13:50:26.840936[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 13:50:26.840944[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 13:50:26.840953[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 13:50:26.840960[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 13:50:26.840967[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 13:50:26.840974[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 13:50:26.840981[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 13:50:26.840987[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 13:50:26.840994[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 13:50:26.841000[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 13:50:26.841009[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 13:50:26.841016[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 13:50:26.841026[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 13:50:26.841038[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 13:50:26.841045[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 13:50:26.841052[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 13:50:26.841060[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 13:50:26.841066[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 13:50:26.841074[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 13:50:26.841080[INFO][ODMotor#2]               position_1: 0.003132
+2026-04-08 13:50:26.841086[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 13:50:26.841093[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 13:50:26.841100[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 13:50:26.841107[INFO][ODMotor#2]                 position: 0.003153
+2026-04-08 13:50:26.841114[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 13:50:26.841120[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 13:50:26.841127[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 13:50:26.841134[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 13:50:26.841140[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 13:50:26.841147[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 13:50:26.841153[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 13:50:26.841160[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 13:50:26.841167[INFO][ODMotor#2]                 velocity: -0.008439
+2026-04-08 13:50:27.530106[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 13:53:06.510476[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:53:06.510485[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:53:06.510491[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:53:06.663630[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 13:53:06.663694[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 13:53:06.663704[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 13:53:06.663712[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 13:53:06.663721[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 13:53:06.663728[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 13:53:06.663737[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 13:53:06.663743[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 13:53:06.663752[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 13:53:06.663760[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 13:53:06.663767[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 13:53:06.663774[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 13:53:06.663789[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 13:53:06.663806[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 13:53:06.663812[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 13:53:06.663822[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 13:53:06.663829[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 13:53:06.663836[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 13:53:06.663844[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 13:53:06.663854[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 13:53:06.663862[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 13:53:06.663869[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 13:53:06.663876[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 13:53:06.663884[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 13:53:06.663892[INFO][ODMotor#2]               position_1: 0.003153
+2026-04-08 13:53:06.663899[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 13:53:06.663906[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 13:53:06.663912[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 13:53:06.663917[INFO][ODMotor#2]                 position: 0.003153
+2026-04-08 13:53:06.663922[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 13:53:06.663928[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 13:53:06.663932[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 13:53:06.663938[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 13:53:06.663944[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 13:53:06.663949[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 13:53:06.663954[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 13:53:06.663961[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 13:53:06.663966[INFO][ODMotor#2]                 velocity: -0.016943
+2026-04-08 13:53:07.526967[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 13:53:15.633618[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:53:15.633626[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:53:15.633631[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:53:15.786767[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 13:53:15.786809[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 13:53:15.786816[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 13:53:15.786822[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 13:53:15.786827[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 13:53:15.786833[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 13:53:15.786838[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 13:53:15.786843[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 13:53:15.786849[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 13:53:15.786854[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 13:53:15.786859[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 13:53:15.786864[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 13:53:15.786869[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 13:53:15.786874[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 13:53:15.786879[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 13:53:15.786886[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 13:53:15.786891[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 13:53:15.786896[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 13:53:15.786901[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 13:53:15.786906[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 13:53:15.786912[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 13:53:15.786923[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 13:53:15.786938[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 13:53:15.786943[INFO][ODMotor#2]              encoder_raw: 348.640137
+2026-04-08 13:53:15.786948[INFO][ODMotor#2]               position_1: 0.003121
+2026-04-08 13:53:15.786953[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 13:53:15.786958[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 13:53:15.786963[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 13:53:15.786968[INFO][ODMotor#2]                 position: 0.003174
+2026-04-08 13:53:15.786974[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 13:53:15.786979[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 13:53:15.786984[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 13:53:15.786988[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 13:53:15.786993[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 13:53:15.786999[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 13:53:15.787004[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 13:53:15.787009[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 13:53:15.787014[INFO][ODMotor#2]                 velocity: -0.003858
+2026-04-08 13:53:16.475741[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 13:55:52.515635[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:55:52.515644[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 13:55:52.515649[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:55:52.668827[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 13:55:52.668893[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 13:55:52.668901[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 13:55:52.668906[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 13:55:52.668912[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 13:55:52.668917[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 13:55:52.668923[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 13:55:52.668928[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 13:55:52.668933[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 13:55:52.668939[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 13:55:52.668944[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 13:55:52.668949[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 13:55:52.668954[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 13:55:52.668959[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 13:55:52.668964[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 13:55:52.668970[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 13:55:52.668975[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 13:55:52.668980[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 13:55:52.668985[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 13:55:52.668990[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 13:55:52.668997[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 13:55:52.669002[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 13:55:52.669007[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 13:55:52.669012[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 13:55:52.669017[INFO][ODMotor#2]               position_1: 0.003153
+2026-04-08 13:55:52.669022[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 13:55:52.669027[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 13:55:52.669039[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 13:55:52.669044[INFO][ODMotor#2]                 position: 0.003143
+2026-04-08 13:55:52.669049[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 13:55:52.669054[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 13:55:52.669068[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 13:55:52.669084[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 13:55:52.669089[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 13:55:52.669094[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 13:55:52.669099[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 13:55:52.669104[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 13:55:52.669109[INFO][ODMotor#2]                 velocity: -0.006739
+2026-04-08 13:55:53.357964[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 14:21:56.537060[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:21:56.537069[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 14:21:56.537074[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:21:56.690245[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 14:21:56.690312[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 14:21:56.690321[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 14:21:56.690331[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 14:21:56.690338[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 14:21:56.690346[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 14:21:56.690354[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 14:21:56.690360[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 14:21:56.690367[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 14:21:56.690374[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 14:21:56.690380[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 14:21:56.690388[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 14:21:56.690395[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 14:21:56.690403[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 14:21:56.690410[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 14:21:56.690418[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 14:21:56.690428[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 14:21:56.690435[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 14:21:56.690442[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 14:21:56.690454[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 14:21:56.690461[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 14:21:56.690469[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 14:21:56.690476[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 14:21:56.690483[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 14:21:56.690490[INFO][ODMotor#2]               position_1: 0.003153
+2026-04-08 14:21:56.690497[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 14:21:56.690503[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 14:21:56.690510[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 14:21:56.690519[INFO][ODMotor#2]                 position: 0.003132
+2026-04-08 14:21:56.690526[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 14:21:56.690533[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 14:21:56.690539[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 14:21:56.690546[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 14:21:56.690553[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 14:21:56.690560[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 14:21:56.690566[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 14:21:56.690583[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 14:21:56.690602[INFO][ODMotor#2]                 velocity: -0.005964
+2026-04-08 14:21:57.380082[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 14:24:22.588589[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:24:22.588601[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 14:24:22.588611[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:24:22.741769[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 14:24:22.741829[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 14:24:22.741839[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 14:24:22.741847[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 14:24:22.741855[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 14:24:22.741865[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 14:24:22.741872[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 14:24:22.741880[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 14:24:22.741887[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 14:24:22.741895[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 14:24:22.741903[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 14:24:22.741910[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 14:24:22.741918[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 14:24:22.741925[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 14:24:22.741932[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 14:24:22.741945[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 14:24:22.741952[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 14:24:22.741960[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 14:24:22.741967[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 14:24:22.741975[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 14:24:22.741983[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 14:24:22.741990[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 14:24:22.741997[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 14:24:22.742005[INFO][ODMotor#2]              encoder_raw: 348.574219
+2026-04-08 14:24:22.742012[INFO][ODMotor#2]               position_1: 0.003143
+2026-04-08 14:24:22.742021[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 14:24:22.742028[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 14:24:22.742041[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 14:24:22.742049[INFO][ODMotor#2]                 position: 0.003132
+2026-04-08 14:24:22.742056[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 14:24:22.742063[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 14:24:22.742070[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 14:24:22.742078[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 14:24:22.742097[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 14:24:22.742117[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 14:24:22.742125[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 14:24:22.742135[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 14:24:22.742146[INFO][ODMotor#2]                 velocity: -0.002961
+2026-04-08 14:24:23.431188[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 14:28:55.524319[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:28:55.524328[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 14:28:55.524333[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:28:55.677547[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 14:28:55.677598[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 14:28:55.677606[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 14:28:55.677612[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 14:28:55.677617[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 14:28:55.677624[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 14:28:55.677629[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 14:28:55.677634[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 14:28:55.677648[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 14:28:55.677664[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 14:28:55.677669[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 14:28:55.677674[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 14:28:55.677679[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 14:28:55.677684[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 14:28:55.677690[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 14:28:55.677696[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 14:28:55.677702[INFO][ODMotor#2]                    power: 0.000000
+2026-04-08 14:28:55.677707[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 14:28:55.677712[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 14:28:55.677719[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 14:28:55.677725[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 14:28:55.677730[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 14:28:55.677735[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 14:28:55.677741[INFO][ODMotor#2]              encoder_raw: 348.618164
+2026-04-08 14:28:55.677746[INFO][ODMotor#2]               position_1: 0.003089
+2026-04-08 14:28:55.677752[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 14:28:55.677757[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 14:28:55.677762[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 14:28:55.677768[INFO][ODMotor#2]                 position: 0.003153
+2026-04-08 14:28:55.677773[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 14:28:55.677779[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 14:28:55.677784[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 14:28:55.677792[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 14:28:55.677799[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 14:28:55.677805[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 14:28:55.677810[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 14:28:55.677815[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 14:28:55.677820[INFO][ODMotor#2]                 velocity: 0.002916
+2026-04-08 14:28:56.366503[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 14:29:18.367760[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:29:18.367767[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 14:29:18.367774[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:29:18.520910[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 14:29:18.520976[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 14:29:18.520986[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 14:29:18.520995[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 14:29:18.521003[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 14:29:18.521011[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 14:29:18.521019[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 14:29:18.521027[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 14:29:18.521042[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 14:29:18.521050[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 14:29:18.521058[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 14:29:18.521066[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 14:29:18.521073[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 14:29:18.521081[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 14:29:18.521088[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 14:29:18.521098[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 14:29:18.521105[INFO][ODMotor#2]                    power: 0.349903
+2026-04-08 14:29:18.521120[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 14:29:18.521141[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 14:29:18.521150[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 14:29:18.521159[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 14:29:18.521166[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 14:29:18.521175[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 14:29:18.521183[INFO][ODMotor#2]              encoder_raw: 335.566406
+2026-04-08 14:29:18.521191[INFO][ODMotor#2]               position_1: -0.003164
+2026-04-08 14:29:18.521198[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 14:29:18.521206[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 14:29:18.521214[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 14:29:18.521222[INFO][ODMotor#2]                 position: -0.003196
+2026-04-08 14:29:18.521229[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 14:29:18.521237[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 14:29:18.521245[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 14:29:18.521253[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 14:29:18.521261[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 14:29:18.521268[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 14:29:18.521276[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 14:29:18.521284[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 14:29:18.521292[INFO][ODMotor#2]                 velocity: 0.006572
+2026-04-08 14:29:19.209931[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 14:38:32.238185[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:38:32.238194[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 14:38:32.238198[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:38:32.391400[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 14:38:32.391455[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 14:38:32.391465[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 14:38:32.391472[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 14:38:32.391479[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 14:38:32.391486[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 14:38:32.391493[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 14:38:32.391500[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 14:38:32.391510[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 14:38:32.391517[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 14:38:32.391524[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 14:38:32.391534[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 14:38:32.391541[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 14:38:32.391548[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 14:38:32.391554[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 14:38:32.391562[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 14:38:32.391569[INFO][ODMotor#2]                    power: 0.601509
+2026-04-08 14:38:32.391585[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 14:38:32.391604[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 14:38:32.391611[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 14:38:32.391619[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 14:38:32.391626[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 14:38:32.391632[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 14:38:32.391639[INFO][ODMotor#2]              encoder_raw: 267.648926
+2026-04-08 14:38:32.391646[INFO][ODMotor#2]               position_1: -0.036123
+2026-04-08 14:38:32.391653[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 14:38:32.391659[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 14:38:32.391668[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 14:38:32.391677[INFO][ODMotor#2]                 position: -0.036134
+2026-04-08 14:38:32.391684[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 14:38:32.391691[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 14:38:32.391697[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 14:38:32.391703[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 14:38:32.391710[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 14:38:32.391717[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 14:38:32.391723[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 14:38:32.391730[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 14:38:32.391736[INFO][ODMotor#2]                 velocity: 0.002694
+2026-04-08 14:38:33.080632[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 15:07:13.179284[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 15:07:13.179291[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 15:07:13.179295[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 15:07:13.332441[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 15:07:13.332487[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 15:07:13.332494[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 15:07:13.332500[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 15:07:13.332506[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 15:07:13.332515[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 15:07:13.332526[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 15:07:13.332532[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 15:07:13.332537[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 15:07:13.332543[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 15:07:13.332548[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 15:07:13.332553[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 15:07:13.332559[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 15:07:13.332564[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 15:07:13.332569[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 15:07:13.332575[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 15:07:13.332580[INFO][ODMotor#2]                    power: 0.260579
+2026-04-08 15:07:13.332587[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 15:07:13.332592[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 15:07:13.332597[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 15:07:13.332603[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 15:07:13.332608[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 15:07:13.332613[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 15:07:13.332619[INFO][ODMotor#2]              encoder_raw: 321.899414
+2026-04-08 15:07:13.332624[INFO][ODMotor#2]               position_1: -0.009822
+2026-04-08 15:07:13.332629[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 15:07:13.332634[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 15:07:13.332639[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 15:07:13.332645[INFO][ODMotor#2]                 position: -0.009811
+2026-04-08 15:07:13.332650[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 15:07:13.332655[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 15:07:13.332660[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 15:07:13.332666[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 15:07:13.332671[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 15:07:13.332676[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 15:07:13.332681[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 15:07:13.332686[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 15:07:13.332693[INFO][ODMotor#2]                 velocity: 0.008515
+2026-04-08 15:07:14.021302[WARN][ODMotor#2] Motor 2 does not support explicit enabling
+2026-04-08 15:07:21.197436[INFO][ODMotor#2] zlog version: 0.1.dev1+g3715879
+2026-04-08 15:07:21.197444[INFO][ODMotor#2] zlog_cpp version: 1.0.1
+2026-04-08 15:07:21.197449[INFO][ODMotor#2] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 15:07:21.350709[INFO][ODMotor#2]                  timeout: 500
+2026-04-08 15:07:21.350743[INFO][ODMotor#2]         m_ntc_motor_beta: 3950.000000
+2026-04-08 15:07:21.350753[INFO][ODMotor#2]              angle_ratio: 36.000000
+2026-04-08 15:07:21.350762[INFO][ODMotor#2]               gear_ratio: 36.000000
+2026-04-08 15:07:21.350770[INFO][ODMotor#2]                   pos_ki: 0.000000
+2026-04-08 15:07:21.350777[INFO][ODMotor#2]            pos_kd_filter: 0.200000
+2026-04-08 15:07:21.350788[INFO][ODMotor#2]                   pos_kd: 0.000040
+2026-04-08 15:07:21.350795[INFO][ODMotor#2]                   pos_kp: 0.006000
+2026-04-08 15:07:21.350801[INFO][ODMotor#2]               resistance: 0.280000
+2026-04-08 15:07:21.350811[INFO][ODMotor#2]         manufacture_flag: vvvvvv----------
+2026-04-08 15:07:21.350819[INFO][ODMotor#2]                   vel_ki: 0.100000
+2026-04-08 15:07:21.350826[INFO][ODMotor#2]               product_sn: PZ25C02402000244
+2026-04-08 15:07:21.350832[INFO][ODMotor#2]               board_name: vesc-motor-control
+2026-04-08 15:07:21.350848[INFO][ODMotor#2]                 board_sn: DJ25FL012421403C
+2026-04-08 15:07:21.350860[INFO][ODMotor#2]                   vel_kp: 0.006000
+2026-04-08 15:07:21.350868[INFO][ODMotor#2]               fw_version: 0.4.1.15
+2026-04-08 15:07:21.350875[INFO][ODMotor#2]                    power: 0.081825
+2026-04-08 15:07:21.350882[INFO][ODMotor#2]                   torque: 0.000000
+2026-04-08 15:07:21.350889[INFO][ODMotor#2]               pole_pairs: 14
+2026-04-08 15:07:21.350895[INFO][ODMotor#2]             pos_kd_store: 0.000000
+2026-04-08 15:07:21.350902[INFO][ODMotor#2]          encoder_initial: 342.048340
+2026-04-08 15:07:21.350909[INFO][ODMotor#2]                   vel_kd: 1.400000
+2026-04-08 15:07:21.350915[INFO][ODMotor#2]                 board_id: 33554432
+2026-04-08 15:07:21.350922[INFO][ODMotor#2]              encoder_raw: 335.874023
+2026-04-08 15:07:21.350928[INFO][ODMotor#2]               position_1: 0.171465
+2026-04-08 15:07:21.350936[INFO][ODMotor#2]             pos_kp_store: 0.000000
+2026-04-08 15:07:21.350943[INFO][ODMotor#2]               hw_version: 0.3.0.0
+2026-04-08 15:07:21.350949[INFO][ODMotor#2]             pos_ki_store: 0.000000
+2026-04-08 15:07:21.350957[INFO][ODMotor#2]                 position: 0.171476
+2026-04-08 15:07:21.350963[INFO][ODMotor#2]             vel_kp_store: 0.000000
+2026-04-08 15:07:21.350970[INFO][ODMotor#2]             vel_ki_store: 0.000000
+2026-04-08 15:07:21.350976[INFO][ODMotor#2]      pos_kd_filter_store: 0.000000
+2026-04-08 15:07:21.350983[INFO][ODMotor#2]             vel_kd_store: 0.000000
+2026-04-08 15:07:21.350989[INFO][ODMotor#2]            torque_factor: 1
+2026-04-08 15:07:21.350996[INFO][ODMotor#2]            vel_kd_filter: 1.000000
+2026-04-08 15:07:21.351003[INFO][ODMotor#2]      vel_kd_filter_store: 0.000000
+2026-04-08 15:07:21.351010[INFO][ODMotor#2]               inductance: 0.000010
+2026-04-08 15:07:21.351017[INFO][ODMotor#2]                 velocity: -0.007114
+2026-04-08 15:07:22.040088[WARN][ODMotor#2] Motor 2 does not support explicit enabling

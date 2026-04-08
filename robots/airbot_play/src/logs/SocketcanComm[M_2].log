@@ -1,0 +1,62 @@
+2026-04-08 13:48:52.158892[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:48:52.158905[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:48:52.158912[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:48:52.158942[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:49:01.105550[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:49:01.105555[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:49:01.105560[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:49:01.105588[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:49:05.114668[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:49:05.114673[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:49:05.114677[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:49:05.114707[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:50:26.687671[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:50:26.687677[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:50:26.687681[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:50:26.687706[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:50:27.638711[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 13:53:06.510500[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:53:06.510507[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:53:06.510513[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:53:06.510545[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:53:07.635671[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 13:53:15.633640[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:53:15.633648[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:53:15.633652[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:53:15.633684[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:53:16.585143[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 13:55:52.515658[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 13:55:52.515666[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 13:55:52.515671[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 13:55:52.515708[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 13:55:53.483002[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 14:21:56.537083[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:21:56.537091[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 14:21:56.537097[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:21:56.537132[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 14:21:57.492087[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 14:24:22.588624[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:24:22.588634[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 14:24:22.588641[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:24:22.588680[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 14:24:23.543149[WARN][SocketcanComm[M_2]] Strand operations did not complete within timeout
+2026-04-08 14:28:55.524341[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:28:55.524351[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 14:28:55.524358[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:28:55.524397[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 14:29:18.367783[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:29:18.367789[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 14:29:18.367793[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:29:18.367820[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 14:38:32.238205[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 14:38:32.238212[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 14:38:32.238217[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 14:38:32.238248[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 15:07:13.179303[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 15:07:13.179309[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 15:07:13.179313[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 15:07:13.179337[INFO][SocketcanComm[M_2]] initialized on can0
+2026-04-08 15:07:21.197457[INFO][SocketcanComm[M_2]] zlog version: 0.1.dev1+g3715879
+2026-04-08 15:07:21.197464[INFO][SocketcanComm[M_2]] zlog_cpp version: 1.0.1
+2026-04-08 15:07:21.197469[INFO][SocketcanComm[M_2]] AIRBOT Drivers: v0.2.9.2-manufacture
+2026-04-08 15:07:21.197490[INFO][SocketcanComm[M_2]] initialized on can0

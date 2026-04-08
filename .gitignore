@@ -21,3 +21,4 @@ external/reference
 
 **/__pycache__/
 .understand-anything/
+*.STL

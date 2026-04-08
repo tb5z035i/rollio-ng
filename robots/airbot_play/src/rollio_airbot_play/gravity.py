@@ -22,13 +22,13 @@ def load_gravity_model(model_path: Path) -> GravityModel:
         raise FileNotFoundError(f"gravity model path does not exist: {model_path}")
 
     try:
-        from airbot_ng.kdl.pinocchio import PinocchioModel
+        from .pinocchio_model import PinocchioModel
+
+        return PinocchioModel(model_path)
     except Exception as exc:  # pragma: no cover - depends on optional host install
         raise GravityModelUnavailableError(
-            "Pinocchio gravity backend is unavailable; install airbot_ng.kdl.pinocchio support"
+            "Pinocchio gravity backend is unavailable; install the 'pin' Python package"
         ) from exc
-
-    return PinocchioModel(str(model_path))
 
 
 def compute_gravity_torques(

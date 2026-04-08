@@ -10,6 +10,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
 class ConfigError(RuntimeError):
     """Raised when the AIRBOT driver configuration is invalid."""
 
@@ -39,15 +42,20 @@ def load_runtime_config(*, config: Path | None, config_inline: str | None) -> Ai
     if (config is None) == (config_inline is None):
         raise ConfigError("run requires exactly one of --config or --config-inline")
 
+    config_base_dir: Path | None = None
     if config is not None:
-        data = tomllib.loads(config.read_text(encoding="utf-8"))
+        config_path = config.resolve()
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        config_base_dir = config_path.parent
     else:
         data = tomllib.loads(config_inline or "")
 
-    return parse_runtime_config(data)
+    return parse_runtime_config(data, config_base_dir=config_base_dir)
 
 
-def parse_runtime_config(data: dict[str, Any]) -> AirbotRuntimeConfig:
+def parse_runtime_config(
+    data: dict[str, Any], *, config_base_dir: Path | None = None
+) -> AirbotRuntimeConfig:
     name = _required_string(data, "name")
     driver = _required_string(data, "driver")
     device_type = _required_string(data, "type")
@@ -68,7 +76,9 @@ def parse_runtime_config(data: dict[str, Any]) -> AirbotRuntimeConfig:
 
     model_path_raw = data.get("model_path")
     model_path = (
-        Path(model_path_raw) if isinstance(model_path_raw, str) and model_path_raw else None
+        _resolve_model_path(Path(model_path_raw), config_base_dir=config_base_dir)
+        if isinstance(model_path_raw, str) and model_path_raw
+        else None
     )
     if mode == "free-drive" and model_path is None:
         raise ConfigError("free-drive mode requires model_path for gravity compensation")
@@ -97,6 +107,34 @@ def parse_runtime_config(data: dict[str, Any]) -> AirbotRuntimeConfig:
         mit_kp=mit_kp,
         mit_kd=mit_kd,
     )
+
+
+def _resolve_model_path(model_path: Path, *, config_base_dir: Path | None) -> Path:
+    expanded_path = model_path.expanduser()
+    if expanded_path.is_absolute():
+        return expanded_path
+
+    candidates: list[Path] = []
+    if config_base_dir is not None:
+        candidates.append(config_base_dir / expanded_path)
+    candidates.append(Path.cwd() / expanded_path)
+
+    packaged_model_path = _resolve_packaged_model_path(expanded_path)
+    if packaged_model_path is not None:
+        candidates.append(packaged_model_path)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+def _resolve_packaged_model_path(model_path: Path) -> Path | None:
+    parts = [part for part in model_path.parts if part not in ("", ".")]
+    if not parts or parts[0] != "models" or any(part == ".." for part in parts):
+        return None
+    return _PACKAGE_ROOT.joinpath(*parts)
 
 
 def _required_string(data: dict[str, Any], key: str) -> str:

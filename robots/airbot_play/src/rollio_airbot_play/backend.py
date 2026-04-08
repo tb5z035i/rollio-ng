@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import socket
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .can_transport import (
+    is_python_can_available,
+    query_airbot_serial,
+    scan_can_interfaces,
+)
 from .config import AirbotRuntimeConfig
 from .messages import JointStateSnapshot
 
@@ -26,72 +30,77 @@ class AirbotBackend(Protocol):
 
     def send_joint_targets(self, joint_targets: list[float]) -> None: ...
 
-    def send_gravity_compensation(
-        self,
-        torques: list[float],
-        *,
-        kp: list[float],
-        kd: list[float],
-    ) -> None: ...
+    def send_gravity_compensation(self, torques: list[float]) -> None: ...
 
     def close(self) -> None: ...
 
 
-def list_can_interfaces() -> list[str]:
-    return [name for _index, name in socket.if_nameindex() if name.startswith("can")]
-
-
 def probe_devices() -> list[ProbeDevice]:
-    try:
-        _load_vendor_module()
-    except BackendUnavailableError:
+    if not is_python_can_available():
         return []
 
-    return [
-        ProbeDevice(
-            device_id=build_probe_id(interface),
-            interface=interface,
-            product_variant="play-e2",
+    devices: list[ProbeDevice] = []
+    seen_serials: set[str] = set()
+    for interface in scan_can_interfaces():
+        serial_number = query_airbot_serial(interface, timeout=0.5)
+        if serial_number is None or serial_number in seen_serials:
+            continue
+        devices.append(
+            ProbeDevice(
+                device_id=build_probe_id(serial_number),
+                interface=interface,
+                product_variant="play-e2",
+            )
         )
-        for interface in list_can_interfaces()
-    ]
+        seen_serials.add(serial_number)
+
+    return devices
 
 
 def capabilities_for_probe_id(device_id: str) -> dict[str, Any]:
-    validate_probe_id(device_id)
-    interface = parse_probe_id(device_id)
-    if interface not in list_can_interfaces():
-        raise RuntimeError(f"unknown AIRBOT interface for id: {device_id}")
+    device = require_probe_device(device_id)
 
     return {
-        "id": device_id,
+        "id": device.device_id,
         "driver": "airbot-play",
         "dof": 6,
         "supported_modes": ["free-drive", "command-following"],
         "transport": "can",
-        "interface": interface,
-        "product_variant": "play-e2",
+        "interface": device.interface,
+        "product_variant": device.product_variant,
+        "serial_number": device.device_id,
     }
 
 
 def validate_probe_id(device_id: str) -> None:
-    known_ids = {device.device_id for device in probe_devices()}
-    if device_id not in known_ids:
-        raise RuntimeError(f"unknown AIRBOT device id: {device_id}")
+    require_probe_device(device_id)
 
 
-def build_probe_id(interface: str) -> str:
-    return f"airbot-play@{interface}"
+def require_probe_device(device_id: str) -> ProbeDevice:
+    normalized_device_id = parse_probe_id(device_id)
+    devices = probe_devices()
+    for device in devices:
+        if device.device_id == normalized_device_id:
+            return device
+
+    if not devices:
+        raise RuntimeError("no AIRBOT devices with readable serial numbers were detected")
+
+    raise RuntimeError(f"unknown AIRBOT device id: {device_id}")
+
+
+def build_probe_id(serial_number: str) -> str:
+    normalized = str(serial_number).strip()
+    if not normalized:
+        raise RuntimeError("AIRBOT serial number must not be empty")
+    return normalized
 
 
 def parse_probe_id(device_id: str) -> str:
-    prefix = "airbot-play@"
-    if not device_id.startswith(prefix):
+    normalized = str(device_id).strip()
+    if not normalized or normalized.startswith("airbot-play@"):
         raise RuntimeError(f"invalid AIRBOT probe id: {device_id}")
-    interface = device_id[len(prefix) :]
-    if not interface:
-        raise RuntimeError(f"invalid AIRBOT probe id: {device_id}")
-    return interface
+    return normalized
 
 
 class VendorAirbotBackend:
@@ -101,6 +110,7 @@ class VendorAirbotBackend:
         self._executor = self._ah.create_asio_executor(1)
         self._io_context = self._executor.get_io_context()
         self._arm = self._create_arm()
+        self._active_control_mode: str | None = None
         if not self._arm.init(self._io_context, config.interface, int(config.control_frequency_hz)):
             raise RuntimeError(f"failed to initialize AIRBOT Play on interface {config.interface}")
         self._arm.enable()
@@ -122,21 +132,15 @@ class VendorAirbotBackend:
         accelerations = [10.0] * self._config.dof
         self._arm.pvt(joint_targets[: self._config.dof], velocities, accelerations)
 
-    def send_gravity_compensation(
-        self,
-        torques: list[float],
-        *,
-        kp: list[float],
-        kd: list[float],
-    ) -> None:
+    def send_gravity_compensation(self, torques: list[float]) -> None:
         self._set_control_mode("free-drive")
         zeros = [0.0] * self._config.dof
         self._arm.mit(
             zeros,
             zeros,
             torques[: self._config.dof],
-            kp[: self._config.dof],
-            kd[: self._config.dof],
+            zeros,
+            zeros,
         )
 
     def close(self) -> None:
@@ -158,10 +162,15 @@ class VendorAirbotBackend:
         )
 
     def _set_control_mode(self, mode: str) -> None:
+        if mode == self._active_control_mode:
+            return
         control_mode = (
             self._ah.MotorControlMode.MIT if mode == "free-drive" else self._ah.MotorControlMode.PVT
         )
+        # The vendor bindings can warn or return a falsey status for redundant mode writes,
+        # so track the last requested mode and avoid re-sending it every control tick.
         self._arm.set_param("arm.control_mode", control_mode)
+        self._active_control_mode = mode
 
 
 def _load_vendor_module() -> Any:
