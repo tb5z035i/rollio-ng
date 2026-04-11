@@ -1,0 +1,31 @@
+[package]
+name = "rollio-robot-airbot-eef"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rollio_robot_airbot_eef"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rollio-robot-airbot-e2"
+path = "src/bin/airbot_e2.rs"
+
+[[bin]]
+name = "rollio-robot-airbot-g2"
+path = "src/bin/airbot_g2.rs"
+
+[dependencies]
+airbot_play_rust = { path = "../../third_party/airbot-play-rust", default-features = false }
+async-trait = "0.1.89"
+clap = { version = "4", features = ["derive"] }
+iceoryx2 = { path = "../../third_party/iceoryx2/iceoryx2" }
+rollio-bus = { path = "../../rollio-bus" }
+rollio-types = { path = "../../rollio-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+toml = { version = "0.8", features = ["parse", "display"] }

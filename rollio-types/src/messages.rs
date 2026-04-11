@@ -148,6 +148,32 @@ impl CameraFrameHeader {
 // RobotState
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[type_name("EndEffectorStatus")]
+#[repr(C)]
+pub enum EndEffectorStatus {
+    Unknown = 0,
+    Disabled = 1,
+    Enabled = 2,
+}
+
+impl Default for EndEffectorStatus {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl EndEffectorStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Disabled => "disabled",
+            Self::Enabled => "enabled",
+        }
+    }
+}
+
 /// Published by robot drivers at their configured rate.
 #[derive(Debug, Clone, Copy, ZeroCopySend)]
 #[type_name("RobotState")]
@@ -161,6 +187,10 @@ pub struct RobotState {
     /// End-effector pose: [x, y, z, qx, qy, qz, qw].
     pub ee_pose: [f64; 7],
     pub has_ee_pose: bool,
+    /// Optional status for standalone end-effector devices.
+    pub end_effector_status: EndEffectorStatus,
+    pub has_end_effector_status: bool,
+    pub end_effector_feedback_valid: bool,
 }
 
 impl Default for RobotState {
@@ -173,6 +203,9 @@ impl Default for RobotState {
             efforts: [0.0; MAX_JOINTS],
             ee_pose: [0.0; 7],
             has_ee_pose: false,
+            end_effector_status: EndEffectorStatus::Unknown,
+            has_end_effector_status: false,
+            end_effector_feedback_valid: false,
         }
     }
 }

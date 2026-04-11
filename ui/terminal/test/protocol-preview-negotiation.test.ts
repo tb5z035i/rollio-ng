@@ -72,3 +72,31 @@ test("parseJsonMessage accepts episode status payloads", () => {
     elapsed_ms: 5250,
   });
 });
+
+test("parseJsonMessage accepts robot state payloads with end-effector status", () => {
+  const message = parseJsonMessage(
+    JSON.stringify({
+      type: "robot_state",
+      name: "eef_g2",
+      timestamp_ns: 123,
+      num_joints: 1,
+      positions: [0.042],
+      velocities: [-0.1],
+      efforts: [1.25],
+      end_effector_status: "enabled",
+      end_effector_feedback_valid: true,
+    }),
+  );
+
+  assert.deepEqual(message, {
+    type: "robot_state",
+    name: "eef_g2",
+    timestamp_ns: 123,
+    num_joints: 1,
+    positions: [0.042],
+    velocities: [-0.1],
+    efforts: [1.25],
+    end_effector_status: "enabled",
+    end_effector_feedback_valid: true,
+  });
+});

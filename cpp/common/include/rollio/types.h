@@ -98,6 +98,12 @@ struct CameraFrameHeader {
 // RobotState
 // ---------------------------------------------------------------------------
 
+enum class EndEffectorStatus : uint32_t {
+    Unknown = 0,
+    Disabled = 1,
+    Enabled = 2,
+};
+
 struct RobotState {
     static constexpr const char* IOX2_TYPE_NAME = "RobotState";
     uint64_t timestamp_ns;
@@ -107,6 +113,9 @@ struct RobotState {
     double efforts[MAX_JOINTS];
     double ee_pose[7];  // [x, y, z, qx, qy, qz, qw]
     bool has_ee_pose;
+    EndEffectorStatus end_effector_status;
+    bool has_end_effector_status;
+    bool end_effector_feedback_valid;
 };
 
 // ---------------------------------------------------------------------------

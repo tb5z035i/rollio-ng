@@ -85,6 +85,27 @@ fn robot_state_6_joints_roundtrip() {
 }
 
 #[test]
+fn robot_state_1_joint_roundtrip() {
+    let mut state = RobotState::default();
+    state.num_joints = 1;
+    state.positions[0] = 0.035;
+    state.velocities[0] = -0.25;
+    state.efforts[0] = 1.2;
+    state.end_effector_status = EndEffectorStatus::Enabled;
+    state.has_end_effector_status = true;
+    state.end_effector_feedback_valid = true;
+
+    let state2 = unsafe { roundtrip(&state) };
+    assert_eq!(state2.num_joints, 1);
+    assert_eq!(state2.positions[0], 0.035);
+    assert_eq!(state2.velocities[0], -0.25);
+    assert_eq!(state2.efforts[0], 1.2);
+    assert_eq!(state2.end_effector_status, EndEffectorStatus::Enabled);
+    assert!(state2.has_end_effector_status);
+    assert!(state2.end_effector_feedback_valid);
+}
+
+#[test]
 fn robot_state_ee_pose_present() {
     let mut state = RobotState::default();
     state.num_joints = 6;
@@ -101,6 +122,13 @@ fn robot_state_ee_pose_present() {
 fn robot_state_ee_pose_absent() {
     let state = RobotState::default();
     assert!(!state.has_ee_pose);
+}
+
+#[test]
+fn end_effector_status_as_str_matches_wire_values() {
+    assert_eq!(EndEffectorStatus::Unknown.as_str(), "unknown");
+    assert_eq!(EndEffectorStatus::Disabled.as_str(), "disabled");
+    assert_eq!(EndEffectorStatus::Enabled.as_str(), "enabled");
 }
 
 // ---------------------------------------------------------------------------

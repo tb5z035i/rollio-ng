@@ -1,39 +1,53 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { EndEffectorStatus } from "../lib/protocol.js";
 
-interface RobotStatePanelProps {
+export interface RobotStatePanelProps {
   name: string;
   numJoints: number;
   positions: number[];
   panelWidth: number;
+  endEffectorStatus?: EndEffectorStatus;
+  endEffectorFeedbackValid?: boolean;
 }
 
 const PI = Math.PI;
+const END_EFFECTOR_MIN = 0.0;
+const END_EFFECTOR_MAX = 0.07;
 
-export function RobotStatePanel({
+export function buildRobotPanelLines({
   name,
   numJoints,
   positions,
   panelWidth,
-}: RobotStatePanelProps) {
+  endEffectorStatus,
+  endEffectorFeedbackValid,
+}: RobotStatePanelProps): string[] {
   const headerText = `─ ${name} (${numJoints} DoF) `;
   const headerPad = Math.max(0, panelWidth - headerText.length - 2);
   const topBorder = `┌${headerText}${"─".repeat(headerPad)}┐`;
   const bottomBorder = `└${"─".repeat(panelWidth - 2)}┘`;
+  const lines = [topBorder];
 
   if (numJoints === 0 || positions.length === 0) {
-    const msg = "Waiting for data...";
-    const innerW = panelWidth - 2;
-    const pad = Math.max(0, innerW - msg.length);
-    const left = Math.floor(pad / 2);
-    const right = pad - left;
+    lines.push(
+      formatCenteredLine(
+        panelWidth,
+        endEffectorStatus
+          ? `${formatEndEffectorStatusText(endEffectorStatus, endEffectorFeedbackValid)} | Waiting for feedback`
+          : "Waiting for data...",
+      ),
+    );
+    lines.push(bottomBorder);
+    return lines;
+  }
 
-    return (
-      <Box flexDirection="column" width={panelWidth}>
-        <Text dimColor>{topBorder}</Text>
-        <Text dimColor>{`│${" ".repeat(left)}${msg}${" ".repeat(right)}│`}</Text>
-        <Text dimColor>{bottomBorder}</Text>
-      </Box>
+  if (endEffectorStatus) {
+    lines.push(
+      formatPaddedLine(
+        panelWidth,
+        formatEndEffectorStatusText(endEffectorStatus, endEffectorFeedbackValid),
+      ),
     );
   }
 
@@ -54,8 +68,7 @@ export function RobotStatePanel({
       }
 
       const pos = positions[j] ?? 0;
-      // Normalize from [-PI, PI] to [0, 1]
-      const normalized = Math.max(0, Math.min(1, (pos + PI) / (2 * PI)));
+      const normalized = normalizePositionForDisplay(pos, Boolean(endEffectorStatus));
 
       const label = `J${j} `;
       const value = ` ${pos >= 0 ? " " : ""}${pos.toFixed(2)}`;
@@ -70,18 +83,63 @@ export function RobotStatePanel({
     }
 
     // Trim to inner width and wrap with borders
-    const inner = line.substring(0, panelWidth - 2);
-    const pad = Math.max(0, panelWidth - 2 - inner.length);
-    jointLines.push(`│${inner}${" ".repeat(pad)}│`);
+    jointLines.push(formatPaddedLine(panelWidth, line));
   }
 
+  lines.push(...jointLines);
+  lines.push(bottomBorder);
+  return lines;
+}
+
+export function RobotStatePanel(props: RobotStatePanelProps) {
+  const lines = buildRobotPanelLines(props);
   return (
-    <Box flexDirection="column" width={panelWidth}>
-      <Text dimColor>{topBorder}</Text>
-      {jointLines.map((line, i) => (
-        <Text key={i}>{line}</Text>
+    <Box flexDirection="column" width={props.panelWidth}>
+      {lines.map((line, index) => (
+        <Text key={index} dimColor={index === 0 || index === lines.length - 1}>
+          {line}
+        </Text>
       ))}
-      <Text dimColor>{bottomBorder}</Text>
     </Box>
   );
+}
+
+function formatEndEffectorStatusText(
+  status: EndEffectorStatus,
+  feedbackValid?: boolean,
+): string {
+  const feedbackLabel =
+    feedbackValid === undefined ? "" : ` | Feedback: ${feedbackValid ? "ok" : "stale"}`;
+  return `Status: ${status[0].toUpperCase()}${status.slice(1)}${feedbackLabel}`;
+}
+
+function formatPaddedLine(panelWidth: number, content: string): string {
+  const inner = content.substring(0, panelWidth - 2);
+  const pad = Math.max(0, panelWidth - 2 - inner.length);
+  return `│${inner}${" ".repeat(pad)}│`;
+}
+
+function formatCenteredLine(panelWidth: number, content: string): string {
+  const inner = content.substring(0, panelWidth - 2);
+  const pad = Math.max(0, panelWidth - 2 - inner.length);
+  const left = Math.floor(pad / 2);
+  const right = pad - left;
+  return `│${" ".repeat(left)}${inner}${" ".repeat(right)}│`;
+}
+
+function normalizePositionForDisplay(
+  position: number,
+  isEndEffector: boolean,
+): number {
+  if (isEndEffector) {
+    const span = END_EFFECTOR_MAX - END_EFFECTOR_MIN;
+    if (span <= 0) return 0;
+    return Math.max(
+      0,
+      Math.min(1, (position - END_EFFECTOR_MIN) / span),
+    );
+  }
+
+  // Generic arm joints are still visualized as angles in [-PI, PI].
+  return Math.max(0, Math.min(1, (position + PI) / (2 * PI)));
 }

@@ -44,6 +44,32 @@ fn router_forwards_identity_joint_commands() {
 }
 
 #[test]
+fn router_forwards_single_joint_end_effector_commands() {
+    let _guard = test_guard();
+    let id = unique_id("eef");
+    let mut config = teleop_config(&id, MappingStrategy::DirectJoint);
+    config.joint_index_map = vec![0];
+    config.joint_scales = vec![1.0];
+    let ports = create_test_ports(&config).expect("ports should be created");
+    let mut child = spawn_router(&config);
+    thread::sleep(Duration::from_millis(100));
+
+    publish_state(&ports.follower_state_publisher, eef_state(now_ns(), 0.0))
+        .expect("follower publish should work");
+    publish_state(&ports.leader_state_publisher, eef_state(now_ns(), 0.042))
+        .expect("leader publish should work");
+    let command =
+        wait_for_command(&ports.command_subscriber, Duration::from_secs(2)).expect("command");
+
+    assert_eq!(command.mode, CommandMode::Joint);
+    assert_eq!(command.num_joints, 1);
+    assert_eq!(command.joint_targets[0], 0.042);
+
+    send_shutdown(&ports.control_publisher);
+    wait_for_exit(&mut child, Duration::from_secs(2));
+}
+
+#[test]
 fn router_forwards_cartesian_commands() {
     let _guard = test_guard();
     let id = unique_id("cartesian");
@@ -287,6 +313,16 @@ fn leader_state(timestamp_ns: u64) -> RobotState {
         ..RobotState::default()
     };
     state.positions[..6].copy_from_slice(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    state
+}
+
+fn eef_state(timestamp_ns: u64, position: f64) -> RobotState {
+    let mut state = RobotState {
+        timestamp_ns,
+        num_joints: 1,
+        ..RobotState::default()
+    };
+    state.positions[0] = position;
     state
 }
 

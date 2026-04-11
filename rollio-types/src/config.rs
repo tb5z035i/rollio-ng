@@ -530,6 +530,40 @@ impl RobotMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectJointMappingKind {
+    AirbotPlay,
+    AirbotE2,
+    AirbotG2,
+}
+
+impl DirectJointMappingKind {
+    fn from_device(device: &DeviceConfig) -> Option<Self> {
+        match device.driver.as_str() {
+            "airbot-play" => Some(Self::AirbotPlay),
+            "airbot-e2" | "airbot-e2b" => Some(Self::AirbotE2),
+            "airbot-g2" => Some(Self::AirbotG2),
+            _ => None,
+        }
+    }
+
+    fn allows_peer(self, peer: Self) -> bool {
+        match self {
+            Self::AirbotPlay => matches!(peer, Self::AirbotPlay),
+            Self::AirbotE2 => matches!(peer, Self::AirbotG2),
+            Self::AirbotG2 => matches!(peer, Self::AirbotE2 | Self::AirbotG2),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AirbotPlay => "airbot-play",
+            Self::AirbotE2 => "airbot-e2",
+            Self::AirbotG2 => "airbot-g2",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pairing
 // ---------------------------------------------------------------------------
@@ -656,7 +690,34 @@ impl PairConfig {
             }
         }
 
+        self.validate_airbot_direct_joint_compatibility(leader, follower)?;
+
         Ok(())
+    }
+
+    fn validate_airbot_direct_joint_compatibility(
+        &self,
+        leader: &DeviceConfig,
+        follower: &DeviceConfig,
+    ) -> Result<(), ConfigError> {
+        let (Some(leader_kind), Some(follower_kind)) = (
+            DirectJointMappingKind::from_device(leader),
+            DirectJointMappingKind::from_device(follower),
+        ) else {
+            return Ok(());
+        };
+
+        if leader_kind.allows_peer(follower_kind) && follower_kind.allows_peer(leader_kind) {
+            return Ok(());
+        }
+
+        Err(ConfigError::Validation(format!(
+            "pairing {} -> {}: direct-joint mapping is not supported between AIRBOT device kinds \"{}\" and \"{}\"",
+            leader.name,
+            follower.name,
+            leader_kind.as_str(),
+            follower_kind.as_str()
+        )))
     }
 }
 

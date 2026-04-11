@@ -67,6 +67,34 @@ fn parse_hardware_example_config() {
 }
 
 #[test]
+fn parse_airbot_pseudo_direct_joint_config() {
+    let toml_text = include_str!("../../config/config.realsense-airbot-pseudo-1.toml");
+    let config = Config::from_str(toml_text).expect("airbot pseudo config should parse");
+    assert_eq!(config.devices.len(), 3);
+    assert_eq!(config.pairing.len(), 1);
+    assert_eq!(config.device_named("airbot_leader").unwrap().driver, "airbot-play");
+    assert_eq!(config.device_named("pseudo_follower").unwrap().driver, "pseudo");
+}
+
+#[test]
+fn parse_airbot_play_eef_config() {
+    let toml_text = include_str!("../../config/config.d435i-airbot-play-eef.toml");
+    let config = Config::from_str(toml_text).expect("airbot play + eef config should parse");
+    assert_eq!(config.devices.len(), 5);
+    assert_eq!(config.pairing.len(), 2);
+
+    let leader_eef = config.device_named("airbot_leader_eef").unwrap();
+    assert_eq!(leader_eef.driver, "airbot-e2");
+    assert_eq!(leader_eef.dof, Some(1));
+
+    let follower_eef = config.device_named("airbot_follower_eef").unwrap();
+    assert_eq!(follower_eef.driver, "airbot-g2");
+    assert_eq!(follower_eef.dof, Some(1));
+    assert_eq!(follower_eef.mit_kp.as_deref(), Some(&[30.0][..]));
+    assert_eq!(follower_eef.mit_kd.as_deref(), Some(&[1.5][..]));
+}
+
+#[test]
 fn parse_v4l2_pseudo_config() {
     let toml_text = include_str!("../../config/config.v4l2-pseudo.toml");
     let config = Config::from_str(toml_text).expect("v4l2 pseudo config should parse");
@@ -432,6 +460,95 @@ output_path = "./out"
         err.to_string().contains("joint_index_map length"),
         "unexpected error: {err}"
     );
+}
+
+fn direct_joint_pairing_config_for_drivers(
+    leader_driver: &str,
+    leader_dof: u32,
+    follower_driver: &str,
+    follower_dof: u32,
+) -> String {
+    format!(
+        r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "leader_robot"
+type = "robot"
+driver = "{leader_driver}"
+id = "leader"
+dof = {leader_dof}
+mode = "free-drive"
+transport = "can"
+interface = "can0"
+
+[[devices]]
+name = "follower_robot"
+type = "robot"
+driver = "{follower_driver}"
+id = "follower"
+dof = {follower_dof}
+mode = "command-following"
+transport = "can"
+interface = "can1"
+
+[[pairing]]
+leader = "leader_robot"
+follower = "follower_robot"
+mapping = "direct-joint"
+
+[encoder]
+codec = "libx264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#
+    )
+}
+
+#[test]
+fn airbot_family_direct_joint_pairing_accepts_supported_matrix_entries() {
+    for (leader_driver, leader_dof, follower_driver, follower_dof) in [
+        ("airbot-e2", 1, "airbot-g2", 1),
+        ("airbot-g2", 1, "airbot-e2", 1),
+        ("airbot-g2", 1, "airbot-g2", 1),
+        ("airbot-play", 6, "airbot-play", 6),
+    ] {
+        let toml_text = direct_joint_pairing_config_for_drivers(
+            leader_driver,
+            leader_dof,
+            follower_driver,
+            follower_dof,
+        );
+        Config::from_str(&toml_text).unwrap_or_else(|err| {
+            panic!(
+                "expected {leader_driver} -> {follower_driver} to be accepted, got {err}"
+            )
+        });
+    }
+}
+
+#[test]
+fn airbot_family_direct_joint_pairing_rejects_unsupported_matrix_entries() {
+    for (leader_driver, leader_dof, follower_driver, follower_dof) in [
+        ("airbot-e2", 1, "airbot-e2", 1),
+        ("airbot-play", 6, "airbot-g2", 1),
+    ] {
+        let toml_text = direct_joint_pairing_config_for_drivers(
+            leader_driver,
+            leader_dof,
+            follower_driver,
+            follower_dof,
+        );
+        let err = Config::from_str(&toml_text).expect_err("pairing should be rejected");
+        assert!(
+            err.to_string().contains("direct-joint mapping is not supported"),
+            "unexpected error for {leader_driver} -> {follower_driver}: {err}"
+        );
+    }
 }
 
 #[test]

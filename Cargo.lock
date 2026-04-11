@@ -1735,6 +1735,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rollio-robot-airbot-eef"
+version = "0.1.0"
+dependencies = [
+ "airbot_play_rust",
+ "async-trait",
+ "clap",
+ "iceoryx2",
+ "rollio-bus",
+ "rollio-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "rollio-robot-airbot-play"
 version = "0.1.0"
 dependencies = [

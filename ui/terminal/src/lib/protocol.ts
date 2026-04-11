@@ -17,6 +17,8 @@ export interface CameraFrameMessage {
 }
 
 /** Parsed robot state from a JSON WebSocket message. */
+export type EndEffectorStatus = "unknown" | "disabled" | "enabled";
+
 export interface RobotStateMessage {
   type: "robot_state";
   name: string;
@@ -25,6 +27,8 @@ export interface RobotStateMessage {
   positions: number[];
   velocities: number[];
   efforts: number[];
+  end_effector_status?: EndEffectorStatus;
+  end_effector_feedback_valid?: boolean;
 }
 
 /** Metadata about websocket-published streams from the visualizer. */

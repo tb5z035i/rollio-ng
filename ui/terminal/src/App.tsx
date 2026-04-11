@@ -340,6 +340,8 @@ export function App({
               name={name}
               numJoints={state.num_joints}
               positions={state.positions}
+              endEffectorStatus={state.end_effector_status}
+              endEffectorFeedbackValid={state.end_effector_feedback_valid}
               panelWidth={contentWidth}
             />
           ))
@@ -348,6 +350,8 @@ export function App({
             name="robot_0"
             numJoints={0}
             positions={[]}
+            endEffectorStatus={undefined}
+            endEffectorFeedbackValid={undefined}
             panelWidth={contentWidth}
           />
         )}

@@ -14,7 +14,7 @@
 ///   Visualizer → UI: {"type":"robot_state","name":"...","timestamp_ns":...,...}
 ///   Visualizer → UI: {"type":"episode_status","state":"idle","episode_count":0,...}
 ///   UI → Visualizer:  {"type":"command","action":"...","width":...,"height":...}
-use rollio_types::messages::{EpisodeCommand, EpisodeStatus, RobotState};
+use rollio_types::messages::{EndEffectorStatus, EpisodeCommand, EpisodeStatus, RobotState};
 use serde::{Deserialize, Serialize};
 
 use crate::stream_info::StreamInfoSnapshot;
@@ -63,6 +63,10 @@ struct RobotStateJson<'a> {
     positions: &'a [f64],
     velocities: &'a [f64],
     efforts: &'a [f64],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_effector_status: Option<EndEffectorStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_effector_feedback_valid: Option<bool>,
 }
 
 /// Encode a robot state into a JSON string for WebSocket text message.
@@ -78,6 +82,12 @@ pub fn encode_robot_state(name: &str, state: &RobotState) -> String {
         positions: &state.positions[..n],
         velocities: &state.velocities[..n],
         efforts: &state.efforts[..n],
+        end_effector_status: state
+            .has_end_effector_status
+            .then_some(state.end_effector_status),
+        end_effector_feedback_valid: state
+            .has_end_effector_status
+            .then_some(state.end_effector_feedback_valid),
     };
     // serde_json::to_string is infallible for this struct
     serde_json::to_string(&msg).unwrap_or_default()
@@ -162,5 +172,46 @@ mod tests {
         let command = decode_command(r#"{"type":"command","action":"episode_keep"}"#)
             .expect("command should parse");
         assert_eq!(decode_episode_command(&command), Some(EpisodeCommand::Keep));
+    }
+
+    #[test]
+    fn encode_robot_state_includes_optional_end_effector_fields() {
+        let mut state = RobotState {
+            timestamp_ns: 123,
+            num_joints: 1,
+            ..RobotState::default()
+        };
+        state.positions[0] = 0.042;
+        state.velocities[0] = -0.1;
+        state.efforts[0] = 1.25;
+        state.has_end_effector_status = true;
+        state.end_effector_status = EndEffectorStatus::Enabled;
+        state.end_effector_feedback_valid = true;
+
+        let json = encode_robot_state("eef_g2", &state);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("robot state should be valid JSON");
+        assert_eq!(value["type"], "robot_state");
+        assert_eq!(value["name"], "eef_g2");
+        assert_eq!(value["positions"][0], 0.042);
+        assert_eq!(value["end_effector_status"], "enabled");
+        assert_eq!(value["end_effector_feedback_valid"], true);
+    }
+
+    #[test]
+    fn encode_robot_state_omits_optional_end_effector_fields_for_regular_robots() {
+        let mut state = RobotState {
+            timestamp_ns: 456,
+            num_joints: 6,
+            ..RobotState::default()
+        };
+        state.positions[..6].copy_from_slice(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+
+        let json = encode_robot_state("leader_arm", &state);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("robot state should be valid JSON");
+        assert_eq!(value["type"], "robot_state");
+        assert!(value.get("end_effector_status").is_none());
+        assert!(value.get("end_effector_feedback_valid").is_none());
     }
 }
