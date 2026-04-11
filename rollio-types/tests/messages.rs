@@ -152,6 +152,40 @@ fn control_event_recording_start_payload() {
 }
 
 // ---------------------------------------------------------------------------
+// EpisodeCommand / EpisodeStatus
+// ---------------------------------------------------------------------------
+
+#[test]
+fn episode_command_all_variants_roundtrip() {
+    let variants = [
+        EpisodeCommand::Start,
+        EpisodeCommand::Stop,
+        EpisodeCommand::Keep,
+        EpisodeCommand::Discard,
+    ];
+    for command in &variants {
+        let roundtripped = unsafe { roundtrip(command) };
+        assert_eq!(
+            core::mem::discriminant(command),
+            core::mem::discriminant(&roundtripped)
+        );
+    }
+}
+
+#[test]
+fn episode_status_roundtrip() {
+    let status = EpisodeStatus {
+        state: EpisodeState::Recording,
+        episode_count: 3,
+        elapsed_ms: 5_250,
+    };
+    let roundtripped = unsafe { roundtrip(&status) };
+    assert_eq!(roundtripped.state, EpisodeState::Recording);
+    assert_eq!(roundtripped.episode_count, 3);
+    assert_eq!(roundtripped.elapsed_ms, 5_250);
+}
+
+// ---------------------------------------------------------------------------
 // MetricsReport
 // ---------------------------------------------------------------------------
 

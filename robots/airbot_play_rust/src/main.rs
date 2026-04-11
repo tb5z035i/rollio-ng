@@ -1,5 +1,5 @@
 use clap::Parser;
-use rollio_robot_airbot_play::{Cli, run_cli};
+use rollio_robot_airbot_play::{run_cli, Cli};
 
 #[tokio::main]
 async fn main() {

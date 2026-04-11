@@ -27,6 +27,10 @@ fn parse_example_config() {
         config.ui_runtime_config().websocket_url.as_deref(),
         Some("ws://127.0.0.1:9090")
     );
+    assert_eq!(config.ui.start_key, "s");
+    assert_eq!(config.ui.stop_key, "e");
+    assert_eq!(config.ui.keep_key, "k");
+    assert_eq!(config.ui.discard_key, "x");
 }
 
 #[test]
@@ -340,6 +344,130 @@ output_path = "./out"
         msg.contains("arm_b_doesnt_exist"),
         "error should name the bad device: {msg}"
     );
+}
+
+#[test]
+fn direct_joint_pairing_accepts_remap_and_scales() {
+    let toml_text = r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "leader_arm"
+type = "robot"
+driver = "pseudo"
+id = "leader"
+dof = 6
+mode = "free-drive"
+
+[[devices]]
+name = "follower_arm"
+type = "robot"
+driver = "pseudo"
+id = "follower"
+dof = 6
+mode = "command-following"
+
+[[pairing]]
+leader = "leader_arm"
+follower = "follower_arm"
+mapping = "direct-joint"
+joint_index_map = [5, 4, 3, 2, 1, 0]
+joint_scales = [2.0, 1.0, 1.0, 1.0, 1.0, 0.5]
+
+[encoder]
+codec = "libx264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let config = Config::from_str(toml_text).expect("pairing config should parse");
+    assert_eq!(config.pairing[0].joint_index_map, vec![5, 4, 3, 2, 1, 0]);
+    assert_eq!(
+        config.pairing[0].joint_scales,
+        vec![2.0, 1.0, 1.0, 1.0, 1.0, 0.5]
+    );
+}
+
+#[test]
+fn direct_joint_pairing_rejects_bad_joint_index_map_len() {
+    let toml_text = r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "leader_arm"
+type = "robot"
+driver = "pseudo"
+id = "leader"
+dof = 6
+mode = "free-drive"
+
+[[devices]]
+name = "follower_arm"
+type = "robot"
+driver = "pseudo"
+id = "follower"
+dof = 6
+mode = "command-following"
+
+[[pairing]]
+leader = "leader_arm"
+follower = "follower_arm"
+mapping = "direct-joint"
+joint_index_map = [0, 1, 2]
+
+[encoder]
+codec = "libx264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let err = Config::from_str(toml_text).expect_err("pairing should be rejected");
+    assert!(
+        err.to_string().contains("joint_index_map length"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn ui_reserved_shortcuts_are_rejected() {
+    let toml_text = r#"
+websocket_url = "ws://127.0.0.1:9090"
+start_key = "d"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"
+"#;
+    let err = UiRuntimeConfig::from_str(toml_text).expect_err("reserved UI key should fail");
+    assert!(
+        err.to_string().contains("reserved UI shortcut"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn teleop_runtime_config_parses_direct_joint_mapping() {
+    let toml_text = r#"
+process_id = "teleop.leader_arm.to.follower_arm"
+leader_name = "leader_arm"
+follower_name = "follower_arm"
+leader_state_topic = "robot/leader_arm/state"
+follower_state_topic = "robot/follower_arm/state"
+follower_command_topic = "robot/follower_arm/command"
+mapping = "direct-joint"
+joint_index_map = [5, 4, 3, 2, 1, 0]
+joint_scales = [2.0, 1.0, 1.0, 1.0, 1.0, 0.5]
+"#;
+    let config =
+        TeleopRuntimeConfig::from_str(toml_text).expect("teleop runtime config should parse");
+    assert_eq!(config.process_id, "teleop.leader_arm.to.follower_arm");
+    assert_eq!(config.joint_index_map.len(), 6);
+    assert_eq!(config.joint_scales[0], 2.0);
 }
 
 #[test]

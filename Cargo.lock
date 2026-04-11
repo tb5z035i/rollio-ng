@@ -1678,6 +1678,18 @@ name = "rollio-bus"
 version = "0.1.0"
 
 [[package]]
+name = "rollio-bus-tap"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "iceoryx2",
+ "rollio-bus",
+ "rollio-types",
+ "serde_json",
+ "signal-hook",
+]
+
+[[package]]
 name = "rollio-camera-v4l2"
 version = "0.1.0"
 dependencies = [
@@ -1763,8 +1775,12 @@ dependencies = [
 name = "rollio-teleop-router"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "iceoryx2",
+ "rollio-bus",
  "rollio-types",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
 ]
 
 [[package]]

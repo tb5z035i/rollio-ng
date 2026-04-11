@@ -54,7 +54,20 @@ export interface StreamInfoMessage {
 }
 
 /** Command sent from UI to Visualizer. */
-export type CommandAction = "get_stream_info" | "set_preview_size";
+export interface EpisodeStatusMessage {
+  type: "episode_status";
+  state: "idle" | "recording" | "pending";
+  episode_count: number;
+  elapsed_ms: number;
+}
+
+export type CommandAction =
+  | "get_stream_info"
+  | "set_preview_size"
+  | "episode_start"
+  | "episode_stop"
+  | "episode_keep"
+  | "episode_discard";
 
 export interface CommandMessage {
   type: "command";
@@ -116,7 +129,7 @@ export function parseBinaryMessage(
  */
 export function parseJsonMessage(
   text: string,
-): RobotStateMessage | StreamInfoMessage | null {
+): RobotStateMessage | StreamInfoMessage | EpisodeStatusMessage | null {
   try {
     const obj = JSON.parse(text);
     if (obj && obj.type === "robot_state") {
@@ -124,6 +137,9 @@ export function parseJsonMessage(
     }
     if (obj && obj.type === "stream_info") {
       return obj as StreamInfoMessage;
+    }
+    if (obj && obj.type === "episode_status") {
+      return obj as EpisodeStatusMessage;
     }
     return null;
   } catch {
@@ -143,4 +159,11 @@ export function encodeCommand(
 
 export function encodeSetPreviewSize(width: number, height: number): string {
   return encodeCommand("set_preview_size", { width, height });
+}
+
+export function encodeEpisodeCommand(action: Extract<
+  CommandAction,
+  "episode_start" | "episode_stop" | "episode_keep" | "episode_discard"
+>): string {
+  return encodeCommand(action);
 }

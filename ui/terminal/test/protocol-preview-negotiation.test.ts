@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  encodeEpisodeCommand,
   encodeSetPreviewSize,
   parseBinaryMessage,
+  parseJsonMessage,
 } from "../src/lib/protocol.js";
 
 test("encodeSetPreviewSize emits the websocket resize command", () => {
@@ -44,4 +46,29 @@ test("parseBinaryMessage exposes negotiated preview dimensions", () => {
   assert.equal(message?.previewWidth, 160);
   assert.equal(message?.previewHeight, 90);
   assert.deepEqual(Array.from(message?.jpegData ?? []), Array.from(jpegPayload));
+});
+
+test("encodeEpisodeCommand emits the expected websocket control message", () => {
+  assert.deepEqual(JSON.parse(encodeEpisodeCommand("episode_keep")), {
+    type: "command",
+    action: "episode_keep",
+  });
+});
+
+test("parseJsonMessage accepts episode status payloads", () => {
+  const message = parseJsonMessage(
+    JSON.stringify({
+      type: "episode_status",
+      state: "recording",
+      episode_count: 3,
+      elapsed_ms: 5250,
+    }),
+  );
+
+  assert.deepEqual(message, {
+    type: "episode_status",
+    state: "recording",
+    episode_count: 3,
+    elapsed_ms: 5250,
+  });
 });

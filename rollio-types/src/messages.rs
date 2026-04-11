@@ -233,6 +233,74 @@ pub enum ControlEvent {
 }
 
 // ---------------------------------------------------------------------------
+// EpisodeCommand
+// ---------------------------------------------------------------------------
+
+/// UI-originated episode control command forwarded by the Visualizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[type_name("EpisodeCommand")]
+#[repr(C)]
+pub enum EpisodeCommand {
+    Start,
+    Stop,
+    Keep,
+    Discard,
+}
+
+impl EpisodeCommand {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "episode_start",
+            Self::Stop => "episode_stop",
+            Self::Keep => "episode_keep",
+            Self::Discard => "episode_discard",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EpisodeStatus
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[type_name("EpisodeState")]
+#[repr(C)]
+pub enum EpisodeState {
+    Idle = 0,
+    Recording = 1,
+    Pending = 2,
+}
+
+impl EpisodeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Recording => "recording",
+            Self::Pending => "pending",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[type_name("EpisodeStatus")]
+#[repr(C)]
+pub struct EpisodeStatus {
+    pub state: EpisodeState,
+    pub episode_count: u32,
+    pub elapsed_ms: u64,
+}
+
+impl Default for EpisodeStatus {
+    fn default() -> Self {
+        Self {
+            state: EpisodeState::Idle,
+            episode_count: 0,
+            elapsed_ms: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MetricsReport
 // ---------------------------------------------------------------------------
 

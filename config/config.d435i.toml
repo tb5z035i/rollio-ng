@@ -66,6 +66,14 @@ state_noise_stddev = 0.02
 leader = "leader_arm"
 follower = "follower_arm"
 mapping = "direct-joint"
+joint_index_map = [0, 1, 2, 3, 4, 5]
+joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+[ui]
+start_key = "s"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"
 
 [encoder]
 codec = "libx264"

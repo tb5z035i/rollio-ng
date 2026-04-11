@@ -7,9 +7,11 @@
 /// Slow clients that fall behind on the broadcast channel simply skip frames
 /// (lag) rather than causing backpressure.
 use std::net::SocketAddr;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
+use rollio_types::messages::EpisodeCommand;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -35,6 +37,8 @@ pub async fn run_server(
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
+    episode_command_tx: Sender<EpisodeCommand>,
+    latest_episode_status: Arc<Mutex<Option<String>>>,
 ) {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
@@ -54,12 +58,16 @@ pub async fn run_server(
                 let rx = broadcast_tx.subscribe();
                 let client_stream_info = stream_info.clone();
                 let client_preview_config = preview_config.clone();
+                let client_episode_command_tx = episode_command_tx.clone();
+                let client_latest_episode_status = latest_episode_status.clone();
                 tokio::spawn(handle_client(
                     stream,
                     peer,
                     rx,
                     client_stream_info,
                     client_preview_config,
+                    client_episode_command_tx,
+                    client_latest_episode_status,
                 ));
             }
             Err(e) => {
@@ -79,6 +87,8 @@ async fn handle_client(
     mut broadcast_rx: broadcast::Receiver<BroadcastMessage>,
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
+    episode_command_tx: Sender<EpisodeCommand>,
+    latest_episode_status: Arc<Mutex<Option<String>>>,
 ) {
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
@@ -101,6 +111,17 @@ async fn handle_client(
         log::debug!("failed to send initial stream info to {peer}: {e}");
         let _ = ws_sink.close().await;
         return;
+    }
+    let initial_episode_status = latest_episode_status
+        .lock()
+        .expect("episode status mutex poisoned")
+        .clone();
+    if let Some(status_json) = initial_episode_status {
+        if let Err(e) = ws_sink.send(Message::Text(status_json.into())).await {
+            log::debug!("failed to send initial episode status to {peer}: {e}");
+            let _ = ws_sink.close().await;
+            return;
+        }
     }
     preview_config.client_connected();
 
@@ -146,7 +167,14 @@ async fn handle_client(
                                     }
                                 }
                                 _ => {
-                                    log::debug!("ignoring unsupported command from {peer}: {}", cmd.action);
+                                    if let Some(episode_command) = protocol::decode_episode_command(&cmd) {
+                                        if let Err(e) = episode_command_tx.send(episode_command) {
+                                            log::warn!("failed to forward episode command from {peer}: {e}");
+                                            break;
+                                        }
+                                    } else {
+                                        log::debug!("ignoring unsupported command from {peer}: {}", cmd.action);
+                                    }
                                 }
                             }
                         }

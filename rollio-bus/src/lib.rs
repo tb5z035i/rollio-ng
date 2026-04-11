@@ -1,4 +1,6 @@
 pub const CONTROL_EVENTS_SERVICE: &str = "control/events";
+pub const EPISODE_COMMAND_SERVICE: &str = "control/episode-command";
+pub const EPISODE_STATUS_SERVICE: &str = "control/episode-status";
 pub const VIDEO_READY_SERVICE: &str = "encoder/video-ready";
 pub const BACKPRESSURE_SERVICE: &str = "encoder/backpressure";
 

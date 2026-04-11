@@ -83,6 +83,13 @@ impl Config {
                     pair.follower
                 )));
             }
+            let leader = self
+                .device_named(&pair.leader)
+                .expect("validated leader should exist");
+            let follower = self
+                .device_named(&pair.follower)
+                .expect("validated follower should exist");
+            pair.validate_with_devices(leader, follower)?;
         }
 
         self.encoder.validate()?;
@@ -533,6 +540,10 @@ pub struct PairConfig {
     pub follower: String,
     #[serde(default = "default_mapping")]
     pub mapping: MappingStrategy,
+    #[serde(default)]
+    pub joint_index_map: Vec<u32>,
+    #[serde(default)]
+    pub joint_scales: Vec<f64>,
 }
 
 fn default_mapping() -> MappingStrategy {
@@ -544,6 +555,207 @@ fn default_mapping() -> MappingStrategy {
 pub enum MappingStrategy {
     DirectJoint,
     Cartesian,
+}
+
+impl PairConfig {
+    fn validate_with_devices(
+        &self,
+        leader: &DeviceConfig,
+        follower: &DeviceConfig,
+    ) -> Result<(), ConfigError> {
+        if leader.device_type != DeviceType::Robot {
+            return Err(ConfigError::Validation(format!(
+                "pairing leader \"{}\" must be a robot device",
+                leader.name
+            )));
+        }
+        if follower.device_type != DeviceType::Robot {
+            return Err(ConfigError::Validation(format!(
+                "pairing follower \"{}\" must be a robot device",
+                follower.name
+            )));
+        }
+        if leader.name == follower.name {
+            return Err(ConfigError::Validation(format!(
+                "pairing leader and follower must be different devices: \"{}\"",
+                leader.name
+            )));
+        }
+
+        match self.mapping {
+            MappingStrategy::DirectJoint => self.validate_direct_joint_mapping(leader, follower),
+            MappingStrategy::Cartesian => {
+                if !self.joint_index_map.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "pairing {} -> {}: joint_index_map is only valid for direct-joint mapping",
+                        leader.name, follower.name
+                    )));
+                }
+                if !self.joint_scales.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "pairing {} -> {}: joint_scales is only valid for direct-joint mapping",
+                        leader.name, follower.name
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_direct_joint_mapping(
+        &self,
+        leader: &DeviceConfig,
+        follower: &DeviceConfig,
+    ) -> Result<(), ConfigError> {
+        let leader_dof = leader.dof.unwrap_or(0);
+        let follower_dof = follower.dof.unwrap_or(0);
+
+        if self.joint_index_map.is_empty() {
+            if leader_dof < follower_dof {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {} -> {}: direct-joint identity mapping requires leader dof ({leader_dof}) >= follower dof ({follower_dof})",
+                    leader.name, follower.name
+                )));
+            }
+        } else {
+            if self.joint_index_map.len() != follower_dof as usize {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {} -> {}: joint_index_map length must match follower dof ({follower_dof})",
+                    leader.name, follower.name
+                )));
+            }
+            for (index, leader_joint) in self.joint_index_map.iter().enumerate() {
+                if *leader_joint >= leader_dof {
+                    return Err(ConfigError::Validation(format!(
+                        "pairing {} -> {}: joint_index_map[{index}]={} exceeds leader dof ({leader_dof})",
+                        leader.name, follower.name, leader_joint
+                    )));
+                }
+            }
+        }
+
+        if !self.joint_scales.is_empty() {
+            let expected_len = if self.joint_index_map.is_empty() {
+                follower_dof as usize
+            } else {
+                self.joint_index_map.len()
+            };
+            if self.joint_scales.len() != expected_len {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {} -> {}: joint_scales length must match {} mapped follower joints",
+                    leader.name, follower.name, expected_len
+                )));
+            }
+            for (index, scale) in self.joint_scales.iter().enumerate() {
+                if !scale.is_finite() {
+                    return Err(ConfigError::Validation(format!(
+                        "pairing {} -> {}: joint_scales[{index}] must be finite",
+                        leader.name, follower.name
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeleopRuntimeConfig {
+    pub process_id: String,
+    pub leader_name: String,
+    pub follower_name: String,
+    pub leader_state_topic: String,
+    pub follower_state_topic: String,
+    pub follower_command_topic: String,
+    #[serde(default = "default_mapping")]
+    pub mapping: MappingStrategy,
+    #[serde(default)]
+    pub joint_index_map: Vec<u32>,
+    #[serde(default)]
+    pub joint_scales: Vec<f64>,
+}
+
+impl TeleopRuntimeConfig {
+    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        let text = std::fs::read_to_string(path)?;
+        text.parse()
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.process_id.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: process_id must not be empty".into(),
+            ));
+        }
+        if self.leader_name.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: leader_name must not be empty".into(),
+            ));
+        }
+        if self.follower_name.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: follower_name must not be empty".into(),
+            ));
+        }
+        if self.leader_name == self.follower_name {
+            return Err(ConfigError::Validation(
+                "teleop runtime: leader_name and follower_name must differ".into(),
+            ));
+        }
+        if self.leader_state_topic.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: leader_state_topic must not be empty".into(),
+            ));
+        }
+        if self.follower_state_topic.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: follower_state_topic must not be empty".into(),
+            ));
+        }
+        if self.follower_command_topic.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "teleop runtime: follower_command_topic must not be empty".into(),
+            ));
+        }
+        match self.mapping {
+            MappingStrategy::DirectJoint => {
+                if self.joint_scales.iter().any(|scale| !scale.is_finite()) {
+                    return Err(ConfigError::Validation(
+                        "teleop runtime: joint_scales must be finite".into(),
+                    ));
+                }
+                if !self.joint_scales.is_empty()
+                    && !self.joint_index_map.is_empty()
+                    && self.joint_scales.len() != self.joint_index_map.len()
+                {
+                    return Err(ConfigError::Validation(
+                        "teleop runtime: joint_scales length must match joint_index_map length"
+                            .into(),
+                    ));
+                }
+            }
+            MappingStrategy::Cartesian => {
+                if !self.joint_index_map.is_empty() || !self.joint_scales.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "teleop runtime: Cartesian mapping does not use joint_index_map or joint_scales"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for TeleopRuntimeConfig {
+    type Err = ConfigError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let config: TeleopRuntimeConfig = toml::from_str(s)?;
+        config.validate()?;
+        Ok(config)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,9 +1218,45 @@ impl FromStr for VisualizerRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiRuntimeConfig {
     pub websocket_url: Option<String>,
+    #[serde(default = "default_ui_start_key")]
+    pub start_key: String,
+    #[serde(default = "default_ui_stop_key")]
+    pub stop_key: String,
+    #[serde(default = "default_ui_keep_key")]
+    pub keep_key: String,
+    #[serde(default = "default_ui_discard_key")]
+    pub discard_key: String,
+}
+
+fn default_ui_start_key() -> String {
+    "s".into()
+}
+
+fn default_ui_stop_key() -> String {
+    "e".into()
+}
+
+fn default_ui_keep_key() -> String {
+    "k".into()
+}
+
+fn default_ui_discard_key() -> String {
+    "x".into()
+}
+
+impl Default for UiRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            websocket_url: None,
+            start_key: default_ui_start_key(),
+            stop_key: default_ui_stop_key(),
+            keep_key: default_ui_keep_key(),
+            discard_key: default_ui_discard_key(),
+        }
+    }
 }
 
 impl UiRuntimeConfig {
@@ -1020,8 +1268,53 @@ impl UiRuntimeConfig {
                 ));
             }
         }
+
+        let mut seen = HashSet::new();
+        for (label, key) in [
+            ("start_key", &self.start_key),
+            ("stop_key", &self.stop_key),
+            ("keep_key", &self.keep_key),
+            ("discard_key", &self.discard_key),
+        ] {
+            let normalized = normalize_ui_key(label, key)?;
+            if normalized == "d" || normalized == "r" {
+                return Err(ConfigError::Validation(format!(
+                    "ui: {label} conflicts with reserved UI shortcut \"{normalized}\""
+                )));
+            }
+            if !seen.insert(normalized.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "ui: duplicate key binding \"{normalized}\""
+                )));
+            }
+        }
         Ok(())
     }
+}
+
+fn normalize_ui_key(label: &str, raw: &str) -> Result<String, ConfigError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "ui: {label} must not be empty"
+        )));
+    }
+
+    let mut chars = trimmed.chars();
+    let ch = chars.next().ok_or_else(|| {
+        ConfigError::Validation(format!("ui: {label} must be a single printable character"))
+    })?;
+    if chars.next().is_some() {
+        return Err(ConfigError::Validation(format!(
+            "ui: {label} must be a single printable character"
+        )));
+    }
+    if ch.is_control() {
+        return Err(ConfigError::Validation(format!(
+            "ui: {label} must be a printable character"
+        )));
+    }
+    Ok(ch.to_ascii_lowercase().to_string())
 }
 
 impl FromStr for UiRuntimeConfig {
@@ -1034,7 +1327,7 @@ impl FromStr for UiRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorConfig {
     #[serde(default = "default_metrics_freq")]
     pub metrics_frequency_hz: f64,
@@ -1044,6 +1337,15 @@ pub struct MonitorConfig {
 
 fn default_metrics_freq() -> f64 {
     1.0
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            metrics_frequency_hz: default_metrics_freq(),
+            thresholds: HashMap::new(),
+        }
+    }
 }
 
 impl MonitorConfig {

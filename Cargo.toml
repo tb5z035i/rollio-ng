@@ -15,5 +15,6 @@ members = [
     "test/test-publisher",
     "cameras/v4l2",
     "test/robot-keyboard",
+    "test/bus-tap",
 ]
 exclude = ["third_party"]

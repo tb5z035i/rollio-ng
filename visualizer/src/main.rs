@@ -10,12 +10,14 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use iceoryx2::node::NodeWaitFailure;
 use rollio_types::config::VisualizerRuntimeConfig;
+use rollio_types::messages::EpisodeCommand;
 use tokio::sync::broadcast;
 
 use crate::ipc::{IpcMessage, IpcPoller};
@@ -175,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Broadcast channel: small capacity so slow consumers skip frames
     let (broadcast_tx, _) = broadcast::channel::<BroadcastMessage>(16);
+    let (episode_command_tx, episode_command_rx) = mpsc::channel::<EpisodeCommand>();
     let stream_info = Arc::new(Mutex::new(StreamInfoRegistry::new(
         &camera_names,
         &robot_names,
@@ -188,14 +191,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_config.max_preview_width,
         runtime_config.max_preview_height,
     ));
+    let latest_episode_status = Arc::new(Mutex::new(None::<String>));
 
     // Start WebSocket server
     let ws_addr: SocketAddr = ([0, 0, 0, 0], runtime_config.port).into();
     let ws_broadcast_tx = broadcast_tx.clone();
     let ws_stream_info = stream_info.clone();
     let ws_preview_config = preview_config.clone();
+    let ws_episode_command_tx = episode_command_tx.clone();
+    let ws_latest_episode_status = latest_episode_status.clone();
     tokio::spawn(async move {
-        websocket::run_server(ws_addr, ws_broadcast_tx, ws_stream_info, ws_preview_config).await;
+        websocket::run_server(
+            ws_addr,
+            ws_broadcast_tx,
+            ws_stream_info,
+            ws_preview_config,
+            ws_episode_command_tx,
+            ws_latest_episode_status,
+        )
+        .await;
     });
 
     // Shared shutdown flag
@@ -214,6 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_shutdown = shutdown.clone();
     let ipc_stream_info = stream_info.clone();
     let ipc_preview_config = preview_config.clone();
+    let ipc_latest_episode_status = latest_episode_status.clone();
 
     std::thread::Builder::new()
         .name("rollio-visualizer-ipc".to_string())
@@ -225,6 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ipc_broadcast_tx,
                 ipc_stream_info,
                 ipc_preview_config,
+                ipc_latest_episode_status,
+                episode_command_rx,
                 &ipc_shutdown,
             ) {
                 log::error!("IPC poll loop failed: {e}");
@@ -253,6 +270,8 @@ fn ipc_poll_loop(
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
+    latest_episode_status: Arc<Mutex<Option<String>>>,
+    episode_command_rx: mpsc::Receiver<EpisodeCommand>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let poller = IpcPoller::new(camera_names, robot_names)?;
@@ -274,6 +293,9 @@ fn ipc_poll_loop(
     log::info!("IPC poll loop started");
 
     while !shutdown.load(Ordering::Relaxed) {
+        while let Ok(command) = episode_command_rx.try_recv() {
+            poller.publish_episode_command(command)?;
+        }
         let messages = poller.poll();
 
         for msg in messages {
@@ -303,6 +325,13 @@ fn ipc_poll_loop(
                 }
                 IpcMessage::RobotStateMsg { name, state } => {
                     let json = protocol::encode_robot_state(&name, &state);
+                    let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(json)));
+                }
+                IpcMessage::EpisodeStatusMsg { status } => {
+                    let json = protocol::encode_episode_status(&status);
+                    if let Ok(mut latest) = latest_episode_status.lock() {
+                        *latest = Some(json.clone());
+                    }
                     let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(json)));
                 }
             }

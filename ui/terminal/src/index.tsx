@@ -9,6 +9,7 @@ const app = render(
   <App
     websocketUrl={runtimeConfig.websocketUrl}
     initialAsciiRendererId={runtimeConfig.asciiRendererId}
+    episodeKeyBindings={runtimeConfig.episodeKeyBindings}
   />,
   {
   maxFps: 60,

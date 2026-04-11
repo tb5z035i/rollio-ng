@@ -2,11 +2,11 @@ mod rollio_runtime;
 
 use airbot_play_rust::can::worker::CanWorkerBackend;
 use airbot_play_rust::model::ModelBackendKind;
-use airbot_play_rust::probe::discover::{ProbeError, probe_all};
+use airbot_play_rust::probe::discover::{probe_all, ProbeError};
 use airbot_play_rust::types::DiscoveredInstance;
 use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
-use rollio_runtime::{RollioRuntimeConfig, RollioRuntimeError, run_rollio_runtime};
+use rollio_runtime::{run_rollio_runtime, RollioRuntimeConfig, RollioRuntimeError};
 use rollio_types::config::{DeviceConfig, DeviceType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -164,17 +164,15 @@ where
 {
     match command {
         Command::Probe { timeout_ms } => {
-            let devices = probe_devices_with_provider(probe_provider, probe_timeout(timeout_ms)).await?;
+            let devices =
+                probe_devices_with_provider(probe_provider, probe_timeout(timeout_ms)).await?;
             serde_json::to_writer_pretty(&mut *writer, &devices)?;
             writer.write_all(b"\n")?;
         }
         Command::Validate { id, timeout_ms } => {
-            let device = require_probe_device_with_provider(
-                probe_provider,
-                &id,
-                probe_timeout(timeout_ms),
-            )
-            .await?;
+            let device =
+                require_probe_device_with_provider(probe_provider, &id, probe_timeout(timeout_ms))
+                    .await?;
             let report = ValidateReport {
                 valid: true,
                 id: device.id,
@@ -276,7 +274,10 @@ where
     let device = validate_device(device)?;
     let config = RollioRuntimeConfig {
         device_name: device.name.clone(),
-        interface: device.interface.clone().unwrap_or_else(|| "can0".to_owned()),
+        interface: device
+            .interface
+            .clone()
+            .unwrap_or_else(|| "can0".to_owned()),
         dof: device.dof.unwrap_or(DEFAULT_DOF) as usize,
         initial_mode: device.mode.expect("validated device must include mode"),
         publish_rate_hz: device.control_frequency_hz.unwrap_or(250.0),
@@ -401,7 +402,10 @@ mod tests {
 
     #[async_trait(?Send)]
     impl ProbeProvider for FixtureProbeProvider {
-        async fn probe(&self, _timeout: Duration) -> Result<Vec<DiscoveredInstance>, AirbotCliError> {
+        async fn probe(
+            &self,
+            _timeout: Duration,
+        ) -> Result<Vec<DiscoveredInstance>, AirbotCliError> {
             Ok(self.instances.clone())
         }
     }
@@ -414,7 +418,10 @@ mod tests {
     #[async_trait(?Send)]
     impl TransportRunner for RecordingTransportRunner {
         async fn run(&self, config: RollioRuntimeConfig) -> Result<(), AirbotCliError> {
-            self.configs.lock().expect("configs lock poisoned").push(config);
+            self.configs
+                .lock()
+                .expect("configs lock poisoned")
+                .push(config);
             Ok(())
         }
     }
@@ -494,12 +501,17 @@ mod tests {
         assert_eq!(capabilities.interface, "can0");
         assert_eq!(capabilities.product_variant, DEFAULT_PRODUCT_VARIANT);
         assert_eq!(capabilities.serial_number, "SN12345678");
-        assert_eq!(capabilities.supported_modes, SUPPORTED_MODES.map(str::to_owned));
+        assert_eq!(
+            capabilities.supported_modes,
+            SUPPORTED_MODES.map(str::to_owned)
+        );
     }
 
     #[tokio::test]
     async fn run_command_uses_transport_runner_with_inline_config() {
-        let provider = FixtureProbeProvider { instances: Vec::new() };
+        let provider = FixtureProbeProvider {
+            instances: Vec::new(),
+        };
         let runner = RecordingTransportRunner::default();
         let mut output = Vec::new();
 
@@ -521,7 +533,10 @@ mod tests {
         assert_eq!(configs[0].device_name, "airbot_leader");
         assert_eq!(configs[0].interface, "can0");
         assert_eq!(configs[0].dof, DEFAULT_DOF as usize);
-        assert_eq!(configs[0].initial_mode, rollio_types::config::RobotMode::FreeDrive);
+        assert_eq!(
+            configs[0].initial_mode,
+            rollio_types::config::RobotMode::FreeDrive
+        );
         assert_eq!(configs[0].publish_rate_hz, 250.0);
         assert_eq!(configs[0].can_backend, CanWorkerBackend::AsyncFd);
         assert_eq!(configs[0].model_backend, ModelBackendKind::PlayAnalytical);
@@ -530,7 +545,10 @@ mod tests {
     #[test]
     fn invalid_probe_ids_are_rejected() {
         let error = parse_probe_id("airbot-play@can0").expect_err("expected invalid probe id");
-        assert_eq!(error.to_string(), "invalid AIRBOT probe id: airbot-play@can0");
+        assert_eq!(
+            error.to_string(),
+            "invalid AIRBOT probe id: airbot-play@can0"
+        );
     }
 
     #[test]

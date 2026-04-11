@@ -13,6 +13,7 @@ import {
   encodeCommand,
   parseBinaryMessage,
   parseJsonMessage,
+  type EpisodeStatusMessage,
   type RobotStateMessage,
   type StreamInfoMessage,
 } from "./protocol.js";
@@ -39,6 +40,7 @@ export interface WebSocketState {
   frames: Map<string, CameraFrame>;
   robotStates: Map<string, RobotStateMessage>;
   streamInfo: StreamInfoMessage | null;
+  episodeStatus: EpisodeStatusMessage | null;
   connected: boolean;
   send: (msg: string) => void;
 }
@@ -62,11 +64,15 @@ export function useWebSocket(url: string): WebSocketState {
     Map<string, RobotStateMessage>
   >(() => new Map());
   const [streamInfo, setStreamInfo] = useState<StreamInfoMessage | null>(null);
+  const [episodeStatus, setEpisodeStatus] = useState<EpisodeStatusMessage | null>(
+    null,
+  );
 
   // Mutable refs for accumulating data between batch flushes
   const framesRef = useRef<Map<string, CameraFrame>>(new Map());
   const robotStatesRef = useRef<Map<string, RobotStateMessage>>(new Map());
   const streamInfoRef = useRef<StreamInfoMessage | null>(null);
+  const episodeStatusRef = useRef<EpisodeStatusMessage | null>(null);
   const dirtyRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const frameSequenceRef = useRef(0);
@@ -88,6 +94,7 @@ export function useWebSocket(url: string): WebSocketState {
     setGauge("ws.frame_count", 0);
     setGauge("ws.robot_state_count", 0);
     setGauge("ws.stream_info_status", "Unavailable");
+    setGauge("ws.episode_status", "Unavailable");
 
     // Batch flush interval: push ref data into React state at ~60fps
     const flushInterval = setInterval(() => {
@@ -97,6 +104,7 @@ export function useWebSocket(url: string): WebSocketState {
         setFrames(new Map(framesRef.current));
         setRobotStates(new Map(robotStatesRef.current));
         setStreamInfo(streamInfoRef.current);
+        setEpisodeStatus(episodeStatusRef.current);
         recordTiming("ws.flush", nowMs() - flushStartMs);
         setGauge("ws.frame_count", framesRef.current.size);
         setGauge("ws.robot_state_count", robotStatesRef.current.size);
@@ -175,6 +183,12 @@ export function useWebSocket(url: string): WebSocketState {
               "ws.active_preview_size",
               `${msg.active_preview_width}x${msg.active_preview_height}`,
             );
+          } else if (msg?.type === "episode_status") {
+            episodeStatusRef.current = msg;
+            dirtyRef.current = true;
+            setGauge("ws.episode_status", msg.state);
+            setGauge("ws.episode_count", msg.episode_count);
+            setGauge("ws.episode_elapsed_ms", msg.elapsed_ms);
           }
         }
       });
@@ -185,7 +199,9 @@ export function useWebSocket(url: string): WebSocketState {
         setGauge("ws.connected", "Disconnected");
         setGauge("ws.stream_info_status", "Unavailable");
         setGauge("ws.active_preview_size", "Unavailable");
+        setGauge("ws.episode_status", "Unavailable");
         streamInfoRef.current = null;
+        episodeStatusRef.current = null;
         dirtyRef.current = true;
         wsRef.current = null;
         scheduleReconnect();
@@ -226,9 +242,10 @@ export function useWebSocket(url: string): WebSocketState {
         wsRef.current = null;
       }
       streamInfoRef.current = null;
+      episodeStatusRef.current = null;
       setGauge("ws.connected", "Disconnected");
     };
   }, [url]);
 
-  return { frames, robotStates, streamInfo, connected, send };
+  return { frames, robotStates, streamInfo, episodeStatus, connected, send };
 }

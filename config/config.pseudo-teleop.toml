@@ -8,23 +8,35 @@ shutdown_timeout_ms = 3000
 child_poll_interval_ms = 100
 
 [visualizer]
-port = 9090
+port = 9191
 max_preview_width = 320
 max_preview_height = 240
-jpeg_quality = 80
+jpeg_quality = 30
 preview_fps = 30
 
 [[devices]]
-name = "camera_webcam"
+name = "camera_top"
 type = "camera"
-driver = "v4l2"
-id = "/dev/video0"
+driver = "pseudo"
+id = "pseudo_cam_0"
 width = 640
 height = 480
 fps = 30
 pixel_format = "rgb24"
 stream = "color"
-transport = "usb"
+transport = "simulated"
+
+[[devices]]
+name = "camera_side"
+type = "camera"
+driver = "pseudo"
+id = "pseudo_cam_1"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+stream = "color"
+transport = "simulated"
 
 [[devices]]
 name = "leader_arm"
@@ -69,15 +81,15 @@ queue_size = 32
 
 [storage]
 backend = "local"
-output_path = "./output/v4l2-pseudo"
+output_path = "./output/pseudo-teleop"
 
 [monitor]
 metrics_frequency_hz = 1.0
 
-[monitor.thresholds."camera_webcam".actual_fps]
-explanation = "Webcam FPS dropped below target"
+[monitor.thresholds."camera_top".actual_fps]
+explanation = "Top pseudo camera FPS dropped below target"
 lt = 28.0
 
-[monitor.thresholds."encoder.camera_webcam".queue_depth]
-explanation = "Encoder queue for webcam is nearly full"
-gt = 80.0
+[monitor.thresholds."camera_side".actual_fps]
+explanation = "Side pseudo camera FPS dropped below target"
+lt = 28.0

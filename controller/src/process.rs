@@ -3,7 +3,9 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(test)]
 use std::sync::atomic::AtomicBool;
+#[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -67,6 +69,7 @@ pub fn spawn_child(spec: &ChildSpec, log_dir: &Path) -> io::Result<ManagedChild>
     })
 }
 
+#[cfg(test)]
 pub fn monitor_children(
     children: &mut [ManagedChild],
     shutdown_requested: &AtomicBool,
@@ -77,17 +80,24 @@ pub fn monitor_children(
             return Ok(ShutdownTrigger::Signal);
         }
 
-        for child in children.iter_mut() {
-            if let Some(status) = child.child.try_wait()? {
-                return Ok(ShutdownTrigger::ChildExited {
-                    id: child.id.clone(),
-                    status,
-                });
-            }
+        if let Some(trigger) = poll_children_once(children)? {
+            return Ok(trigger);
         }
 
         thread::sleep(poll_interval);
     }
+}
+
+pub fn poll_children_once(children: &mut [ManagedChild]) -> io::Result<Option<ShutdownTrigger>> {
+    for child in children.iter_mut() {
+        if let Some(status) = child.child.try_wait()? {
+            return Ok(Some(ShutdownTrigger::ChildExited {
+                id: child.id.clone(),
+                status,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 pub fn terminate_children(

@@ -12,8 +12,9 @@
 ///
 /// Text/JSON messages (both directions):
 ///   Visualizer → UI: {"type":"robot_state","name":"...","timestamp_ns":...,...}
+///   Visualizer → UI: {"type":"episode_status","state":"idle","episode_count":0,...}
 ///   UI → Visualizer:  {"type":"command","action":"...","width":...,"height":...}
-use rollio_types::messages::RobotState;
+use rollio_types::messages::{EpisodeCommand, EpisodeStatus, RobotState};
 use serde::{Deserialize, Serialize};
 
 use crate::stream_info::StreamInfoSnapshot;
@@ -82,6 +83,25 @@ pub fn encode_robot_state(name: &str, state: &RobotState) -> String {
     serde_json::to_string(&msg).unwrap_or_default()
 }
 
+#[derive(Serialize)]
+struct EpisodeStatusJson {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    state: &'static str,
+    episode_count: u32,
+    elapsed_ms: u64,
+}
+
+pub fn encode_episode_status(status: &EpisodeStatus) -> String {
+    serde_json::to_string(&EpisodeStatusJson {
+        msg_type: "episode_status",
+        state: status.state.as_str(),
+        episode_count: status.episode_count,
+        elapsed_ms: status.elapsed_ms,
+    })
+    .unwrap_or_default()
+}
+
 /// Encode stream metadata into a JSON string for WebSocket text message.
 pub fn encode_stream_info(snapshot: &StreamInfoSnapshot) -> String {
     serde_json::to_string(snapshot).unwrap_or_default()
@@ -104,5 +124,43 @@ pub fn decode_command(text: &str) -> Option<Command> {
         Some(command)
     } else {
         None
+    }
+}
+
+pub fn decode_episode_command(command: &Command) -> Option<EpisodeCommand> {
+    match command.action.as_str() {
+        "episode_start" => Some(EpisodeCommand::Start),
+        "episode_stop" => Some(EpisodeCommand::Stop),
+        "episode_keep" => Some(EpisodeCommand::Keep),
+        "episode_discard" => Some(EpisodeCommand::Discard),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rollio_types::messages::EpisodeState;
+
+    #[test]
+    fn encode_episode_status_uses_expected_json_shape() {
+        let json = encode_episode_status(&EpisodeStatus {
+            state: EpisodeState::Recording,
+            episode_count: 2,
+            elapsed_ms: 5_000,
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("episode status should be valid JSON");
+        assert_eq!(value["type"], "episode_status");
+        assert_eq!(value["state"], "recording");
+        assert_eq!(value["episode_count"], 2);
+        assert_eq!(value["elapsed_ms"], 5_000);
+    }
+
+    #[test]
+    fn decode_episode_command_maps_ui_actions() {
+        let command = decode_command(r#"{"type":"command","action":"episode_keep"}"#)
+            .expect("command should parse");
+        assert_eq!(decode_episode_command(&command), Some(EpisodeCommand::Keep));
     }
 }

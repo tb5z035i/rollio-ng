@@ -4,6 +4,9 @@
 .PHONY: cpp-build cpp-test ui-build ui-install ui-test ui-bench-ascii
 .PHONY: python-test python-lint
 
+CARGO_BUILD_ARGS ?=
+CARGO_RUN_ARGS ?= $(CARGO_BUILD_ARGS)
+
 all: build
 
 # ── Aggregate targets ────────────────────────────────────────────────
@@ -28,7 +31,7 @@ lint: rust-lint python-lint
 rust: rust-build
 
 rust-build:
-	cargo build --workspace
+	cargo build --workspace $(CARGO_BUILD_ARGS)
 
 rust-test:
 	cargo test --workspace
@@ -80,4 +83,4 @@ python-lint:
 # ── Smoke ─────────────────────────────────────────────────────────────
 
 smoke-pseudo: build
-	cargo run -p rollio -- collect -c config/config.example.toml
+	cargo run $(CARGO_RUN_ARGS) -p rollio -- collect -c config/config.example.toml

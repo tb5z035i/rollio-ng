@@ -5,8 +5,11 @@
 /// of shared memory once (unavoidable since we release the sample), while
 /// robot state is a small fixed-size Copy type.
 use iceoryx2::prelude::*;
-use rollio_bus::{camera_frames_service_name, robot_state_service_name};
-use rollio_types::messages::{CameraFrameHeader, RobotState};
+use rollio_bus::{
+    camera_frames_service_name, robot_state_service_name, EPISODE_COMMAND_SERVICE,
+    EPISODE_STATUS_SERVICE,
+};
+use rollio_types::messages::{CameraFrameHeader, EpisodeCommand, EpisodeStatus, RobotState};
 
 /// A message received from iceoryx2.
 pub enum IpcMessage {
@@ -19,6 +22,9 @@ pub enum IpcMessage {
         name: String,
         state: Box<RobotState>,
     },
+    EpisodeStatusMsg {
+        status: Box<EpisodeStatus>,
+    },
 }
 
 /// Manages iceoryx2 subscribers for camera and robot topics.
@@ -26,6 +32,10 @@ pub struct IpcPoller {
     node: Node<ipc::Service>,
     camera_subs: Vec<CameraSubscriber>,
     robot_subs: Vec<RobotSubscriber>,
+    episode_status_subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStatus, ()>,
+    episode_command_publisher:
+        iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeCommand, ()>,
 }
 
 struct CameraSubscriber {
@@ -89,10 +99,26 @@ impl IpcPoller {
             });
         }
 
+        let episode_status_service_name: ServiceName = EPISODE_STATUS_SERVICE.try_into()?;
+        let episode_status_service = node
+            .service_builder(&episode_status_service_name)
+            .publish_subscribe::<EpisodeStatus>()
+            .open_or_create()?;
+        let episode_status_subscriber = episode_status_service.subscriber_builder().create()?;
+
+        let episode_command_service_name: ServiceName = EPISODE_COMMAND_SERVICE.try_into()?;
+        let episode_command_service = node
+            .service_builder(&episode_command_service_name)
+            .publish_subscribe::<EpisodeCommand>()
+            .open_or_create()?;
+        let episode_command_publisher = episode_command_service.publisher_builder().create()?;
+
         Ok(Self {
             node,
             camera_subs,
             robot_subs,
+            episode_status_subscriber,
+            episode_command_publisher,
         })
     }
 
@@ -153,7 +179,34 @@ impl IpcPoller {
             }
         }
 
+        let mut latest_episode_status: Option<IpcMessage> = None;
+        loop {
+            match self.episode_status_subscriber.receive() {
+                Ok(Some(sample)) => {
+                    latest_episode_status = Some(IpcMessage::EpisodeStatusMsg {
+                        status: Box::new(*sample.payload()),
+                    });
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    log::warn!("episode status receive error: {e}");
+                    break;
+                }
+            }
+        }
+        if let Some(msg) = latest_episode_status {
+            messages.push(msg);
+        }
+
         messages
+    }
+
+    pub fn publish_episode_command(
+        &self,
+        command: EpisodeCommand,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.episode_command_publisher.send_copy(command)?;
+        Ok(())
     }
 
     /// Access the iceoryx2 node (for `node.wait()` in the poll loop).

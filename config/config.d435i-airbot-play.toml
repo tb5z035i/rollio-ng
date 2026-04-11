@@ -8,7 +8,7 @@ shutdown_timeout_ms = 3000
 child_poll_interval_ms = 100
 
 [visualizer]
-port = 9090
+port = 19090
 max_preview_width = 320
 max_preview_height = 240
 jpeg_quality = 30
@@ -27,29 +27,6 @@ stream = "color"
 transport = "usb"
 
 [[devices]]
-name = "camera_front_depth"
-type = "camera"
-driver = "realsense"
-id = "332322071743"
-width = 640
-height = 480
-fps = 30
-pixel_format = "depth16"
-stream = "depth"
-transport = "usb"
-
-[[devices]]
-name = "camera_webcam_front"
-type = "camera"
-driver = "v4l2"
-id = "/dev/video0"
-width = 1280
-height = 720
-fps = 30
-pixel_format = "rgb24"
-transport = "usb"
-
-[[devices]]
 name = "airbot_leader"
 type = "robot"
 driver = "airbot-play"
@@ -60,11 +37,27 @@ control_frequency_hz = 250.0
 transport = "can"
 interface = "can0"
 product_variant = "play-e2"
+end_effector = "e2"
+
+[[devices]]
+name = "airbot_follower"
+type = "robot"
+driver = "airbot-play"
+id = "PZ31C02507000380"
+dof = 6
+mode = "command-following"
+control_frequency_hz = 250.0
+transport = "can"
+interface = "can1"
+product_variant = "play-g2"
 end_effector = "g2"
-model_path = "./models/play_e2.urdf"
-gravity_comp_torque_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-mit_kp = [14.0, 14.0, 12.0, 10.0, 8.0, 6.0]
-mit_kd = [0.7, 0.7, 0.6, 0.5, 0.4, 0.3]
+
+[[pairing]]
+leader = "airbot_leader"
+follower = "airbot_follower"
+mapping = "direct-joint"
+#joint_index_map = [0, 1, 2, 3, 4, 5]
+#joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 [ui]
 start_key = "s"
@@ -78,7 +71,11 @@ queue_size = 32
 
 [storage]
 backend = "local"
-output_path = "./output"
+output_path = "./output/d435i-airbot-play"
 
 [monitor]
 metrics_frequency_hz = 1.0
+
+[monitor.thresholds."camera_front_color".actual_fps]
+explanation = "D435i color stream FPS dropped below target"
+lt = 28.0

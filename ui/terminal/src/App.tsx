@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Box, useInput, useStdin, useStdout } from "ink";
 import { useWebSocket } from "./lib/websocket.js";
-import { encodeSetPreviewSize } from "./lib/protocol.js";
+import { encodeEpisodeCommand, encodeSetPreviewSize } from "./lib/protocol.js";
 import { resolveCameraNames } from "./lib/camera-layout.js";
 import { getTerminalMetrics } from "./lib/terminal-geometry.js";
 import { TitleBar } from "./components/TitleBar.js";
@@ -25,6 +25,8 @@ import {
   snapshotDebugMetrics,
   type DebugSnapshot,
 } from "./lib/debug-metrics.js";
+import { actionForInput } from "./lib/controls.js";
+import type { EpisodeKeyBindings } from "./runtime-config.js";
 
 function useTerminalMetrics() {
   const { stdout } = useStdout();
@@ -48,14 +50,19 @@ function useTerminalMetrics() {
 type AppProps = {
   websocketUrl: string;
   initialAsciiRendererId: AsciiRendererId;
+  episodeKeyBindings: EpisodeKeyBindings;
 };
 
-export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
+export function App({
+  websocketUrl,
+  initialAsciiRendererId,
+  episodeKeyBindings,
+}: AppProps) {
   const renderStartMs = nowMs();
   const { columns, rows, cellGeometry } = useTerminalMetrics();
   const { isRawModeSupported } = useStdin();
   const supportsInteractiveInput = isRawModeSupported === true;
-  const { frames, robotStates, streamInfo, connected, send } = useWebSocket(
+  const { frames, robotStates, streamInfo, episodeStatus, connected, send } = useWebSocket(
     websocketUrl,
   );
   const [showDebug, setShowDebug] = useState(false);
@@ -76,11 +83,14 @@ export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
         return;
       }
 
-      const normalized = input.toLowerCase();
-      if (normalized === "d") {
+      const action = actionForInput(input, episodeKeyBindings);
+      if (action === "toggle_debug") {
         setShowDebug((prev) => !prev);
-      } else if (normalized === "r") {
+      } else if (action === "cycle_renderer") {
         setCameraRendererId((previous) => nextAsciiRendererId(previous));
+      } else if (action != null) {
+        send(encodeEpisodeCommand(action));
+        setGauge("ui.last_episode_command", action);
       }
     },
     { isActive: supportsInteractiveInput },
@@ -200,6 +210,12 @@ export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
 
   // Build robot panel data
   const robotEntries = Array.from(robotStates.entries());
+  const effectiveEpisodeStatus = episodeStatus ?? {
+    type: "episode_status" as const,
+    state: "idle" as const,
+    episode_count: 0,
+    elapsed_ms: 0,
+  };
 
   useEffect(() => {
     if (!connected) {
@@ -244,6 +260,9 @@ export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
     setGauge("ui.debug_enabled", showDebug ? "On" : "Off");
     setGauge("ui.camera_renderer", cameraRendererId);
     setGauge("ui.camera_renderer_label", rendererLabel);
+    setGauge("ui.episode_state", effectiveEpisodeStatus.state);
+    setGauge("ui.episode_count", effectiveEpisodeStatus.episode_count);
+    setGauge("ui.episode_elapsed_ms", effectiveEpisodeStatus.elapsed_ms);
     setGauge(
       "ui.stream_info_available",
       streamInfo ? "Ready" : "Waiting",
@@ -272,6 +291,9 @@ export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
     showDebug,
     cameraRendererId,
     rendererLabel,
+    effectiveEpisodeStatus.elapsed_ms,
+    effectiveEpisodeStatus.episode_count,
+    effectiveEpisodeStatus.state,
     streamInfo,
     cameraPreviewRaster.height,
     cameraPreviewRaster.width,
@@ -354,8 +376,10 @@ export function App({ websocketUrl, initialAsciiRendererId }: AppProps) {
       {/* Status Bar */}
       <StatusBar
         mode="Collect"
-        state="Idle"
-        episodeCount={0}
+        state={effectiveEpisodeStatus.state}
+        episodeCount={effectiveEpisodeStatus.episode_count}
+        elapsedMs={effectiveEpisodeStatus.elapsed_ms}
+        episodeKeyBindings={episodeKeyBindings}
         connected={connected}
         health={health}
         width={columns}

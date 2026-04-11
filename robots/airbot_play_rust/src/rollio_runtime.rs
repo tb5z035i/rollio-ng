@@ -1,16 +1,16 @@
-use airbot_play_rust::arm::{ARM_DOF, ArmJointFeedback, ArmState};
+use airbot_play_rust::arm::{ArmJointFeedback, ArmState, ARM_DOF};
 use airbot_play_rust::can::worker::CanWorkerBackend;
 use airbot_play_rust::client::{AirbotPlayClient, ClientError};
 use airbot_play_rust::model::{ModelBackendKind, Pose};
 use async_trait::async_trait;
 use iceoryx2::prelude::*;
-use rollio_bus::{CONTROL_EVENTS_SERVICE, robot_command_service_name, robot_state_service_name};
+use rollio_bus::{robot_command_service_name, robot_state_service_name, CONTROL_EVENTS_SERVICE};
 use rollio_types::config::RobotMode;
 use rollio_types::messages::{CommandMode, ControlEvent, RobotCommand, RobotState, MAX_JOINTS};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::time::{MissedTickBehavior, interval};
+use tokio::time::{interval, MissedTickBehavior};
 
 type StatePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, RobotState, ()>;
 type CommandSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, RobotCommand, ()>;
@@ -51,6 +51,8 @@ pub enum RollioRuntimeError {
     InvalidDof(usize),
     #[error("publish_rate_hz must be a positive finite number, got {0}")]
     InvalidPublishRate(f64),
+    #[error("invalid cartesian target: {0}")]
+    InvalidCartesianTarget(String),
     #[error("iceoryx2 error: {0}")]
     Ipc(String),
 }
@@ -66,6 +68,7 @@ pub trait RuntimeClient: Send + Sync {
     fn latest_feedback(&self) -> Option<ArmJointFeedback>;
     async fn set_arm_state(&self, state: ArmState) -> Result<(), ClientError>;
     fn submit_joint_target(&self, positions: [f64; ARM_DOF]) -> Result<(), ClientError>;
+    fn submit_task_target(&self, pose: &Pose) -> Result<(), ClientError>;
     fn query_current_pose(&self) -> Result<Pose, ClientError>;
     async fn shutdown_gracefully(&self) -> Result<(), ClientError>;
 }
@@ -82,6 +85,10 @@ impl RuntimeClient for AirbotPlayClient {
 
     fn submit_joint_target(&self, positions: [f64; ARM_DOF]) -> Result<(), ClientError> {
         AirbotPlayClient::submit_joint_target(self, positions).map(|_| ())
+    }
+
+    fn submit_task_target(&self, pose: &Pose) -> Result<(), ClientError> {
+        AirbotPlayClient::submit_task_target(self, pose).map(|_| ())
     }
 
     fn query_current_pose(&self) -> Result<Pose, ClientError> {
@@ -127,7 +134,9 @@ where
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut current_mode = config.initial_mode;
-    client.set_arm_state(arm_state_for_mode(current_mode)).await?;
+    client
+        .set_arm_state(arm_state_for_mode(current_mode))
+        .await?;
 
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -154,7 +163,15 @@ where
 
                     if current_mode == RobotMode::CommandFollowing {
                         if let Some(command) = drain_latest_command(&command_subscriber)? {
-                            client.submit_joint_target(command_targets(&command, config.dof))?;
+                            if matches!(command.mode, CommandMode::Cartesian) {
+                                let pose = Pose::from_slice(&command.cartesian_target).map_err(|error| {
+                                    RollioRuntimeError::InvalidCartesianTarget(error.to_string())
+                                })?;
+                                client.submit_task_target(&pose)?;
+                            } else {
+                                let targets = command_targets(&command, config.dof);
+                                client.submit_joint_target(targets)?;
+                            }
                         }
                     } else {
                         let _ = drain_latest_command(&command_subscriber)?;
@@ -187,7 +204,9 @@ fn validate_config(config: &RollioRuntimeConfig) -> Result<(), RollioRuntimeErro
         return Err(RollioRuntimeError::InvalidDof(config.dof));
     }
     if !config.publish_rate_hz.is_finite() || config.publish_rate_hz <= 0.0 {
-        return Err(RollioRuntimeError::InvalidPublishRate(config.publish_rate_hz));
+        return Err(RollioRuntimeError::InvalidPublishRate(
+            config.publish_rate_hz,
+        ));
     }
     Ok(())
 }
@@ -224,8 +243,9 @@ fn open_ports(
         .create()
         .map_err(map_iceoryx_error)?;
 
-    let control_service_name: ServiceName =
-        CONTROL_EVENTS_SERVICE.try_into().map_err(map_iceoryx_error)?;
+    let control_service_name: ServiceName = CONTROL_EVENTS_SERVICE
+        .try_into()
+        .map_err(map_iceoryx_error)?;
     let control_service = node
         .service_builder(&control_service_name)
         .publish_subscribe::<ControlEvent>()
@@ -309,7 +329,10 @@ fn publish_robot_state(
 }
 
 fn command_targets(command: &RobotCommand, dof: usize) -> [f64; ARM_DOF] {
-    let active_joints = (command.num_joints as usize).min(dof).min(ARM_DOF).min(MAX_JOINTS);
+    let active_joints = (command.num_joints as usize)
+        .min(dof)
+        .min(ARM_DOF)
+        .min(MAX_JOINTS);
     let mut targets = [0.0; ARM_DOF];
 
     match command.mode {
@@ -318,7 +341,8 @@ fn command_targets(command: &RobotCommand, dof: usize) -> [f64; ARM_DOF] {
         }
         CommandMode::Cartesian => {
             let cartesian_joints = active_joints.min(command.cartesian_target.len());
-            targets[..cartesian_joints].copy_from_slice(&command.cartesian_target[..cartesian_joints]);
+            targets[..cartesian_joints]
+                .copy_from_slice(&command.cartesian_target[..cartesian_joints]);
         }
     }
 
@@ -376,12 +400,9 @@ mod tests {
         control_publisher: ControlPublisher,
     }
 
-    type StateSubscriber =
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, RobotState, ()>;
-    type CommandPublisher =
-        iceoryx2::port::publisher::Publisher<ipc::Service, RobotCommand, ()>;
-    type ControlPublisher =
-        iceoryx2::port::publisher::Publisher<ipc::Service, ControlEvent, ()>;
+    type StateSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, RobotState, ()>;
+    type CommandPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, RobotCommand, ()>;
+    type ControlPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, ControlEvent, ()>;
 
     #[derive(Default)]
     struct FakeClient {
@@ -389,6 +410,7 @@ mod tests {
         pose: RwLock<Option<Pose>>,
         state_calls: Mutex<Vec<ArmState>>,
         targets: Mutex<Vec<[f64; ARM_DOF]>>,
+        task_targets: Mutex<Vec<[f64; 7]>>,
         shutdown_called: AtomicBool,
     }
 
@@ -399,6 +421,7 @@ mod tests {
                 pose: RwLock::new(None),
                 state_calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
+                task_targets: Mutex::new(Vec::new()),
                 shutdown_called: AtomicBool::new(false),
             }
         }
@@ -430,6 +453,18 @@ mod tests {
                 .lock()
                 .expect("targets lock poisoned")
                 .push(positions);
+            Ok(())
+        }
+
+        fn submit_task_target(&self, pose: &Pose) -> Result<(), ClientError> {
+            let pose_values: [f64; 7] = pose
+                .as_vec()
+                .try_into()
+                .expect("pose should serialize to 7 values");
+            self.task_targets
+                .lock()
+                .expect("task targets lock poisoned")
+                .push(pose_values);
             Ok(())
         }
 
@@ -536,7 +571,12 @@ mod tests {
 
                 timeout(Duration::from_secs(2), async {
                     loop {
-                        if !client.targets.lock().expect("targets lock poisoned").is_empty() {
+                        if !client
+                            .targets
+                            .lock()
+                            .expect("targets lock poisoned")
+                            .is_empty()
+                        {
                             break;
                         }
                         sleep(Duration::from_millis(10)).await;
@@ -544,13 +584,19 @@ mod tests {
                 })
                 .await?;
 
-                let state_calls = client.state_calls.lock().expect("state calls lock poisoned");
+                let state_calls = client
+                    .state_calls
+                    .lock()
+                    .expect("state calls lock poisoned");
                 assert_eq!(state_calls[0], ArmState::FreeDrive);
                 assert!(state_calls.contains(&ArmState::CommandFollowing));
                 drop(state_calls);
 
                 let targets = client.targets.lock().expect("targets lock poisoned");
-                assert_eq!(targets.last().copied(), Some([1.0, 1.1, 1.2, 1.3, 1.4, 1.5]));
+                assert_eq!(
+                    targets.last().copied(),
+                    Some([1.0, 1.1, 1.2, 1.3, 1.4, 1.5])
+                );
                 drop(targets);
 
                 send_control_event(&ports.control_publisher, ControlEvent::Shutdown)?;
@@ -561,7 +607,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cartesian_commands_use_rollio_fallback_mapping() -> Result<(), Box<dyn Error>> {
+    async fn cartesian_commands_use_task_target_api() -> Result<(), Box<dyn Error>> {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -593,13 +639,18 @@ mod tests {
                 let _warmup = receive_state(&ports.state_subscriber).await?;
                 send_cartesian_command(
                     &ports.command_publisher,
-                    [0.5, 0.4, 0.3, 0.2, 0.1, -0.1, 1.0],
-                    6,
+                    [0.5, 0.4, 0.3, 0.0, 0.0, 0.0, 1.0],
+                    0,
                 )?;
 
                 timeout(Duration::from_secs(2), async {
                     loop {
-                        if !client.targets.lock().expect("targets lock poisoned").is_empty() {
+                        if !client
+                            .task_targets
+                            .lock()
+                            .expect("task targets lock poisoned")
+                            .is_empty()
+                        {
                             break;
                         }
                         sleep(Duration::from_millis(10)).await;
@@ -608,8 +659,18 @@ mod tests {
                 .await?;
 
                 let targets = client.targets.lock().expect("targets lock poisoned");
-                assert_eq!(targets.last().copied(), Some([0.5, 0.4, 0.3, 0.2, 0.1, -0.1]));
+                assert!(targets.is_empty(), "cartesian commands should not use joint API");
                 drop(targets);
+
+                let task_targets = client
+                    .task_targets
+                    .lock()
+                    .expect("task targets lock poisoned");
+                assert_eq!(
+                    task_targets.last().copied(),
+                    Some([0.5, 0.4, 0.3, 0.0, 0.0, 0.0, 1.0])
+                );
+                drop(task_targets);
 
                 send_control_event(&ports.control_publisher, ControlEvent::Shutdown)?;
                 task.await??;
@@ -631,8 +692,9 @@ mod tests {
             .open_or_create()?;
         let state_subscriber = state_service.subscriber_builder().create()?;
 
-        let command_service_name: ServiceName =
-            robot_command_service_name(device_name).as_str().try_into()?;
+        let command_service_name: ServiceName = robot_command_service_name(device_name)
+            .as_str()
+            .try_into()?;
         let command_service = node
             .service_builder(&command_service_name)
             .publish_subscribe::<RobotCommand>()

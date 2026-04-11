@@ -1,5 +1,6 @@
 mod cli;
 mod collect;
+mod episode;
 mod process;
 
 use clap::Parser;
