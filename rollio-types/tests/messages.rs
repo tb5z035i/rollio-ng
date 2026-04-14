@@ -213,6 +213,31 @@ fn episode_status_roundtrip() {
     assert_eq!(roundtripped.elapsed_ms, 5_250);
 }
 
+#[test]
+fn episode_ready_roundtrip() {
+    let ready = EpisodeReady {
+        episode_index: 7,
+        staging_dir: FixedString256::new("/dev/shm/rollio/episodes/episode_000007"),
+    };
+    let roundtripped = unsafe { roundtrip(&ready) };
+    assert_eq!(roundtripped.episode_index, 7);
+    assert_eq!(
+        roundtripped.staging_dir.as_str(),
+        "/dev/shm/rollio/episodes/episode_000007"
+    );
+}
+
+#[test]
+fn episode_stored_roundtrip() {
+    let stored = EpisodeStored {
+        episode_index: 9,
+        output_path: FixedString256::new("./output/pseudo-teleop"),
+    };
+    let roundtripped = unsafe { roundtrip(&stored) };
+    assert_eq!(roundtripped.episode_index, 9);
+    assert_eq!(roundtripped.output_path.as_str(), "./output/pseudo-teleop");
+}
+
 // ---------------------------------------------------------------------------
 // MetricsReport
 // ---------------------------------------------------------------------------

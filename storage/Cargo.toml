@@ -6,3 +6,7 @@ edition = "2021"
 [dependencies]
 rollio-types = { path = "../rollio-types" }
 iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }
+clap = { version = "4.6.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+rollio-bus = { version = "0.1.0", path = "../rollio-bus" }

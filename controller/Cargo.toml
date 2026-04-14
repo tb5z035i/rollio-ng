@@ -11,3 +11,6 @@ clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
 toml = { version = "0.8", features = ["display"] }
 libc = "0.2.184"
+
+[dev-dependencies]
+serde_json = "1.0.149"

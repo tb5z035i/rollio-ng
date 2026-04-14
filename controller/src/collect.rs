@@ -6,13 +6,17 @@ use crate::process::{
 };
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    robot_command_service_name, robot_state_service_name, CONTROL_EVENTS_SERVICE,
-    EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
+    robot_command_service_name, robot_state_service_name, BACKPRESSURE_SERVICE,
+    CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
+    EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::{
-    Config, DeviceConfig, DeviceType, MappingStrategy, TeleopRuntimeConfig,
+    AssemblerRuntimeConfig, Config, DeviceConfig, DeviceType, EncoderRuntimeConfig,
+    MappingStrategy, StorageRuntimeConfig, TeleopRuntimeConfig,
 };
-use rollio_types::messages::{ControlEvent, EpisodeCommand, EpisodeState, EpisodeStatus};
+use rollio_types::messages::{
+    BackpressureEvent, ControlEvent, EpisodeCommand, EpisodeState, EpisodeStatus, EpisodeStored,
+};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::error::Error;
 use std::ffi::OsString;
@@ -114,6 +118,7 @@ fn run_collect_loop(
     controller_ipc: &ControllerIpc,
     lifecycle: &mut EpisodeLifecycle,
 ) -> Result<ShutdownTrigger, Box<dyn Error>> {
+    let mut start_blocked = false;
     loop {
         if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(ShutdownTrigger::Signal);
@@ -123,17 +128,20 @@ fn run_collect_loop(
             return Ok(trigger);
         }
 
+        let backpressure_events = controller_ipc.drain_backpressure_events()?;
+        apply_backpressure_events(&mut start_blocked, &backpressure_events);
+
+        let stored_events = controller_ipc.drain_episode_stored()?;
+        let mut status_changed =
+            apply_episode_stored_events(lifecycle, &mut start_blocked, &stored_events);
+
         let commands = controller_ipc.drain_episode_commands()?;
         let now = Instant::now();
-        let mut status_changed = false;
-        for command in commands {
-            match lifecycle.handle_command(command, now) {
-                Ok(event) => {
-                    controller_ipc.publish_control_event(event)?;
-                    status_changed = true;
-                }
-                Err(error) => eprintln!("rollio: {error}"),
-            }
+        let (control_events, command_changed) =
+            collect_control_events(lifecycle, commands, &mut start_blocked, now);
+        status_changed |= command_changed;
+        for event in control_events {
+            controller_ipc.publish_control_event(event)?;
         }
 
         if status_changed || lifecycle.state() == EpisodeState::Recording {
@@ -196,6 +204,29 @@ fn build_collect_specs(
             current_exe_dir,
         )?);
     }
+
+    for encoder_config in config.encoder_runtime_configs() {
+        specs.push(build_encoder_spec(
+            &encoder_config,
+            workspace_root,
+            current_exe_dir,
+        )?);
+    }
+
+    let embedded_config_toml = toml::to_string(config)?;
+    let assembler_config = config.assembler_runtime_config(embedded_config_toml);
+    specs.push(build_assembler_spec(
+        &assembler_config,
+        workspace_root,
+        current_exe_dir,
+    )?);
+
+    let storage_config = config.storage_runtime_config();
+    specs.push(build_storage_spec(
+        &storage_config,
+        workspace_root,
+        current_exe_dir,
+    )?);
 
     let ui_runtime_config = config.ui_runtime_config();
     let ui_entrypoint = workspace_root.join("ui/terminal/dist/index.js");
@@ -347,6 +378,129 @@ fn build_teleop_spec(
     })
 }
 
+fn build_encoder_spec(
+    config: &EncoderRuntimeConfig,
+    workspace_root: &Path,
+    current_exe_dir: &Path,
+) -> Result<ChildSpec, Box<dyn Error>> {
+    let inline_config = toml::to_string(config)?;
+    let camera_name = config
+        .camera_name
+        .as_deref()
+        .unwrap_or(config.process_id.as_str());
+    Ok(ChildSpec {
+        id: format!("encoder-{camera_name}"),
+        command: ResolvedCommand {
+            program: resolve_program(current_exe_dir.join("rollio-encoder"), "rollio-encoder"),
+            args: vec![
+                OsString::from("run"),
+                OsString::from("--config-inline"),
+                OsString::from(inline_config),
+            ],
+        },
+        working_directory: workspace_root.to_path_buf(),
+        inherit_stdio: false,
+    })
+}
+
+fn build_assembler_spec(
+    config: &AssemblerRuntimeConfig,
+    workspace_root: &Path,
+    current_exe_dir: &Path,
+) -> Result<ChildSpec, Box<dyn Error>> {
+    let inline_config = toml::to_string(config)?;
+    Ok(ChildSpec {
+        id: "assembler".into(),
+        command: ResolvedCommand {
+            program: resolve_program(
+                current_exe_dir.join("rollio-episode-assembler"),
+                "rollio-episode-assembler",
+            ),
+            args: vec![
+                OsString::from("run"),
+                OsString::from("--config-inline"),
+                OsString::from(inline_config),
+            ],
+        },
+        working_directory: workspace_root.to_path_buf(),
+        inherit_stdio: false,
+    })
+}
+
+fn build_storage_spec(
+    config: &StorageRuntimeConfig,
+    workspace_root: &Path,
+    current_exe_dir: &Path,
+) -> Result<ChildSpec, Box<dyn Error>> {
+    let inline_config = toml::to_string(config)?;
+    Ok(ChildSpec {
+        id: "storage".into(),
+        command: ResolvedCommand {
+            program: resolve_program(current_exe_dir.join("rollio-storage"), "rollio-storage"),
+            args: vec![
+                OsString::from("run"),
+                OsString::from("--config-inline"),
+                OsString::from(inline_config),
+            ],
+        },
+        working_directory: workspace_root.to_path_buf(),
+        inherit_stdio: false,
+    })
+}
+
+fn apply_backpressure_events(start_blocked: &mut bool, events: &[BackpressureEvent]) {
+    for event in events {
+        eprintln!(
+            "rollio: backpressure from {} queue={} - blocking new episode starts",
+            event.process_id.as_str(),
+            event.queue_name.as_str()
+        );
+        *start_blocked = true;
+    }
+}
+
+fn apply_episode_stored_events(
+    lifecycle: &mut EpisodeLifecycle,
+    start_blocked: &mut bool,
+    events: &[EpisodeStored],
+) -> bool {
+    let mut changed = false;
+    for event in events {
+        if lifecycle.record_episode_stored(event.episode_index) {
+            *start_blocked = false;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn collect_control_events(
+    lifecycle: &mut EpisodeLifecycle,
+    commands: Vec<EpisodeCommand>,
+    start_blocked: &mut bool,
+    now: Instant,
+) -> (Vec<ControlEvent>, bool) {
+    let mut events = Vec::new();
+    let mut status_changed = false;
+    for command in commands {
+        if matches!(command, EpisodeCommand::Start) && *start_blocked {
+            eprintln!("rollio: episode start blocked by pipeline backpressure");
+            continue;
+        }
+        match lifecycle.handle_command(command, now) {
+            Ok(event) => {
+                if matches!(event, ControlEvent::EpisodeDiscard { .. }) {
+                    *start_blocked = false;
+                }
+                events.push(event);
+                status_changed = true;
+            }
+            Err(error) => eprintln!("rollio: {error}"),
+        }
+    }
+    (events, status_changed)
+}
+
 fn resolve_program(local_candidate: PathBuf, fallback_name: &str) -> OsString {
     if local_candidate.exists() {
         local_candidate.into_os_string()
@@ -384,6 +538,10 @@ struct ControllerIpc {
     episode_command_subscriber:
         iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeCommand, ()>,
     episode_status_publisher: iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeStatus, ()>,
+    backpressure_subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, BackpressureEvent, ()>,
+    episode_stored_subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStored, ()>,
 }
 
 impl ControllerIpc {
@@ -419,11 +577,31 @@ impl ControllerIpc {
             .max_nodes(8)
             .open_or_create()?;
 
+        let backpressure_service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
+        let backpressure_service = node
+            .service_builder(&backpressure_service_name)
+            .publish_subscribe::<BackpressureEvent>()
+            .max_publishers(16)
+            .max_subscribers(8)
+            .max_nodes(16)
+            .open_or_create()?;
+
+        let stored_service_name: ServiceName = EPISODE_STORED_SERVICE.try_into()?;
+        let stored_service = node
+            .service_builder(&stored_service_name)
+            .publish_subscribe::<EpisodeStored>()
+            .max_publishers(8)
+            .max_subscribers(8)
+            .max_nodes(16)
+            .open_or_create()?;
+
         Ok(Self {
             _node: node,
             control_publisher: control_service.publisher_builder().create()?,
             episode_command_subscriber: command_service.subscriber_builder().create()?,
             episode_status_publisher: status_service.publisher_builder().create()?,
+            backpressure_subscriber: backpressure_service.subscriber_builder().create()?,
+            episode_stored_subscriber: stored_service.subscriber_builder().create()?,
         })
     }
 
@@ -447,6 +625,26 @@ impl ControllerIpc {
         Ok(())
     }
 
+    fn drain_backpressure_events(&self) -> Result<Vec<BackpressureEvent>, Box<dyn Error>> {
+        let mut events = Vec::new();
+        loop {
+            let Some(sample) = self.backpressure_subscriber.receive()? else {
+                return Ok(events);
+            };
+            events.push(*sample.payload());
+        }
+    }
+
+    fn drain_episode_stored(&self) -> Result<Vec<EpisodeStored>, Box<dyn Error>> {
+        let mut events = Vec::new();
+        loop {
+            let Some(sample) = self.episode_stored_subscriber.receive()? else {
+                return Ok(events);
+            };
+            events.push(*sample.payload());
+        }
+    }
+
     fn send_shutdown(&self) -> Result<(), Box<dyn Error>> {
         self.publish_control_event(ControlEvent::Shutdown)
     }
@@ -455,6 +653,10 @@ impl ControllerIpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rollio_types::config::Config;
+    use rollio_types::messages::{FixedString256, FixedString64};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn signal_trigger_is_successful_shutdown() {
@@ -555,5 +757,136 @@ mod tests {
         assert!(inline.contains("leader_state_topic = \"robot/leader_arm/state\""));
         assert!(inline.contains("follower_state_topic = \"robot/follower_arm/state\""));
         assert!(inline.contains("follower_command_topic = \"robot/follower_arm/command\""));
+    }
+
+    #[test]
+    fn build_collect_specs_adds_encoder_assembler_and_storage_children() {
+        let mut config = include_str!("../../config/config.example.toml")
+            .parse::<Config>()
+            .expect("example config should parse");
+        let workspace_root = temp_workspace_root();
+        let staging_root = workspace_root.join("staging");
+        config.assembler.staging_dir = staging_root.to_string_lossy().into_owned();
+        create_fake_ui_bundle(&workspace_root);
+
+        let specs =
+            build_collect_specs(&config, &workspace_root, Path::new(".")).expect("specs should build");
+
+        let ids = specs.iter().map(|spec| spec.id.as_str()).collect::<Vec<_>>();
+        assert!(ids.contains(&"encoder-camera_top"));
+        assert!(ids.contains(&"encoder-camera_side"));
+        assert!(ids.contains(&"assembler"));
+        assert!(ids.contains(&"storage"));
+
+        let encoder_spec = specs
+            .iter()
+            .find(|spec| spec.id == "encoder-camera_top")
+            .expect("encoder spec should exist");
+        let inline = encoder_spec.command.args[2].to_string_lossy();
+        assert!(inline.contains("process_id = \"encoder.camera_top\""));
+        assert!(inline.contains("frame_topic = \"camera/camera_top/frames\""));
+        assert!(
+            inline.contains(&format!(
+                "output_dir = \"{}\"",
+                workspace_root
+                    .join("staging/encoders/camera_top")
+                    .to_string_lossy()
+            )),
+            "unexpected encoder inline config: {inline}"
+        );
+
+        let assembler_spec = specs
+            .iter()
+            .find(|spec| spec.id == "assembler")
+            .expect("assembler spec should exist");
+        let assembler_inline = assembler_spec.command.args[2].to_string_lossy();
+        assert!(assembler_inline.contains("encoded_handoff = \"file\""));
+        assert!(assembler_inline.contains("process_id = \"episode-assembler\""));
+
+        let storage_spec = specs
+            .iter()
+            .find(|spec| spec.id == "storage")
+            .expect("storage spec should exist");
+        let storage_inline = storage_spec.command.args[2].to_string_lossy();
+        assert!(storage_inline.contains("process_id = \"storage\""));
+
+        let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn collect_control_events_blocks_start_until_storage_completes() {
+        let now = Instant::now();
+        let mut lifecycle = EpisodeLifecycle::default();
+        let mut start_blocked = false;
+        let (start_events, changed) = collect_control_events(
+            &mut lifecycle,
+            vec![EpisodeCommand::Start, EpisodeCommand::Stop, EpisodeCommand::Keep],
+            &mut start_blocked,
+            now,
+        );
+        assert!(changed);
+        assert_eq!(start_events.len(), 3);
+        assert!(matches!(
+            start_events[0],
+            ControlEvent::RecordingStart { episode_index: 0 }
+        ));
+        assert!(matches!(
+            start_events[2],
+            ControlEvent::EpisodeKeep { episode_index: 0 }
+        ));
+
+        start_blocked = true;
+        let (blocked_events, changed) = collect_control_events(
+            &mut lifecycle,
+            vec![EpisodeCommand::Start],
+            &mut start_blocked,
+            now,
+        );
+        assert!(blocked_events.is_empty());
+        assert!(!changed);
+        assert_eq!(lifecycle.state(), EpisodeState::Idle);
+
+        start_blocked = true;
+        let stored_changed = apply_episode_stored_events(
+            &mut lifecycle,
+            &mut start_blocked,
+            &[EpisodeStored {
+                episode_index: 0,
+                output_path: FixedString256::new("./output"),
+            }],
+        );
+        assert!(stored_changed);
+        assert!(!start_blocked);
+        assert_eq!(lifecycle.status(now).episode_count, 1);
+    }
+
+    #[test]
+    fn apply_backpressure_events_blocks_future_starts() {
+        let mut start_blocked = false;
+        apply_backpressure_events(
+            &mut start_blocked,
+            &[BackpressureEvent {
+                process_id: FixedString64::new("encoder.camera_top"),
+                queue_name: FixedString64::new("frame_queue"),
+            }],
+        );
+        assert!(start_blocked);
+    }
+
+    fn temp_workspace_root() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("rollio-controller-tests-{suffix}"));
+        fs::create_dir_all(&root).expect("temp workspace root should exist");
+        root
+    }
+
+    fn create_fake_ui_bundle(workspace_root: &Path) {
+        let ui_dir = workspace_root.join("ui/terminal/dist");
+        fs::create_dir_all(&ui_dir).expect("ui dist dir should exist");
+        fs::write(ui_dir.join("index.js"), "process.exit(0);\n")
+            .expect("fake ui bundle should be written");
     }
 }

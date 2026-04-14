@@ -2,6 +2,8 @@ pub const CONTROL_EVENTS_SERVICE: &str = "control/events";
 pub const EPISODE_COMMAND_SERVICE: &str = "control/episode-command";
 pub const EPISODE_STATUS_SERVICE: &str = "control/episode-status";
 pub const VIDEO_READY_SERVICE: &str = "encoder/video-ready";
+pub const EPISODE_READY_SERVICE: &str = "assembler/episode-ready";
+pub const EPISODE_STORED_SERVICE: &str = "storage/episode-stored";
 pub const BACKPRESSURE_SERVICE: &str = "encoder/backpressure";
 
 pub fn camera_frames_service_name(device_name: &str) -> String {

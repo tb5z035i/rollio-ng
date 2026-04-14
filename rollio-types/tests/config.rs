@@ -16,6 +16,10 @@ fn parse_example_config() {
         config.encoder.resolved_artifact_format(),
         EncoderArtifactFormat::Mp4
     );
+    assert_eq!(config.assembler.encoded_handoff, EncodedHandoffMode::File);
+    #[cfg(target_os = "linux")]
+    assert_eq!(config.assembler.staging_dir, "/dev/shm/rollio");
+    assert_eq!(config.storage.queue_size, 32);
     assert_eq!(config.storage.backend, StorageBackend::Local);
     assert_eq!(config.visualizer.port, 9090);
     assert_eq!(config.controller.shutdown_timeout_ms, 3000);
@@ -31,6 +35,37 @@ fn parse_example_config() {
     assert_eq!(config.ui.stop_key, "e");
     assert_eq!(config.ui.keep_key, "k");
     assert_eq!(config.ui.discard_key, "x");
+
+    let encoder_configs = config.encoder_runtime_configs();
+    assert_eq!(encoder_configs.len(), 2);
+    assert_eq!(encoder_configs[0].process_id, "encoder.camera_top");
+    assert_eq!(encoder_configs[0].camera_name.as_deref(), Some("camera_top"));
+    assert_eq!(
+        encoder_configs[0].frame_topic.as_deref(),
+        Some("camera/camera_top/frames")
+    );
+    assert!(
+        encoder_configs[0]
+            .output_dir
+            .ends_with("/encoders/camera_top"),
+        "unexpected output dir: {}",
+        encoder_configs[0].output_dir
+    );
+
+    let assembler_runtime = config.assembler_runtime_config(toml_text.to_string());
+    assert_eq!(assembler_runtime.process_id, "episode-assembler");
+    assert_eq!(assembler_runtime.cameras.len(), 2);
+    assert_eq!(assembler_runtime.robots.len(), 2);
+    assert_eq!(assembler_runtime.actions.len(), 1);
+    assert!(
+        assembler_runtime.staging_dir.ends_with("/episodes"),
+        "unexpected staging dir: {}",
+        assembler_runtime.staging_dir
+    );
+
+    let storage_runtime = config.storage_runtime_config();
+    assert_eq!(storage_runtime.process_id, "storage");
+    assert_eq!(storage_runtime.queue_size, 32);
 }
 
 #[test]
@@ -90,8 +125,8 @@ fn parse_airbot_play_eef_config() {
     let follower_eef = config.device_named("airbot_follower_eef").unwrap();
     assert_eq!(follower_eef.driver, "airbot-g2");
     assert_eq!(follower_eef.dof, Some(1));
-    assert_eq!(follower_eef.mit_kp.as_deref(), Some(&[30.0][..]));
-    assert_eq!(follower_eef.mit_kd.as_deref(), Some(&[1.5][..]));
+    assert_eq!(follower_eef.mit_kp.as_deref(), Some(&[10.0][..]));
+    assert_eq!(follower_eef.mit_kd.as_deref(), Some(&[0.5][..]));
 }
 
 #[test]
@@ -304,6 +339,59 @@ fps = 30
     let err = EncoderRuntimeConfig::from_str(toml_text).expect_err("config should be rejected");
     assert!(
         err.to_string().contains("camera_name or frame_topic"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn assembler_runtime_config_supports_explicit_iceoryx2_mode() {
+    let toml_text = r#"
+process_id = "episode-assembler"
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+missing_video_timeout_ms = 4000
+staging_dir = "/tmp/rollio-stage"
+encoded_handoff = "iceoryx2"
+embedded_config_toml = "hello = \"world\""
+
+[[cameras]]
+camera_name = "camera_top"
+encoder_process_id = "encoder.camera_top"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+codec = "h264"
+artifact_format = "mp4"
+
+[[robots]]
+robot_name = "leader"
+state_topic = "robot/leader/state"
+dof = 6
+
+[[actions]]
+source_name = "follower"
+command_topic = "robot/follower/command"
+dof = 6
+"#;
+    let config = AssemblerRuntimeConfig::from_str(toml_text).expect("runtime config should parse");
+    assert_eq!(config.encoded_handoff, EncodedHandoffMode::Iceoryx2);
+    assert_eq!(config.cameras.len(), 1);
+    assert_eq!(config.actions.len(), 1);
+}
+
+#[test]
+fn storage_runtime_config_requires_queue_size() {
+    let toml_text = r#"
+process_id = "storage"
+backend = "local"
+output_path = "./output"
+queue_size = 0
+"#;
+    let err = StorageRuntimeConfig::from_str(toml_text).expect_err("queue_size=0 should fail");
+    assert!(
+        err.to_string().contains("queue_size"),
         "unexpected error: {err}"
     );
 }

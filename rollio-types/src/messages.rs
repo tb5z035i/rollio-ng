@@ -407,6 +407,33 @@ pub struct VideoReady {
 }
 
 // ---------------------------------------------------------------------------
+// EpisodeReady
+// ---------------------------------------------------------------------------
+
+/// Published by the Episode Assembler when a staged episode directory is ready
+/// for persistence by Storage.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("EpisodeReady")]
+#[repr(C)]
+pub struct EpisodeReady {
+    pub episode_index: u32,
+    pub staging_dir: FixedString256,
+}
+
+// ---------------------------------------------------------------------------
+// EpisodeStored
+// ---------------------------------------------------------------------------
+
+/// Published by Storage after an episode has been durably persisted.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("EpisodeStored")]
+#[repr(C)]
+pub struct EpisodeStored {
+    pub episode_index: u32,
+    pub output_path: FixedString256,
+}
+
+// ---------------------------------------------------------------------------
 // BackpressureEvent
 // ---------------------------------------------------------------------------
 

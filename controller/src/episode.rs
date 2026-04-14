@@ -1,4 +1,5 @@
 use rollio_types::messages::{ControlEvent, EpisodeCommand, EpisodeState, EpisodeStatus};
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -8,6 +9,7 @@ pub struct EpisodeLifecycle {
     next_episode_index: u32,
     recording_started_at: Option<Instant>,
     pending_elapsed_ms: u64,
+    stored_episode_indices: BTreeSet<u32>,
 }
 
 impl Default for EpisodeLifecycle {
@@ -18,6 +20,7 @@ impl Default for EpisodeLifecycle {
             next_episode_index: 0,
             recording_started_at: None,
             pending_elapsed_ms: 0,
+            stored_episode_indices: BTreeSet::new(),
         }
     }
 }
@@ -33,6 +36,17 @@ impl EpisodeLifecycle {
             episode_count: self.episode_count,
             elapsed_ms: self.elapsed_ms(now),
         }
+    }
+
+    pub fn record_episode_stored(&mut self, episode_index: u32) -> bool {
+        if episode_index >= self.next_episode_index {
+            return false;
+        }
+        if !self.stored_episode_indices.insert(episode_index) {
+            return false;
+        }
+        self.episode_count = self.episode_count.saturating_add(1);
+        true
     }
 
     pub fn handle_command(
@@ -59,7 +73,6 @@ impl EpisodeLifecycle {
             }
             (EpisodeState::Pending, EpisodeCommand::Keep) => {
                 self.state = EpisodeState::Idle;
-                self.episode_count = self.episode_count.saturating_add(1);
                 let episode_index = self.next_episode_index;
                 self.next_episode_index = self.next_episode_index.saturating_add(1);
                 self.pending_elapsed_ms = 0;
@@ -137,8 +150,10 @@ mod tests {
             .handle_command(EpisodeCommand::Keep, now + Duration::from_millis(75))
             .expect("keep should be valid");
         assert_eq!(lifecycle.state(), EpisodeState::Idle);
-        assert_eq!(lifecycle.episode_count, 1);
+        assert_eq!(lifecycle.episode_count, 0);
         assert_eq!(event, ControlEvent::EpisodeKeep { episode_index: 0 });
+        assert!(lifecycle.record_episode_stored(0));
+        assert_eq!(lifecycle.episode_count, 1);
     }
 
     #[test]
@@ -207,6 +222,15 @@ mod tests {
             .expect("discard should be valid");
 
         assert_eq!(lifecycle.state(), EpisodeState::Idle);
+        assert_eq!(lifecycle.episode_count, 0);
+        assert!(lifecycle.record_episode_stored(0));
         assert_eq!(lifecycle.episode_count, 1);
+        assert!(!lifecycle.record_episode_stored(0));
+    }
+
+    #[test]
+    fn record_episode_stored_ignores_unknown_episode_indices() {
+        let mut lifecycle = EpisodeLifecycle::default();
+        assert!(!lifecycle.record_episode_stored(0));
     }
 }

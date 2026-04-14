@@ -341,18 +341,23 @@ impl LibavSession {
 
         let opened_encoder = encoder.open_as(codec)?;
         let stream_index;
-        let stream_time_base;
         {
             let mut stream = output.add_stream(codec)?;
             stream_index = stream.index();
             stream.set_time_base((1, config.fps as i32));
             stream.set_parameters(&opened_encoder);
-            stream_time_base = stream.time_base();
             unsafe {
                 (*stream.parameters().as_mut_ptr()).codec_tag = 0;
             }
         }
         output.write_header()?;
+        // MP4/mov muxers may rewrite stream time_base during write_header (often to 1/15360).
+        // Packet timestamps must be rescaled to the *post-header* stream time base or duration
+        // collapses to near-zero in the container (playback looks like a single flash of frames).
+        let stream_time_base = output
+            .stream(stream_index)
+            .ok_or_else(|| EncoderError::message("missing video stream after write_header"))?
+            .time_base();
 
         let scaler = ffmpeg::software::scaling::context::Context::get(
             source_pixel,
