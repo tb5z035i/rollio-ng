@@ -37,6 +37,7 @@ const SETUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SETUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(2_000);
 const SETUP_STATE_MAX_AGE: Duration = Duration::from_millis(500);
 const SETUP_UI_SUCCESS_DELAY: Duration = Duration::from_millis(300);
+const IDENTIFY_ACTIVE_MESSAGE_PREFIX: &str = "Identify active for ";
 
 #[derive(Debug, Clone, Copy)]
 struct KnownDriver {
@@ -354,6 +355,23 @@ impl SetupSession {
         self.exit_kind = Some(SetupExitKind::Cancelled);
     }
 
+    fn clear_identify_message(&mut self) -> bool {
+        if self
+            .message
+            .as_deref()
+            .is_some_and(|message| message.starts_with(IDENTIFY_ACTIVE_MESSAGE_PREFIX))
+        {
+            self.message = None;
+            return true;
+        }
+        false
+    }
+
+    fn clear_identify_state(&mut self) -> bool {
+        let had_identify_target = self.identify_device_name.take().is_some();
+        self.clear_identify_message() || had_identify_target
+    }
+
     fn visible_steps(&self) -> &'static [SetupStep] {
         if self.config.mode == CollectionMode::Teleop {
             &[
@@ -393,7 +411,7 @@ impl SetupSession {
         let changed = self.current_step != next;
         self.current_step = next;
         if self.current_step != SetupStep::Devices {
-            self.identify_device_name = None;
+            self.clear_identify_state();
         }
         changed
     }
@@ -412,7 +430,7 @@ impl SetupSession {
         let changed = self.current_step != previous;
         self.current_step = previous;
         if self.current_step != SetupStep::Devices {
-            self.identify_device_name = None;
+            self.clear_identify_state();
         }
         changed
     }
@@ -422,7 +440,7 @@ impl SetupSession {
             self.current_step = SetupStep::Storage;
         }
         if self.current_step != SetupStep::Devices {
-            self.identify_device_name = None;
+            self.clear_identify_state();
         }
     }
 
@@ -514,6 +532,9 @@ impl SetupSession {
     }
 
     fn set_identify_device(&mut self, name: Option<&str>) -> bool {
+        if name.is_none() {
+            return self.clear_identify_state();
+        }
         if self.identify_device_name.as_deref() == name {
             return false;
         }
@@ -590,7 +611,7 @@ impl SetupSession {
         if let Some(index) = self.selected_device_index(name) {
             self.config.devices.remove(index);
             if self.identify_device_name.as_deref() == Some(name) {
-                self.identify_device_name = None;
+                self.clear_identify_state();
             }
             self.refresh_pairings_for_devices();
             self.config.validate()?;
@@ -771,7 +792,7 @@ impl SetupSession {
         let changed = self.current_step != target;
         self.current_step = target;
         if self.current_step != SetupStep::Devices {
-            self.identify_device_name = None;
+            self.clear_identify_state();
         }
         changed
     }
@@ -1087,8 +1108,7 @@ fn run_interactive_setup(
                 .as_deref()
                 .is_some_and(|name| !session.is_device_selected(name))
             {
-                session.identify_device_name = None;
-                mutations.state_changed = true;
+                mutations.state_changed |= session.clear_identify_state();
             }
 
             if mutations.config_changed
@@ -2772,6 +2792,7 @@ mod tests {
         let device_name = session.available_devices[0].name.clone();
 
         assert!(session.is_device_selected(&device_name));
+        session.message = Some(format!("{IDENTIFY_ACTIVE_MESSAGE_PREFIX}{device_name}"));
         assert!(session.set_identify_device(Some(&device_name)));
         assert_eq!(session.identify_device_name.as_deref(), Some(device_name.as_str()));
 
@@ -2782,6 +2803,19 @@ mod tests {
         );
         assert!(!session.is_device_selected(&device_name));
         assert!(session.identify_device_name.is_none());
+        assert!(session.message.is_none());
+    }
+
+    #[test]
+    fn clearing_identify_target_removes_identify_message() {
+        let mut session = setup_session(&[camera_discovery("cam0")]);
+        let device_name = session.available_devices[0].name.clone();
+
+        session.message = Some(format!("{IDENTIFY_ACTIVE_MESSAGE_PREFIX}{device_name}"));
+        assert!(session.set_identify_device(Some(&device_name)));
+        assert!(session.set_identify_device(None));
+        assert!(session.identify_device_name.is_none());
+        assert!(session.message.is_none());
     }
 
     #[test]

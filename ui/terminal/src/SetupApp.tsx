@@ -45,6 +45,18 @@ type PreviewAction =
   | { kind: "jump"; label: string; targetStep: PreviewJumpStep }
   | { kind: "save"; label: string };
 
+type DetailSpan = {
+  text: string;
+  color?: string;
+  bold?: boolean;
+  dimColor?: boolean;
+};
+
+type DetailLine = {
+  key: string;
+  spans: DetailSpan[];
+};
+
 function useTerminalMetrics() {
   const { stdout } = useStdout();
   const [metrics, setMetrics] = useState(() => getTerminalMetrics(stdout));
@@ -189,6 +201,15 @@ export function SetupApp({
       (setupState?.step === "devices" && setupState.identify_device != null),
     [setupState],
   );
+  const livePanelsKey = useMemo(() => {
+    if (!setupState) {
+      return "waiting";
+    }
+    if (setupState.step === "devices") {
+      return `devices:${setupState.identify_device ?? "idle"}`;
+    }
+    return `preview:${selectedDevices.map((device) => device.name).join("|")}`;
+  }, [selectedDevices, setupState]);
   const livePanelRows = useMemo(() => {
     if (!showLivePanels) {
       return 0;
@@ -428,6 +449,7 @@ export function SetupApp({
       {showLivePanels ? (
         <>
           <LivePreviewPanels
+            key={livePanelsKey}
             frames={frames}
             robotStates={robotStates}
             streamInfo={streamInfo}
@@ -441,9 +463,7 @@ export function SetupApp({
             hideEmptyRobotPanel={setupState?.step === "devices"}
           />
           <Box flexDirection="column" paddingX={1}>
-            {detailLines.map((line, index) => (
-              <Text key={`${index}-${line}`}>{line}</Text>
-            ))}
+            {detailLines.map(renderDetailLine)}
           </Box>
         </>
       ) : (
@@ -451,9 +471,7 @@ export function SetupApp({
           <Text bold color="cyan">
             {setupState ? `${setupState.step_name} Step` : "Waiting For Setup State"}
           </Text>
-          {detailLines.map((line, index) => (
-            <Text key={`${index}-${line}`}>{line}</Text>
-          ))}
+          {detailLines.map(renderDetailLine)}
         </Box>
       )}
 
@@ -565,6 +583,88 @@ function buildPreviewActions(setupState: SetupStateMessage | null): PreviewActio
   return actions;
 }
 
+function renderDetailLine(line: DetailLine) {
+  return (
+    <Text key={line.key}>
+      {line.spans.map((span, index) => (
+        <Text
+          key={`${line.key}:${index}`}
+          color={span.color}
+          bold={span.bold}
+          dimColor={span.dimColor}
+        >
+          {span.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+function buildDetailLine(
+  key: string,
+  spans: Array<DetailSpan | null | false | undefined>,
+): DetailLine {
+  return {
+    key,
+    spans: spans.filter(
+      (span): span is DetailSpan =>
+        span != null && span !== false && span.text.length > 0,
+    ),
+  };
+}
+
+function textSegment(
+  text: string,
+  style: Omit<DetailSpan, "text"> = {},
+): DetailSpan {
+  return { text, ...style };
+}
+
+function textLine(
+  key: string,
+  text: string,
+  style: Omit<DetailSpan, "text"> = {},
+): DetailLine {
+  return buildDetailLine(key, [textSegment(text, style)]);
+}
+
+function focusPrefix(focused: boolean, dimColor?: boolean): DetailSpan {
+  return textSegment(`${focused ? ">" : " "} `, {
+    color: focused ? "cyan" : undefined,
+    bold: focused,
+    dimColor,
+  });
+}
+
+function noticeLine(
+  key: string,
+  label: string,
+  message: string,
+  color: string,
+): DetailLine {
+  return buildDetailLine(key, [
+    textSegment(`${label}: `, { color, bold: true }),
+    textSegment(message, { color }),
+  ]);
+}
+
+function messageLine(
+  message: string,
+  status: SetupStateMessage["status"],
+): DetailLine {
+  const color =
+    status === "saved"
+      ? "green"
+      : status === "cancelled" ||
+          /(must not|already in use|requires|error|failed)/i.test(message)
+        ? "yellow"
+        : "cyan";
+  return textLine("message", message, {
+    color,
+    bold: status !== "editing",
+  });
+}
+
 function buildDetailLines(
   setupState: SetupStateMessage | null,
   focusedIndex: number,
@@ -573,22 +673,43 @@ function buildDetailLines(
   previewActions: PreviewAction[],
   editingField: EditableFieldId | null,
   draftValue: string,
-): string[] {
+): DetailLine[] {
   if (!setupState) {
     return [
-      "Waiting for the controller to publish setup state...",
-      "If this persists, confirm `rollio setup` launched the preview stack.",
+      textLine(
+        "waiting-state",
+        "Waiting for the controller to publish setup state...",
+        { color: "yellow", bold: true },
+      ),
+      textLine(
+        "waiting-hint",
+        "If this persists, confirm `rollio setup` launched the preview stack.",
+        { color: "gray" },
+      ),
     ];
   }
 
-  const warningLines = setupState.warnings.map((warning) => `warning: ${warning}`);
+  const warningLines = setupState.warnings.map((warning, index) =>
+    textLine(`warning:${index}`, `warning: ${warning}`, {
+      color: "yellow",
+      bold: true,
+    }),
+  );
+  const messageLines = setupState.message
+    ? [messageLine(setupState.message, setupState.status)]
+    : [];
+
   switch (setupState.step) {
     case "devices": {
       const focusedDevice = setupState.available_devices[focusedIndex];
       return [
-        "Select devices, set config names, and tune parameters before continuing.",
+        textLine(
+          "devices-title",
+          "Select devices, set config names, and tune parameters before continuing.",
+          { color: "cyan", bold: true },
+        ),
         ...setupState.available_devices.map((device, index) =>
-          deviceRowLabel(
+          deviceRowLine(
             device,
             index === focusedIndex,
             selectedDeviceKeys.has(deviceIdentityKey(device.current)),
@@ -605,60 +726,123 @@ function buildDetailLines(
             )
           : []),
         ...warningLines,
-        ...(setupState.message ? [setupState.message] : []),
+        ...messageLines,
       ];
     }
     case "pairing":
       return setupState.config.pairing.length > 0
         ? [
-            "Review teleoperation mappings for leader/follower pairs.",
-            ...setupState.config.pairing.map((pair, index) =>
-              `${index === focusedIndex ? ">" : " "} ${pair.leader} -> ${pair.follower} | ${pair.mapping}`,
+            textLine(
+              "pairing-title",
+              "Review teleoperation mappings for leader/follower pairs.",
+              { color: "cyan", bold: true },
             ),
+            ...setupState.config.pairing.map((pair, index) =>
+              buildDetailLine(`pair:${index}`, [
+                focusPrefix(index === focusedIndex),
+                textSegment(`${pair.leader} -> ${pair.follower}`, {
+                  bold: index === focusedIndex,
+                }),
+                textSegment(` | ${pair.mapping}`, { color: "green" }),
+              ]),
+            ),
+            ...warningLines,
+            ...messageLines,
           ]
         : [
-            "No teleop pairings are active.",
-            "Switch collection mode to teleop from Settings to enable pair editing.",
+            textLine("pairing-empty", "No teleop pairings are active.", {
+              color: "yellow",
+              bold: true,
+            }),
+            textLine(
+              "pairing-hint",
+              "Switch collection mode to teleop from Settings to enable pair editing.",
+              { color: "gray" },
+            ),
+            ...warningLines,
+            ...messageLines,
           ];
     case "storage":
       return [
-        "Configure project metadata, collection mode, codecs, and storage target.",
+        textLine(
+          "storage-title",
+          "Configure project metadata, collection mode, codecs, and storage target.",
+          { color: "cyan", bold: true },
+        ),
         ...settingsFields.map((field, index) =>
-          settingsFieldLabel(field, index === focusedIndex, editingField, draftValue),
+          settingsFieldLine(field, index === focusedIndex, editingField, draftValue),
         ),
         ...warningLines,
-        ...(setupState.message ? [setupState.message] : []),
+        ...messageLines,
       ];
     case "preview":
       return [
-        `Project: ${setupState.config.project_name} | Mode: ${setupState.config.mode}`,
-        `Format: ${setupState.config.episode.format} | RGB: ${setupState.config.encoder.video_codec} | Depth: ${setupState.config.encoder.depth_codec}`,
-        `Storage: ${setupState.config.storage.backend} -> ${storageSummary(setupState)}`,
-        `Devices: ${setupState.config.devices.length} | Pairings: ${setupState.config.pairing.length}`,
+        buildDetailLine("preview-project", [
+          textSegment("Project: ", { color: "cyan", bold: true }),
+          textSegment(`${setupState.config.project_name} | Mode: ${setupState.config.mode}`),
+        ]),
+        buildDetailLine("preview-format", [
+          textSegment("Format: ", { color: "cyan", bold: true }),
+          textSegment(
+            `${setupState.config.episode.format} | RGB: ${setupState.config.encoder.video_codec} | Depth: ${setupState.config.encoder.depth_codec}`,
+          ),
+        ]),
+        buildDetailLine("preview-storage", [
+          textSegment("Storage: ", { color: "cyan", bold: true }),
+          textSegment(
+            `${setupState.config.storage.backend} -> ${storageSummary(setupState)}`,
+          ),
+        ]),
+        buildDetailLine("preview-counts", [
+          textSegment("Devices: ", { color: "cyan", bold: true }),
+          textSegment(
+            `${setupState.config.devices.length} | Pairings: ${setupState.config.pairing.length}`,
+          ),
+        ]),
         ...previewActions.map((action, index) =>
-          `${index === focusedIndex ? ">" : " "} [${index + 1}] ${action.label}`,
+          buildDetailLine(`preview-action:${index}`, [
+            focusPrefix(index === focusedIndex),
+            textSegment(`[${index + 1}] `, { color: "cyan" }),
+            textSegment(action.label, {
+              bold: index === focusedIndex,
+              color: action.kind === "save" ? "green" : undefined,
+            }),
+          ]),
         ),
-        ...(setupState.message ? [setupState.message] : []),
+        ...messageLines,
         ...warningLines,
       ];
   }
 }
 
-function settingsFieldLabel(
+function settingsFieldLine(
   field: SettingsField,
   focused: boolean,
   editingField: EditableFieldId | null,
   draftValue: string,
-): string {
-  const prefix = focused ? ">" : " ";
+): DetailLine {
   if (field.kind === "cycle") {
-    return `${prefix} ${field.label}: ${field.value} [h/l cycle]`;
+    return buildDetailLine(`setting:${field.id}`, [
+      focusPrefix(focused),
+      textSegment(`${field.label}: `, { bold: true }),
+      textSegment(field.value, { color: "green" }),
+      textSegment(" [h/l cycle]", { color: "cyan" }),
+    ]);
   }
 
   const isEditing = field.editableFieldId === editingField;
   const displayValue = isEditing ? `${draftValue}|` : field.value || "(empty)";
-  const hint = isEditing ? "[Enter save, Esc cancel]" : "[Enter edit]";
-  return `${prefix} ${field.label}: ${displayValue} ${hint}`;
+  return buildDetailLine(`setting:${field.id}`, [
+    focusPrefix(focused),
+    textSegment(`${field.label}: `, { bold: true }),
+    textSegment(displayValue, {
+      color: field.value || isEditing ? undefined : "gray",
+    }),
+    textSegment(
+      isEditing ? " [Enter save, Esc cancel]" : " [Enter edit]",
+      { color: "cyan" },
+    ),
+  ]);
 }
 
 function executePreviewAction(
@@ -717,56 +901,181 @@ function deviceIdentityKey(
   ].join("|");
 }
 
-function deviceRowLabel(
+function deviceRowLine(
   device: SetupAvailableDevice,
   focused: boolean,
   selected: boolean,
   identifying: boolean,
   editingField: EditableFieldId | null,
   draftValue: string,
-): string {
-  const prefix = focused ? ">" : " ";
-  const identifySuffix = identifying ? " [identifying]" : "";
+): DetailLine {
+  const rowDim = !selected;
   const isEditing = editingField === deviceNameFieldId(device.name);
   const renderedName = isEditing ? `${draftValue}|` : device.current.name;
-  const editHint = isEditing ? " [Enter save, Esc cancel]" : "";
-  return `${prefix} ${selected ? "[x]" : "[ ]"} ${device.display_name}${identifySuffix} | id=${device.id} | name=${renderedName}${editHint} | ${deviceConfigurationSummary(device)}`;
+  return buildDetailLine(`device:${device.name}`, [
+    focusPrefix(focused, rowDim),
+    textSegment("[", { dimColor: rowDim }),
+    textSegment(selected ? "x" : " ", {
+      color: selected ? "green" : "gray",
+      bold: selected,
+    }),
+    textSegment("] ", { dimColor: rowDim }),
+    textSegment(device.display_name, {
+      bold: focused || selected,
+      color: selected ? undefined : "gray",
+      dimColor: rowDim,
+    }),
+    identifying
+      ? textSegment(" [identifying]", { color: "yellow", bold: true })
+      : null,
+    textSegment(` | id=${device.id}`, {
+      color: selected ? undefined : "gray",
+      dimColor: rowDim,
+    }),
+    textSegment(" | name=", {
+      color: selected ? undefined : "gray",
+      dimColor: rowDim,
+    }),
+    textSegment(renderedName, {
+      color: selected ? undefined : "gray",
+      dimColor: rowDim,
+    }),
+    isEditing
+      ? textSegment(" [Enter save, Esc cancel]", { color: "cyan" })
+      : null,
+    textSegment(` | ${deviceConfigurationSummary(device)}`, {
+      color: selected ? undefined : "gray",
+      dimColor: rowDim,
+    }),
+  ]);
 }
 
 function deviceDetails(
   device: SetupAvailableDevice,
   selected: boolean,
   identifying: boolean,
-): string[] {
+): DetailLine[] {
   if (device.device_type === "camera") {
     return [
-      `Focused camera: driver=${device.driver} | stream=${device.current.stream ?? "default"} | pixel=${device.current.pixel_format ?? "unknown"}`,
+      buildDetailLine("focused-camera", [
+        textSegment("Focused camera: ", { color: "cyan", bold: true }),
+        textSegment(
+          [
+            `driver=${device.driver}`,
+            `stream=${device.current.stream ?? "default"}`,
+            `pixel=${device.current.pixel_format ?? "unknown"}`,
+            device.current.transport
+              ? `transport=${device.current.transport}`
+              : null,
+            device.current.interface
+              ? `interface=${device.current.interface}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" | "),
+        ),
+      ]),
       selected
-        ? "Selected: Space toggles, Enter renames, h/l or [/] cycles camera profiles."
-        : "Press Space to select this camera before renaming, tuning, or identify.",
+        ? noticeLine(
+            "camera-selected",
+            "Selected",
+            "Space toggles, Enter renames, h/l or [/] cycles camera profiles.",
+            "green",
+          )
+        : noticeLine(
+            "camera-inactive",
+            "Inactive",
+            "Press Space to select this camera before renaming, tuning, or identify.",
+            "yellow",
+          ),
       selected
         ? identifying
-          ? "Identify active: live preview is shown below for the focused selected camera."
-          : "Press i to launch a live preview for the focused selected camera."
-        : "Identify is only available for selected devices.",
+          ? noticeLine(
+              "camera-identify-active",
+              "Identify active",
+              "Live preview is shown below for the focused selected camera.",
+              "yellow",
+            )
+          : noticeLine(
+              "camera-identify-hint",
+              "Identify",
+              "Press i to launch a live preview for the focused selected camera.",
+              "cyan",
+            )
+        : noticeLine(
+            "camera-identify-disabled",
+            "Identify locked",
+            "Identify is only available for selected devices.",
+            "gray",
+          ),
     ];
   }
 
   const isAirbot = device.driver.startsWith("airbot-");
+  const robotIdentity = [
+    `driver=${device.driver}`,
+    isAirbot ? `sn=${device.id}` : `id=${device.id}`,
+    `interface=${device.current.interface ?? "n/a"}`,
+    `transport=${device.current.transport ?? "n/a"}`,
+    device.current.product_variant
+      ? `variant=${device.current.product_variant}`
+      : null,
+    device.current.end_effector ? `eef=${device.current.end_effector}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
   return [
-    `Focused robot: driver=${device.driver} | interface=${device.current.interface ?? "n/a"} | transport=${device.current.transport ?? "n/a"}`,
+    buildDetailLine("focused-robot", [
+      textSegment("Focused robot: ", { color: "cyan", bold: true }),
+      textSegment(robotIdentity),
+    ]),
     selected
-      ? "Selected: Space toggles, Enter renames, h/l or [/] cycles robot modes."
-      : "Press Space to select this robot before renaming, tuning, or identify.",
+      ? noticeLine(
+          "robot-selected",
+          "Selected",
+          "Space toggles, Enter renames, h/l or [/] cycles robot modes.",
+          "green",
+        )
+      : noticeLine(
+          "robot-inactive",
+          "Inactive",
+          "Press Space to select this robot before renaming, tuning, or identify.",
+          "yellow",
+        ),
     selected
       ? identifying
         ? isAirbot
-          ? "Identify active: AIRBOT is in free-drive with the LED blinking orange."
-          : "Identify active: live robot state is shown below."
+          ? noticeLine(
+              "robot-identify-active-airbot",
+              "Identify active",
+              "AIRBOT is in free-drive with the LED blinking orange.",
+              "yellow",
+            )
+          : noticeLine(
+              "robot-identify-active",
+              "Identify active",
+              "Live robot state is shown below.",
+              "yellow",
+            )
         : isAirbot
-          ? "Press i to enter free-drive and blink the AIRBOT LED orange."
-          : "Press i to start identify for the focused selected robot."
-      : "Identify is only available for selected devices.",
+          ? noticeLine(
+              "robot-identify-hint-airbot",
+              "Identify",
+              "Press i to enter free-drive and blink the AIRBOT LED orange.",
+              "cyan",
+            )
+          : noticeLine(
+              "robot-identify-hint",
+              "Identify",
+              "Press i to start identify for the focused selected robot.",
+              "cyan",
+            )
+      : noticeLine(
+          "robot-identify-disabled",
+          "Identify locked",
+          "Identify is only available for selected devices.",
+          "gray",
+        ),
   ];
 }
 
@@ -799,16 +1108,16 @@ function stepHintForState(
 
   switch (setupState?.step) {
     case "devices":
-      return "j/k:Focus space:Toggle Enter:Name h/l or [/] Cycle i:Identify n/b:Step q:Cancel";
+      return "j/k:Focus space:Toggle Enter:Rename h/l or [/] Cycle i:Identify b/n:Step q:Cancel";
     case "pairing":
-      return "j/k:Focus h/l Cycle mapping n/b:Step q:Cancel";
+      return "j/k:Focus h/l Cycle mapping b/n:Step q:Cancel";
     case "storage":
-      return "j/k:Field Enter:Edit h/l or [/] Cycle n/b:Step q:Cancel";
+      return "j/k:Field Enter:Edit h/l or [/] Cycle b/n:Step q:Cancel";
     case "preview":
       return previewActionCount > 0
-        ? "j/k:Action Enter:Select 1-9:Jump q:Cancel"
-        : "Enter:Save q:Cancel";
+        ? "j/k:Action Enter:Select 1-9:Jump b:Back q:Cancel"
+        : "Enter:Save b:Back q:Cancel";
     default:
-      return "n/b:Step q:Cancel";
+      return "b/n:Step q:Cancel";
   }
 }

@@ -13,12 +13,13 @@ test("buildSetupStatusBarLeft includes step progress and output path", () => {
   });
 
   assert.match(line, /3\/6/);
+  assert.match(line, /Keys:/);
   assert.match(line, /WS: Connected/);
   assert.match(line, /j\/k:Focus h\/l:Cycle/);
   assert.match(line, /config\.toml/);
 });
 
-test("buildSetupStatusBarLeft prefers controller messages when present", () => {
+test("buildSetupStatusBarLeft keeps key hints visible when controller messages exist", () => {
   const line = buildSetupStatusBarLeft({
     stepIndex: 6,
     totalSteps: 6,
@@ -29,5 +30,6 @@ test("buildSetupStatusBarLeft prefers controller messages when present", () => {
     message: "Saved config.toml",
   });
 
-  assert.match(line, /Saved config\.toml/);
+  assert.match(line, /Keys: Enter:Save/);
+  assert.doesNotMatch(line, /Saved config\.toml/);
 });

@@ -1,0 +1,92 @@
+project_name = "default"
+mode = "intervention"
+pairing = []
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+
+[[devices]]
+name = "camera"
+type = "camera"
+driver = "v4l2"
+id = "/dev/video0"
+width = 1280
+height = 960
+fps = 30
+pixel_format = "rgb24"
+stream = "color"
+
+[[devices]]
+name = "airbot_play"
+type = "robot"
+driver = "airbot-play"
+id = "PZ60C02603000894"
+dof = 6
+mode = "free-drive"
+control_frequency_hz = 250.0
+transport = "can"
+interface = "can0"
+product_variant = "play-e2"
+end_effector = "e2b"
+command_latency_ms = 20
+state_noise_stddev = 0.0
+
+[[devices]]
+name = "airbot_e2"
+type = "robot"
+driver = "airbot-e2"
+id = "can0:e2"
+dof = 1
+mode = "free-drive"
+control_frequency_hz = 250.0
+transport = "can"
+interface = "can0"
+product_variant = "e2"
+end_effector = "e2"
+command_latency_ms = 20
+state_noise_stddev = 0.0
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+backend = "auto"
+artifact_format = "auto"
+queue_size = 32
+
+[assembler]
+missing_video_timeout_ms = 5000
+staging_dir = "/dev/shm/rollio"
+encoded_handoff = "file"
+
+[storage]
+backend = "local"
+output_path = "./output"
+queue_size = 32
+
+[monitor]
+metrics_frequency_hz = 1.0
+
+[monitor.thresholds]
+
+[controller]
+shutdown_timeout_ms = 3000
+child_poll_interval_ms = 100
+
+[visualizer]
+port = 9090
+cameras = []
+robots = []
+max_preview_width = 320
+max_preview_height = 240
+jpeg_quality = 30
+preview_fps = 60
+
+[ui]
+http_host = "127.0.0.1"
+http_port = 3000
+start_key = "s"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"

@@ -38,10 +38,9 @@ export function buildSetupStatusBarLeft(props: {
   const output = props.outputPath.length > 28
     ? `...${props.outputPath.slice(-25)}`
     : props.outputPath;
-  const summary = props.message ?? props.stepHint;
   return (
-    ` Setup | ${props.stepIndex}/${props.totalSteps} | WS: ${connection}` +
-    ` | ${summary} | File: ${output}`
+    ` Setup | ${props.stepIndex}/${props.totalSteps} | Keys: ${props.stepHint}` +
+    ` | WS: ${connection} | File: ${output}`
   );
 }
 
@@ -53,7 +52,6 @@ export function SetupStatusBar({
   width,
   status,
   stepHint,
-  message,
 }: SetupStatusBarProps) {
   const health: SetupHealth = connected ? "normal" : "degraded";
   const left = buildSetupStatusBarLeft({
@@ -63,7 +61,6 @@ export function SetupStatusBar({
     outputPath,
     status,
     stepHint,
-    message,
   });
   const right =
     status === "saved"

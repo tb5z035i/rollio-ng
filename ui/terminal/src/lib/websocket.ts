@@ -123,6 +123,23 @@ export function useWebSocket(url: string): WebSocketState {
       }
     }, 1000);
 
+    function clearLiveState() {
+      framesRef.current = new Map();
+      robotStatesRef.current = new Map();
+      streamInfoRef.current = null;
+      episodeStatusRef.current = null;
+      setupStateRef.current = null;
+      frameSequenceRef.current = 0;
+      dirtyRef.current = true;
+      setFrames(new Map());
+      setRobotStates(new Map());
+      setStreamInfo(null);
+      setEpisodeStatus(null);
+      setSetupState(null);
+      setGauge("ws.frame_count", 0);
+      setGauge("ws.robot_state_count", 0);
+    }
+
     function connect() {
       if (!mountedRef.current) return;
 
@@ -212,10 +229,7 @@ export function useWebSocket(url: string): WebSocketState {
         setGauge("ws.active_preview_size", "Unavailable");
         setGauge("ws.episode_status", "Unavailable");
         setGauge("ws.setup_status", "Unavailable");
-        streamInfoRef.current = null;
-        episodeStatusRef.current = null;
-        setupStateRef.current = null;
-        dirtyRef.current = true;
+        clearLiveState();
         wsRef.current = null;
         scheduleReconnect();
       });
