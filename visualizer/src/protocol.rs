@@ -175,6 +175,15 @@ mod tests {
     }
 
     #[test]
+    fn decode_command_accepts_setup_actions_with_extra_fields() {
+        let command = decode_command(
+            r#"{"type":"command","action":"setup_toggle_device","name":"camera_top","delta":1}"#,
+        )
+        .expect("setup command should parse");
+        assert_eq!(command.action, "setup_toggle_device");
+    }
+
+    #[test]
     fn encode_robot_state_includes_optional_end_effector_fields() {
         let mut state = RobotState {
             timestamp_ns: 123,

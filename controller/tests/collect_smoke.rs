@@ -63,8 +63,8 @@ fn collect_pseudo_pipeline_smoke() -> Result<(), Box<dyn Error>> {
 
     let info_path = output_root.join("meta/info.json");
     let parquet_path = output_root.join("data/chunk-000/episode_000000.parquet");
-    let top_video = output_root.join("videos/chunk-000/camera_top/episode_000000.mp4");
-    let side_video = output_root.join("videos/chunk-000/camera_side/episode_000000.mp4");
+    let top_video = output_root.join("videos/chunk-000/pseudo_camera/episode_000000.mp4");
+    let side_video = output_root.join("videos/chunk-000/pseudo_camera_2/episode_000000.mp4");
     wait_for_paths(
         &mut child,
         &[&info_path, &parquet_path, &top_video, &side_video],
@@ -86,9 +86,144 @@ fn collect_pseudo_pipeline_smoke() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+#[ignore = "requires built workspace binaries, rollio-config, cameras/build pseudo driver, and ui/web/dist"]
+fn setup_validate_collect_resume_pseudo_smoke() -> Result<(), Box<dyn Error>> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root should resolve")
+        .to_path_buf();
+    let target_dir = workspace_root.join("target/debug");
+    ensure_prerequisites(&workspace_root, &target_dir)?;
+
+    let temp_root = unique_temp_dir("rollio-setup-collect-smoke");
+    let config_path = temp_root.join("generated.setup.toml");
+    let resumed_path = temp_root.join("resumed.setup.toml");
+    let output_root = temp_root.join("output");
+    let staging_root = temp_root.join("staging");
+
+    let setup = Command::new(env!("CARGO_BIN_EXE_rollio"))
+        .arg("setup")
+        .arg("--sim-cameras")
+        .arg("2")
+        .arg("--sim-arms")
+        .arg("2")
+        .arg("--accept-defaults")
+        .arg("--output")
+        .arg(&config_path)
+        .current_dir(&workspace_root)
+        .output()?;
+    assert!(
+        setup.status.success(),
+        "setup should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&setup.stdout),
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let mut config = Config::from_file(&config_path)?;
+    assert_eq!(config.project_name, "default");
+    assert_eq!(config.mode, rollio_types::config::CollectionMode::Teleop);
+    assert!(
+        !config.pairing.is_empty(),
+        "setup should generate a teleop-ready default pairing"
+    );
+    config.storage.output_path = Some(output_root.to_string_lossy().into_owned());
+    config.assembler.staging_dir = staging_root.to_string_lossy().into_owned();
+    config.visualizer.port = reserve_port()?;
+    config.ui.http_host = "127.0.0.1".into();
+    config.ui.http_port = reserve_port()?;
+    fs::write(&config_path, toml::to_string_pretty(&config)?)?;
+
+    let validate = Command::new(target_dir.join("rollio-config"))
+        .arg("validate")
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(&workspace_root)
+        .output()?;
+    assert!(
+        validate.status.success(),
+        "rollio-config validate should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validate.stdout),
+        String::from_utf8_lossy(&validate.stderr)
+    );
+
+    let ui_runtime = config.ui_runtime_config();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rollio"))
+        .arg("collect")
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(&workspace_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    wait_for_ui_runtime_config(ui_runtime.http_port, Duration::from_secs(10))?;
+
+    let publisher = create_episode_command_publisher()?;
+    thread::sleep(Duration::from_secs(2));
+    publisher.publisher.send_copy(EpisodeCommand::Start)?;
+    thread::sleep(Duration::from_secs(2));
+    publisher.publisher.send_copy(EpisodeCommand::Stop)?;
+    thread::sleep(Duration::from_secs(1));
+    publisher.publisher.send_copy(EpisodeCommand::Keep)?;
+
+    let info_path = output_root.join("meta/info.json");
+    let parquet_path = output_root.join("data/chunk-000/episode_000000.parquet");
+    let top_video = output_root.join("videos/chunk-000/camera_top/episode_000000.mp4");
+    let side_video = output_root.join("videos/chunk-000/camera_side/episode_000000.mp4");
+    wait_for_paths(
+        &mut child,
+        &[&info_path, &parquet_path, &top_video, &side_video],
+        Duration::from_secs(30),
+    )?;
+
+    send_sigint(child.id());
+    let status = child.wait()?;
+    assert!(
+        status.success(),
+        "controller should exit cleanly, got {status}"
+    );
+
+    let resumed = Command::new(env!("CARGO_BIN_EXE_rollio"))
+        .arg("setup")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--accept-defaults")
+        .arg("--output")
+        .arg(&resumed_path)
+        .current_dir(&workspace_root)
+        .output()?;
+    assert!(
+        resumed.status.success(),
+        "resume setup should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&resumed.stdout),
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+
+    let resumed_config = Config::from_file(&resumed_path)?;
+    assert_eq!(config.project_name, resumed_config.project_name);
+    assert_eq!(config.mode, resumed_config.mode);
+    assert_eq!(config.camera_names(), resumed_config.camera_names());
+    assert_eq!(config.robot_names(), resumed_config.robot_names());
+    assert_eq!(
+        config.encoder.video_codec,
+        resumed_config.encoder.video_codec
+    );
+    assert_eq!(
+        config.encoder.depth_codec,
+        resumed_config.encoder.depth_codec
+    );
+
+    let _ = fs::remove_dir_all(&temp_root);
+    Ok(())
+}
+
 fn ensure_prerequisites(workspace_root: &Path, target_dir: &Path) -> Result<(), Box<dyn Error>> {
     for binary in [
         "rollio",
+        "rollio-config",
         "rollio-visualizer",
         "rollio-teleop-router",
         "rollio-encoder",

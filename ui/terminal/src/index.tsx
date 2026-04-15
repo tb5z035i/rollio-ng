@@ -1,16 +1,24 @@
 import React from "react";
 import { render } from "ink";
 import { App } from "./App.js";
+import { SetupApp } from "./SetupApp.js";
 import { resolveRuntimeConfig } from "./runtime-config.js";
 
 const runtimeConfig = resolveRuntimeConfig();
 
 const app = render(
-  <App
-    websocketUrl={runtimeConfig.websocketUrl}
-    initialAsciiRendererId={runtimeConfig.asciiRendererId}
-    episodeKeyBindings={runtimeConfig.episodeKeyBindings}
-  />,
+  runtimeConfig.appMode === "setup" ? (
+    <SetupApp
+      websocketUrl={runtimeConfig.websocketUrl}
+      initialAsciiRendererId={runtimeConfig.asciiRendererId}
+    />
+  ) : (
+    <App
+      websocketUrl={runtimeConfig.websocketUrl}
+      initialAsciiRendererId={runtimeConfig.asciiRendererId}
+      episodeKeyBindings={runtimeConfig.episodeKeyBindings}
+    />
+  ),
   {
   maxFps: 60,
   incrementalRendering: true,

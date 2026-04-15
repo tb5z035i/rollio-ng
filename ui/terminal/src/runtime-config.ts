@@ -11,13 +11,17 @@ export type EpisodeKeyBindings = {
   discardKey: string;
 };
 
+export type AppMode = "collect" | "setup";
+
 export type UiRuntimeConfig = {
+  appMode: AppMode;
   websocketUrl: string;
   asciiRendererId: AsciiRendererId;
   episodeKeyBindings: EpisodeKeyBindings;
 };
 
 const DEFAULT_WS_URL = "ws://localhost:9090";
+const DEFAULT_APP_MODE: AppMode = "collect";
 const DEFAULT_START_KEY = "s";
 const DEFAULT_STOP_KEY = "e";
 const DEFAULT_KEEP_KEY = "k";
@@ -43,12 +47,15 @@ export function resolveRuntimeConfig(
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): UiRuntimeConfig {
+  const cliMode = takeFlagValue(argv, ["--mode"]);
   const cliWsUrl = takeFlagValue(argv, ["--ws", "--websocket-url"]);
   const cliRenderer = takeFlagValue(argv, ["--renderer", "--ascii-renderer"]);
   const cliStartKey = takeFlagValue(argv, ["--start-key"]);
   const cliStopKey = takeFlagValue(argv, ["--stop-key"]);
   const cliKeepKey = takeFlagValue(argv, ["--keep-key"]);
   const cliDiscardKey = takeFlagValue(argv, ["--discard-key"]);
+  const selectedMode = cliMode?.trim().toLowerCase() || env.ROLLIO_UI_MODE?.trim().toLowerCase();
+  const appMode: AppMode = selectedMode === "setup" ? "setup" : DEFAULT_APP_MODE;
   const envWsUrl = env.ROLLIO_VISUALIZER_WS ?? env.ROLLIO_UI_WS;
   const websocketUrl = cliWsUrl?.trim() || envWsUrl?.trim() || DEFAULT_WS_URL;
   const selectedRenderer = cliRenderer?.trim() || env.ROLLIO_ASCII_RENDERER?.trim();
@@ -75,5 +82,5 @@ export function resolveRuntimeConfig(
       DEFAULT_DISCARD_KEY,
   };
 
-  return { websocketUrl, asciiRendererId, episodeKeyBindings };
+  return { appMode, websocketUrl, asciiRendererId, episodeKeyBindings };
 }

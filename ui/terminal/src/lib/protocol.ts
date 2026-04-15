@@ -65,19 +65,126 @@ export interface EpisodeStatusMessage {
   elapsed_ms: number;
 }
 
+export interface SetupCameraProfile {
+  width: number;
+  height: number;
+  fps: number;
+  pixel_format: string;
+  stream: string | null;
+  channel: number | null;
+}
+
+export interface SetupDeviceConfig {
+  name: string;
+  type: "camera" | "robot";
+  driver: string;
+  id: string;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  pixel_format?: string | null;
+  stream?: string | null;
+  channel?: number | null;
+  dof?: number | null;
+  mode?: "free-drive" | "command-following" | null;
+  control_frequency_hz?: number | null;
+  transport?: string | null;
+  interface?: string | null;
+  product_variant?: string | null;
+  end_effector?: string | null;
+}
+
+export interface SetupAvailableDevice {
+  name: string;
+  display_name: string;
+  device_type: "camera" | "robot";
+  driver: string;
+  id: string;
+  camera_profiles: SetupCameraProfile[];
+  supported_modes: Array<"free-drive" | "command-following">;
+  current: SetupDeviceConfig;
+}
+
+export interface SetupPairing {
+  leader: string;
+  follower: string;
+  mapping: "direct-joint" | "cartesian";
+  joint_index_map: number[];
+  joint_scales: number[];
+}
+
+export interface SetupConfigSnapshot {
+  project_name: string;
+  mode: "teleop" | "intervention";
+  episode: {
+    format: "lerobot-v2.1" | "lerobot-v3.0" | "mcap";
+  };
+  devices: SetupDeviceConfig[];
+  pairing: SetupPairing[];
+  encoder: {
+    video_codec: "h264" | "h265" | "av1" | "rvl";
+    depth_codec: "h264" | "h265" | "av1" | "rvl";
+  };
+  storage: {
+    backend: "local" | "http";
+    output_path: string;
+    endpoint?: string | null;
+  };
+}
+
+export interface SetupStateMessage {
+  type: "setup_state";
+  step: "devices" | "pairing" | "storage" | "preview";
+  step_index: number;
+  step_name: string;
+  total_steps: number;
+  output_path: string;
+  resume_mode: boolean;
+  status: "editing" | "saved" | "cancelled";
+  message?: string;
+  identify_device?: string | null;
+  warnings: string[];
+  config: SetupConfigSnapshot;
+  available_devices: SetupAvailableDevice[];
+}
+
 export type CommandAction =
   | "get_stream_info"
   | "set_preview_size"
   | "episode_start"
   | "episode_stop"
   | "episode_keep"
-  | "episode_discard";
+  | "episode_discard"
+  | "setup_get_state"
+  | "setup_prev_step"
+  | "setup_next_step"
+  | "setup_jump_step"
+  | "setup_toggle_device"
+  | "setup_set_device_name"
+  | "setup_toggle_identify"
+  | "setup_cycle_camera_profile"
+  | "setup_cycle_robot_mode"
+  | "setup_cycle_pair_mapping"
+  | "setup_cycle_episode_format"
+  | "setup_cycle_storage_backend"
+  | "setup_cycle_collection_mode"
+  | "setup_cycle_video_codec"
+  | "setup_cycle_depth_codec"
+  | "setup_set_project_name"
+  | "setup_set_storage_output_path"
+  | "setup_set_storage_endpoint"
+  | "setup_save"
+  | "setup_cancel";
 
 export interface CommandMessage {
   type: "command";
   action: CommandAction;
   width?: number;
   height?: number;
+  name?: string;
+  index?: number;
+  delta?: number;
+  value?: string;
 }
 
 /** Frame encoding type tags. */
@@ -133,7 +240,7 @@ export function parseBinaryMessage(
  */
 export function parseJsonMessage(
   text: string,
-): RobotStateMessage | StreamInfoMessage | EpisodeStatusMessage | null {
+): RobotStateMessage | StreamInfoMessage | EpisodeStatusMessage | SetupStateMessage | null {
   try {
     const obj = JSON.parse(text);
     if (obj && obj.type === "robot_state") {
@@ -144,6 +251,9 @@ export function parseJsonMessage(
     }
     if (obj && obj.type === "episode_status") {
       return obj as EpisodeStatusMessage;
+    }
+    if (obj && obj.type === "setup_state") {
+      return obj as SetupStateMessage;
     }
     return null;
   } catch {
@@ -156,7 +266,9 @@ export function parseJsonMessage(
  */
 export function encodeCommand(
   action: CommandAction,
-  fields: Partial<Pick<CommandMessage, "width" | "height">> = {},
+  fields: Partial<
+    Pick<CommandMessage, "width" | "height" | "name" | "index" | "delta" | "value">
+  > = {},
 ): string {
   return JSON.stringify({ type: "command", action, ...fields });
 }
@@ -170,4 +282,33 @@ export function encodeEpisodeCommand(action: Extract<
   "episode_start" | "episode_stop" | "episode_keep" | "episode_discard"
 >): string {
   return encodeCommand(action);
+}
+
+export function encodeSetupCommand(
+  action: Extract<
+    CommandAction,
+    | "setup_get_state"
+    | "setup_prev_step"
+    | "setup_next_step"
+    | "setup_jump_step"
+    | "setup_toggle_device"
+    | "setup_set_device_name"
+    | "setup_toggle_identify"
+    | "setup_cycle_camera_profile"
+    | "setup_cycle_robot_mode"
+    | "setup_cycle_pair_mapping"
+    | "setup_cycle_episode_format"
+    | "setup_cycle_storage_backend"
+    | "setup_cycle_collection_mode"
+    | "setup_cycle_video_codec"
+    | "setup_cycle_depth_codec"
+    | "setup_set_project_name"
+    | "setup_set_storage_output_path"
+    | "setup_set_storage_endpoint"
+    | "setup_save"
+    | "setup_cancel"
+  >,
+  fields: Partial<Pick<CommandMessage, "name" | "index" | "delta" | "value">> = {},
+): string {
+  return encodeCommand(action, fields);
 }

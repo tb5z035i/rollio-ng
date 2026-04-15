@@ -79,6 +79,157 @@ impl Default for FixedString256 {
     }
 }
 
+/// Fixed-size byte string (4096 bytes) for JSON control payloads.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("FixedString4096")]
+#[repr(C)]
+pub struct FixedString4096 {
+    pub data: [u8; 4096],
+    pub len: u32,
+}
+
+impl FixedString4096 {
+    pub fn new(s: &str) -> Self {
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(4096);
+        let mut data = [0u8; 4096];
+        data[..len].copy_from_slice(&bytes[..len]);
+        Self {
+            data,
+            len: len as u32,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.data[..self.len as usize]).unwrap_or("")
+    }
+}
+
+impl Default for FixedString4096 {
+    fn default() -> Self {
+        Self {
+            data: [0u8; 4096],
+            len: 0,
+        }
+    }
+}
+
+/// Fixed-size byte string (262144 bytes) for setup state snapshots.
+///
+/// Setup-state envelopes can include large discovered capability sets (for
+/// example V4L2 cameras exposing many modes), so the payload needs headroom
+/// well beyond typical control messages.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("FixedString262144")]
+#[repr(C)]
+pub struct FixedString262144 {
+    pub data: [u8; 262_144],
+    pub len: u32,
+}
+
+impl FixedString262144 {
+    pub const MAX_LEN: usize = 262_144;
+
+    pub fn new(s: &str) -> Self {
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(Self::MAX_LEN);
+        let mut data = [0u8; Self::MAX_LEN];
+        data[..len].copy_from_slice(&bytes[..len]);
+        Self {
+            data,
+            len: len as u32,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.data[..self.len as usize]).unwrap_or("")
+    }
+}
+
+impl Default for FixedString262144 {
+    fn default() -> Self {
+        Self {
+            data: [0u8; 262_144],
+            len: 0,
+        }
+    }
+}
+
+/// JSON-encoded setup command sent from the terminal UI to the controller.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("SetupCommandMessage")]
+#[repr(C)]
+pub struct SetupCommandMessage {
+    pub payload: FixedString4096,
+}
+
+impl SetupCommandMessage {
+    pub fn new(payload: &str) -> Self {
+        Self {
+            payload: FixedString4096::new(payload),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.payload.as_str()
+    }
+}
+
+impl Default for SetupCommandMessage {
+    fn default() -> Self {
+        Self {
+            payload: FixedString4096::default(),
+        }
+    }
+}
+
+/// JSON-encoded setup state snapshot sent from the controller to the UI.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("SetupStateMessage")]
+#[repr(C)]
+pub struct SetupStateMessage {
+    pub payload: FixedString262144,
+}
+
+impl SetupStateMessage {
+    pub const MAX_LEN: usize = FixedString262144::MAX_LEN;
+
+    pub fn new(payload: &str) -> Self {
+        Self {
+            payload: FixedString262144::new(payload),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.payload.as_str()
+    }
+}
+
+impl Default for SetupStateMessage {
+    fn default() -> Self {
+        Self {
+            payload: FixedString262144::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SetupStateMessage;
+
+    #[test]
+    fn setup_state_message_round_trips_large_payloads() {
+        let payload = format!(
+            r#"{{"type":"setup_state","padding":"{}"}}"#,
+            "x".repeat(20_000)
+        );
+        assert!(payload.len() > 16_384);
+
+        let msg = SetupStateMessage::new(&payload);
+        assert_eq!(msg.as_str(), payload);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pixel format
 // ---------------------------------------------------------------------------

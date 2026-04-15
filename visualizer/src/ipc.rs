@@ -7,9 +7,12 @@
 use iceoryx2::prelude::*;
 use rollio_bus::{
     camera_frames_service_name, robot_state_service_name, EPISODE_COMMAND_SERVICE,
-    EPISODE_STATUS_SERVICE,
+    EPISODE_STATUS_SERVICE, SETUP_COMMAND_SERVICE, SETUP_STATE_SERVICE,
 };
-use rollio_types::messages::{CameraFrameHeader, EpisodeCommand, EpisodeStatus, RobotState};
+use rollio_types::messages::{
+    CameraFrameHeader, EpisodeCommand, EpisodeStatus, RobotState, SetupCommandMessage,
+    SetupStateMessage,
+};
 
 /// A message received from iceoryx2.
 pub enum IpcMessage {
@@ -25,6 +28,9 @@ pub enum IpcMessage {
     EpisodeStatusMsg {
         status: Box<EpisodeStatus>,
     },
+    SetupStateMsg {
+        payload_json: String,
+    },
 }
 
 /// Manages iceoryx2 subscribers for camera and robot topics.
@@ -36,6 +42,10 @@ pub struct IpcPoller {
         iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStatus, ()>,
     episode_command_publisher:
         iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeCommand, ()>,
+    setup_state_subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, SetupStateMessage, ()>,
+    setup_command_publisher:
+        iceoryx2::port::publisher::Publisher<ipc::Service, SetupCommandMessage, ()>,
 }
 
 struct CameraSubscriber {
@@ -113,12 +123,28 @@ impl IpcPoller {
             .open_or_create()?;
         let episode_command_publisher = episode_command_service.publisher_builder().create()?;
 
+        let setup_state_service_name: ServiceName = SETUP_STATE_SERVICE.try_into()?;
+        let setup_state_service = node
+            .service_builder(&setup_state_service_name)
+            .publish_subscribe::<SetupStateMessage>()
+            .open_or_create()?;
+        let setup_state_subscriber = setup_state_service.subscriber_builder().create()?;
+
+        let setup_command_service_name: ServiceName = SETUP_COMMAND_SERVICE.try_into()?;
+        let setup_command_service = node
+            .service_builder(&setup_command_service_name)
+            .publish_subscribe::<SetupCommandMessage>()
+            .open_or_create()?;
+        let setup_command_publisher = setup_command_service.publisher_builder().create()?;
+
         Ok(Self {
             node,
             camera_subs,
             robot_subs,
             episode_status_subscriber,
             episode_command_publisher,
+            setup_state_subscriber,
+            setup_command_publisher,
         })
     }
 
@@ -198,6 +224,25 @@ impl IpcPoller {
             messages.push(msg);
         }
 
+        let mut latest_setup_state: Option<IpcMessage> = None;
+        loop {
+            match self.setup_state_subscriber.receive() {
+                Ok(Some(sample)) => {
+                    latest_setup_state = Some(IpcMessage::SetupStateMsg {
+                        payload_json: sample.payload().as_str().to_owned(),
+                    });
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    log::warn!("setup state receive error: {e}");
+                    break;
+                }
+            }
+        }
+        if let Some(msg) = latest_setup_state {
+            messages.push(msg);
+        }
+
         messages
     }
 
@@ -206,6 +251,14 @@ impl IpcPoller {
         command: EpisodeCommand,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.episode_command_publisher.send_copy(command)?;
+        Ok(())
+    }
+
+    pub fn publish_setup_command(
+        &self,
+        command: SetupCommandMessage,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.setup_command_publisher.send_copy(command)?;
         Ok(())
     }
 

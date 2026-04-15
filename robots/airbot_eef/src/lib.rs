@@ -2,17 +2,23 @@ mod runtime;
 
 use airbot_play_rust::can::worker::CanWorkerBackend;
 use airbot_play_rust::model::MountedEefType;
+use airbot_play_rust::probe::discover::{ProbeError, probe_all};
+use airbot_play_rust::types::DiscoveredInstance;
+use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
 use rollio_types::config::{ConfigError, DeviceConfig, DeviceType};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 use thiserror::Error;
 
-pub use runtime::{run_rollio_runtime, RollioRuntimeConfig, RollioRuntimeError};
+pub use runtime::{RollioRuntimeConfig, RollioRuntimeError, run_rollio_runtime};
 
 const DEFAULT_DOF: u32 = 1;
 const DEFAULT_CONTROL_FREQUENCY_HZ: f64 = 250.0;
+const DEFAULT_PROBE_TIMEOUT_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverProfile {
@@ -74,16 +80,20 @@ pub struct Cli {
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     Probe {
-        #[arg(long, default_value = "can0")]
-        interface: String,
+        #[arg(long)]
+        interface: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_PROBE_TIMEOUT_MS)]
+        timeout_ms: u64,
     },
     Validate {
         id: String,
+        #[arg(long, default_value_t = DEFAULT_PROBE_TIMEOUT_MS)]
+        timeout_ms: u64,
     },
     Capabilities {
         id: String,
-        #[arg(long, default_value = "can0")]
-        interface: String,
+        #[arg(long, default_value_t = DEFAULT_PROBE_TIMEOUT_MS)]
+        timeout_ms: u64,
     },
     Run(RunArgs),
 }
@@ -126,14 +136,41 @@ pub struct CapabilitiesReport {
 pub enum AirbotEefError {
     #[error("failed to read config: {0}")]
     Config(#[from] ConfigError),
+    #[error("probe error: {0}")]
+    Probe(#[from] ProbeError),
     #[error("runtime transport error: {0}")]
     Transport(#[from] RollioRuntimeError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid {driver} probe id: {id}")]
+    InvalidProbeId { driver: &'static str, id: String },
+    #[error("unknown {driver} device id: {id}")]
+    UnknownProbeId { driver: &'static str, id: String },
     #[error("{0}")]
     InvalidDevice(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedProbeDevice {
+    id: String,
+    interface: String,
+    product_variant: String,
+}
+
+#[async_trait(?Send)]
+trait ProbeProvider: Send + Sync {
+    async fn probe(&self, timeout: Duration) -> Result<Vec<DiscoveredInstance>, AirbotEefError>;
+}
+
+struct LibraryProbeProvider;
+
+#[async_trait(?Send)]
+impl ProbeProvider for LibraryProbeProvider {
+    async fn probe(&self, timeout: Duration) -> Result<Vec<DiscoveredInstance>, AirbotEefError> {
+        Ok(probe_all(timeout).await?.instances)
+    }
 }
 
 pub async fn run_with_profile(profile: DriverProfile) -> Result<(), AirbotEefError> {
@@ -143,7 +180,7 @@ pub async fn run_with_profile(profile: DriverProfile) -> Result<(), AirbotEefErr
 pub async fn run_cli(cli: Cli, profile: DriverProfile) -> Result<(), AirbotEefError> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    execute_command(&mut handle, cli.command, profile).await
+    execute_command_with(&mut handle, cli.command, profile, &LibraryProbeProvider).await
 }
 
 pub async fn execute_command<W: Write>(
@@ -151,32 +188,65 @@ pub async fn execute_command<W: Write>(
     command: Command,
     profile: DriverProfile,
 ) -> Result<(), AirbotEefError> {
+    execute_command_with(writer, command, profile, &LibraryProbeProvider).await
+}
+
+async fn execute_command_with<W, P>(
+    writer: &mut W,
+    command: Command,
+    profile: DriverProfile,
+    probe_provider: &P,
+) -> Result<(), AirbotEefError>
+where
+    W: Write,
+    P: ProbeProvider,
+{
     match command {
-        Command::Probe { interface } => {
-            let devices = vec![ProbeDevice {
-                id: format!("{interface}:{}", profile.label()),
-                driver: profile.driver_name().to_owned(),
-                interface,
-                product_variant: profile.label().to_owned(),
-                dof: DEFAULT_DOF,
-            }];
+        Command::Probe {
+            interface,
+            timeout_ms,
+        } => {
+            let devices = probe_devices_with_provider(
+                probe_provider,
+                profile,
+                interface.as_deref(),
+                probe_timeout(timeout_ms),
+            )
+            .await?;
             serde_json::to_writer_pretty(&mut *writer, &devices)?;
             writer.write_all(b"\n")?;
         }
-        Command::Validate { id } => {
-            let report = ValidateReport { valid: true, id };
+        Command::Validate { id, timeout_ms } => {
+            let device = require_probe_device_with_provider(
+                probe_provider,
+                profile,
+                &id,
+                probe_timeout(timeout_ms),
+            )
+            .await?;
+            let report = ValidateReport {
+                valid: true,
+                id: device.id,
+            };
             serde_json::to_writer_pretty(&mut *writer, &report)?;
             writer.write_all(b"\n")?;
         }
-        Command::Capabilities { id, interface } => {
+        Command::Capabilities { id, timeout_ms } => {
+            let device = require_probe_device_with_provider(
+                probe_provider,
+                profile,
+                &id,
+                probe_timeout(timeout_ms),
+            )
+            .await?;
             let report = CapabilitiesReport {
-                id,
+                id: device.id,
                 driver: profile.driver_name().to_owned(),
                 dof: DEFAULT_DOF,
                 supported_modes: ["free-drive".to_owned(), "command-following".to_owned()],
                 transport: "can".to_owned(),
-                interface,
-                product_variant: profile.label().to_owned(),
+                interface: device.interface,
+                product_variant: device.product_variant,
             };
             serde_json::to_writer_pretty(&mut *writer, &report)?;
             writer.write_all(b"\n")?;
@@ -188,6 +258,121 @@ pub async fn execute_command<W: Write>(
     }
 
     Ok(())
+}
+
+async fn probe_devices_with_provider<P>(
+    probe_provider: &P,
+    profile: DriverProfile,
+    interface: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<ProbeDevice>, AirbotEefError>
+where
+    P: ProbeProvider,
+{
+    let resolved = resolve_probe_devices(profile, probe_provider.probe(timeout).await?, interface);
+    Ok(resolved
+        .into_iter()
+        .map(|device| ProbeDevice {
+            id: device.id,
+            driver: profile.driver_name().to_owned(),
+            interface: device.interface,
+            product_variant: device.product_variant,
+            dof: DEFAULT_DOF,
+        })
+        .collect())
+}
+
+async fn require_probe_device_with_provider<P>(
+    probe_provider: &P,
+    profile: DriverProfile,
+    device_id: &str,
+    timeout: Duration,
+) -> Result<ResolvedProbeDevice, AirbotEefError>
+where
+    P: ProbeProvider,
+{
+    let interface = parse_probe_interface(profile, device_id)?;
+    resolve_probe_devices(
+        profile,
+        probe_provider.probe(timeout).await?,
+        Some(interface.as_str()),
+    )
+    .into_iter()
+    .find(|device| device.interface == interface)
+    .ok_or_else(|| AirbotEefError::UnknownProbeId {
+        driver: profile.driver_name(),
+        id: device_id.to_owned(),
+    })
+}
+
+fn parse_probe_interface(
+    profile: DriverProfile,
+    device_id: &str,
+) -> Result<String, AirbotEefError> {
+    let normalized = device_id.trim();
+    let Some((interface, suffix)) = normalized.split_once(':') else {
+        return Err(AirbotEefError::InvalidProbeId {
+            driver: profile.driver_name(),
+            id: device_id.to_owned(),
+        });
+    };
+    let interface = interface.trim();
+    if interface.is_empty() || !suffix.trim().eq_ignore_ascii_case(profile.label()) {
+        return Err(AirbotEefError::InvalidProbeId {
+            driver: profile.driver_name(),
+            id: device_id.to_owned(),
+        });
+    }
+    Ok(interface.to_owned())
+}
+
+fn resolve_probe_devices(
+    profile: DriverProfile,
+    instances: Vec<DiscoveredInstance>,
+    interface_filter: Option<&str>,
+) -> Vec<ResolvedProbeDevice> {
+    let mut devices = Vec::new();
+    let mut seen_interfaces = HashSet::new();
+    let interface_filter = interface_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    for instance in instances {
+        let interface = instance.interface.trim();
+        if interface.is_empty() {
+            continue;
+        }
+        if interface_filter.is_some_and(|value| value != interface) {
+            continue;
+        }
+        let Some(mounted_eef) = instance
+            .mounted_eef
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if !profile.matches_end_effector(mounted_eef) {
+            continue;
+        }
+        if !seen_interfaces.insert(interface.to_owned()) {
+            continue;
+        }
+
+        devices.push(ResolvedProbeDevice {
+            id: format!("{interface}:{}", profile.label()),
+            interface: interface.to_owned(),
+            product_variant: profile.label().to_owned(),
+        });
+    }
+
+    devices.sort_unstable_by(|left, right| left.interface.cmp(&right.interface));
+    devices
+}
+
+fn probe_timeout(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms)
 }
 
 pub fn load_device_config(
@@ -263,6 +448,16 @@ pub fn validate_device(
         }
     }
 
+    if let Some(product_variant) = device.product_variant.as_deref() {
+        if !profile.matches_end_effector(product_variant) {
+            return Err(AirbotEefError::InvalidDevice(format!(
+                "device \"{}\": product_variant \"{product_variant}\" does not match driver {}",
+                device.name,
+                profile.driver_name()
+            )));
+        }
+    }
+
     Ok(device)
 }
 
@@ -304,6 +499,21 @@ pub async fn run_device(
 mod tests {
     use super::*;
     use rollio_types::config::RobotMode;
+    use std::collections::BTreeMap;
+
+    struct FixtureProbeProvider {
+        instances: Vec<DiscoveredInstance>,
+    }
+
+    #[async_trait(?Send)]
+    impl ProbeProvider for FixtureProbeProvider {
+        async fn probe(
+            &self,
+            _timeout: Duration,
+        ) -> Result<Vec<DiscoveredInstance>, AirbotEefError> {
+            Ok(self.instances.clone())
+        }
+    }
 
     fn device_for(profile: DriverProfile) -> DeviceConfig {
         DeviceConfig {
@@ -348,6 +558,15 @@ mod tests {
         device.end_effector = Some("e2".to_owned());
         let err = validate_device(DriverProfile::G2, device).expect_err("eef should mismatch");
         assert!(err.to_string().contains("does not match driver"));
+    }
+
+    #[test]
+    fn validate_device_rejects_wrong_product_variant() {
+        let mut device = device_for(DriverProfile::E2);
+        device.product_variant = Some("g2".to_owned());
+        let err = validate_device(DriverProfile::E2, device)
+            .expect_err("product variant should mismatch");
+        assert!(err.to_string().contains("product_variant"));
     }
 
     #[test]
@@ -402,5 +621,132 @@ mod tests {
         assert_eq!(e2_config.mit_kd, 0.0);
         assert_eq!(g2_config.mit_kp, 10.0);
         assert_eq!(g2_config.mit_kd, 0.5);
+    }
+
+    #[tokio::test]
+    async fn probe_command_returns_only_matching_profile_devices() {
+        let provider = FixtureProbeProvider {
+            instances: vec![
+                fixture_instance("can0", "E2B"),
+                fixture_instance("can1", "G2"),
+                fixture_instance("can2", "E2B"),
+            ],
+        };
+        let mut output = Vec::new();
+
+        execute_command_with(
+            &mut output,
+            Command::Probe {
+                interface: None,
+                timeout_ms: 250,
+            },
+            DriverProfile::G2,
+            &provider,
+        )
+        .await
+        .expect("probe command should succeed");
+
+        let devices: Vec<ProbeDevice> =
+            serde_json::from_slice(&output).expect("probe output should be valid JSON");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "can1:g2");
+        assert_eq!(devices[0].interface, "can1");
+        assert_eq!(devices[0].driver, "airbot-g2");
+        assert_eq!(devices[0].product_variant, "g2");
+    }
+
+    #[tokio::test]
+    async fn probe_command_honors_interface_filter() {
+        let provider = FixtureProbeProvider {
+            instances: vec![
+                fixture_instance("can0", "G2"),
+                fixture_instance("can1", "G2"),
+            ],
+        };
+        let mut output = Vec::new();
+
+        execute_command_with(
+            &mut output,
+            Command::Probe {
+                interface: Some("can1".to_owned()),
+                timeout_ms: 250,
+            },
+            DriverProfile::G2,
+            &provider,
+        )
+        .await
+        .expect("probe command should succeed");
+
+        let devices: Vec<ProbeDevice> =
+            serde_json::from_slice(&output).expect("probe output should be valid JSON");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "can1:g2");
+    }
+
+    #[tokio::test]
+    async fn validate_command_rejects_wrong_profile_suffix() {
+        let provider = FixtureProbeProvider {
+            instances: vec![fixture_instance("can0", "E2B")],
+        };
+        let mut output = Vec::new();
+
+        let error = execute_command_with(
+            &mut output,
+            Command::Validate {
+                id: "can0:e2".to_owned(),
+                timeout_ms: 250,
+            },
+            DriverProfile::G2,
+            &provider,
+        )
+        .await
+        .expect_err("validate should reject mismatched suffix");
+
+        assert_eq!(error.to_string(), "invalid airbot-g2 probe id: can0:e2");
+    }
+
+    #[tokio::test]
+    async fn capabilities_command_uses_resolved_interface_from_probe_id() {
+        let provider = FixtureProbeProvider {
+            instances: vec![fixture_instance("can7", "G2")],
+        };
+        let mut output = Vec::new();
+
+        execute_command_with(
+            &mut output,
+            Command::Capabilities {
+                id: "can7:g2".to_owned(),
+                timeout_ms: 250,
+            },
+            DriverProfile::G2,
+            &provider,
+        )
+        .await
+        .expect("capabilities command should succeed");
+
+        let report: CapabilitiesReport =
+            serde_json::from_slice(&output).expect("capabilities output should be JSON");
+        assert_eq!(report.id, "can7:g2");
+        assert_eq!(report.interface, "can7");
+        assert_eq!(report.product_variant, "g2");
+        assert_eq!(report.driver, "airbot-g2");
+        assert_eq!(
+            report.supported_modes,
+            ["free-drive".to_owned(), "command-following".to_owned()]
+        );
+    }
+
+    fn fixture_instance(interface: &str, mounted_eef: &str) -> DiscoveredInstance {
+        DiscoveredInstance {
+            interface: interface.to_owned(),
+            identified_as: Some("AIRBOT Play".to_owned()),
+            product_sn: Some(format!("SN-{interface}")),
+            pcba_sn: Some(format!("PCBA-{interface}")),
+            mounted_eef: Some(mounted_eef.to_owned()),
+            base_board_software_version: Some("01 02 03 04".to_owned()),
+            end_board_software_version: Some("05 06 07 08".to_owned()),
+            motor_software_versions: Vec::new(),
+            metadata: BTreeMap::new(),
+        }
     }
 }

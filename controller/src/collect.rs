@@ -4,6 +4,9 @@ use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild, ResolvedCommand,
     ShutdownTrigger,
 };
+use crate::runtime_paths::{
+    current_executable_dir, resolve_device_program, resolve_program, workspace_root,
+};
 use iceoryx2::prelude::*;
 use rollio_bus::{
     robot_command_service_name, robot_state_service_name, BACKPRESSURE_SERVICE,
@@ -11,7 +14,7 @@ use rollio_bus::{
     EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::{
-    AssemblerRuntimeConfig, Config, DeviceConfig, DeviceType, EncoderRuntimeConfig,
+    AssemblerRuntimeConfig, CollectionMode, Config, DeviceConfig, EncoderRuntimeConfig,
     MappingStrategy, StorageRuntimeConfig, TeleopRuntimeConfig,
 };
 use rollio_types::messages::{
@@ -20,7 +23,7 @@ use rollio_types::messages::{
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::error::Error;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
@@ -166,44 +169,7 @@ fn build_collect_specs(
     workspace_root: &Path,
     current_exe_dir: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
-    let mut specs = Vec::new();
-
-    let visualizer_config = toml::to_string(&config.visualizer_runtime_config())?;
-    specs.push(ChildSpec {
-        id: "visualizer".into(),
-        command: ResolvedCommand {
-            program: resolve_program(
-                current_exe_dir.join("rollio-visualizer"),
-                "rollio-visualizer",
-            ),
-            args: vec![
-                OsString::from("--config-inline"),
-                OsString::from(visualizer_config),
-            ],
-        },
-        working_directory: workspace_root.to_path_buf(),
-        inherit_stdio: false,
-    });
-
-    for device in &config.devices {
-        specs.push(build_device_spec(device, workspace_root, current_exe_dir)?);
-    }
-
-    for pair in &config.pairing {
-        let leader = config
-            .device_named(&pair.leader)
-            .ok_or_else(|| format!("missing pairing leader {}", pair.leader))?;
-        let follower = config
-            .device_named(&pair.follower)
-            .ok_or_else(|| format!("missing pairing follower {}", pair.follower))?;
-        specs.push(build_teleop_spec(
-            pair,
-            leader,
-            follower,
-            workspace_root,
-            current_exe_dir,
-        )?);
-    }
+    let mut specs = build_preview_specs(config, workspace_root, current_exe_dir)?;
 
     for encoder_config in config.encoder_runtime_configs() {
         specs.push(build_encoder_spec(
@@ -265,73 +231,97 @@ fn build_collect_specs(
     Ok(specs)
 }
 
-fn build_device_spec(
+pub(crate) fn build_preview_specs(
+    config: &Config,
+    workspace_root: &Path,
+    current_exe_dir: &Path,
+) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
+    let mut specs = Vec::new();
+
+    specs.push(build_visualizer_spec(
+        config,
+        workspace_root,
+        current_exe_dir,
+    )?);
+
+    for device in &config.devices {
+        specs.push(build_device_spec(device, workspace_root, current_exe_dir)?);
+    }
+
+    if config.mode == CollectionMode::Teleop {
+        for pair in &config.pairing {
+            let leader = config
+                .device_named(&pair.leader)
+                .ok_or_else(|| format!("missing pairing leader {}", pair.leader))?;
+            let follower = config
+                .device_named(&pair.follower)
+                .ok_or_else(|| format!("missing pairing follower {}", pair.follower))?;
+            specs.push(build_teleop_spec(
+                pair,
+                leader,
+                follower,
+                workspace_root,
+                current_exe_dir,
+            )?);
+        }
+    }
+
+    Ok(specs)
+}
+
+pub(crate) fn build_visualizer_spec(
+    config: &Config,
+    workspace_root: &Path,
+    current_exe_dir: &Path,
+) -> Result<ChildSpec, Box<dyn Error>> {
+    let visualizer_config = toml::to_string(&config.visualizer_runtime_config())?;
+    Ok(ChildSpec {
+        id: "visualizer".into(),
+        command: ResolvedCommand {
+            program: resolve_program(
+                current_exe_dir.join("rollio-visualizer"),
+                "rollio-visualizer",
+            ),
+            args: vec![
+                OsString::from("--config-inline"),
+                OsString::from(visualizer_config),
+            ],
+        },
+        working_directory: workspace_root.to_path_buf(),
+        inherit_stdio: false,
+    })
+}
+
+pub(crate) fn build_device_spec(
     device: &DeviceConfig,
     workspace_root: &Path,
     current_exe_dir: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
     let inline_config = toml::to_string(device)?;
-    let driver_dir = driver_dir_name(&device.driver);
-    let executable_name = device.executable_name();
-    let camera_local_binary = resolve_existing_path([
-        workspace_root
-            .join("cameras/build")
-            .join(&driver_dir)
-            .join(&executable_name),
-        current_exe_dir.join(&executable_name),
-        workspace_root.join("target/debug").join(&executable_name),
-    ]);
+    let program = resolve_device_program(
+        device.device_type,
+        &device.driver,
+        workspace_root,
+        current_exe_dir,
+    );
     let common_args = vec![
         OsString::from("run"),
         OsString::from("--config-inline"),
         OsString::from(inline_config),
     ];
 
-    let (working_directory, command) = match device.device_type {
-        DeviceType::Camera => (
-            workspace_root.to_path_buf(),
-            ResolvedCommand {
-                program: camera_local_binary
-                    .map(PathBuf::into_os_string)
-                    .unwrap_or_else(|| OsString::from(&executable_name)),
-                args: common_args,
-            },
-        ),
-        DeviceType::Robot => {
-            let local_binary = resolve_existing_path([
-                current_exe_dir.join(&executable_name),
-                workspace_root.join("target/debug").join(&executable_name),
-            ]);
-
-            if let Some(local_binary) = local_binary {
-                (
-                    workspace_root.to_path_buf(),
-                    ResolvedCommand {
-                        program: local_binary.into_os_string(),
-                        args: common_args,
-                    },
-                )
-            } else {
-                (
-                    workspace_root.to_path_buf(),
-                    ResolvedCommand {
-                        program: OsString::from(&executable_name),
-                        args: common_args,
-                    },
-                )
-            }
-        }
-    };
-
     Ok(ChildSpec {
         id: format!("device-{}", device.name),
-        command,
-        working_directory,
+        command: ResolvedCommand {
+            program,
+            args: common_args,
+        },
+        working_directory: workspace_root.to_path_buf(),
         inherit_stdio: false,
     })
 }
 
-fn build_teleop_spec(
+pub(crate) fn build_teleop_spec(
     pair: &rollio_types::config::PairConfig,
     leader: &DeviceConfig,
     follower: &DeviceConfig,
@@ -500,43 +490,12 @@ fn collect_control_events(
     (events, status_changed)
 }
 
-fn resolve_program(local_candidate: PathBuf, fallback_name: &str) -> OsString {
-    if local_candidate.exists() {
-        local_candidate.into_os_string()
-    } else {
-        OsString::from(fallback_name)
-    }
-}
-
 fn ui_browser_url(host: &str, port: u16) -> String {
     let display_host = match host {
         "0.0.0.0" | "::" => "127.0.0.1",
         _ => host,
     };
     format!("http://{display_host}:{port}")
-}
-
-fn driver_dir_name(driver: &str) -> String {
-    driver.replace('-', "_")
-}
-
-fn resolve_existing_path(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
-    candidates.into_iter().find(|candidate| candidate.exists())
-}
-
-fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "failed to resolve workspace root".into())
-}
-
-fn current_executable_dir() -> Result<PathBuf, Box<dyn Error>> {
-    let current_executable = std::env::current_exe()?;
-    current_executable
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "failed to resolve controller executable directory".into())
 }
 
 struct ControllerIpc {
@@ -660,9 +619,10 @@ impl ControllerIpc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rollio_types::config::Config;
+    use rollio_types::config::{Config, DeviceType};
     use rollio_types::messages::{FixedString256, FixedString64};
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -833,6 +793,23 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn build_preview_specs_skips_teleop_router_for_intervention_mode() {
+        let mut config = include_str!("../../config/config.example.toml")
+            .parse::<Config>()
+            .expect("example config should parse");
+        config.mode = rollio_types::config::CollectionMode::Intervention;
+        config.pairing.clear();
+
+        let specs = build_preview_specs(&config, Path::new("."), Path::new("."))
+            .expect("specs should build");
+
+        assert!(
+            specs.iter().all(|spec| !spec.id.starts_with("teleop-")),
+            "intervention previews should not spawn teleop router children"
+        );
     }
 
     #[test]

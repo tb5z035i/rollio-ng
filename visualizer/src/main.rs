@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use iceoryx2::node::NodeWaitFailure;
 use rollio_types::config::VisualizerRuntimeConfig;
-use rollio_types::messages::EpisodeCommand;
+use rollio_types::messages::{EpisodeCommand, SetupCommandMessage};
 use tokio::sync::broadcast;
 
 use crate::ipc::{IpcMessage, IpcPoller};
@@ -178,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Broadcast channel: small capacity so slow consumers skip frames
     let (broadcast_tx, _) = broadcast::channel::<BroadcastMessage>(16);
     let (episode_command_tx, episode_command_rx) = mpsc::channel::<EpisodeCommand>();
+    let (setup_command_tx, setup_command_rx) = mpsc::channel::<SetupCommandMessage>();
     let stream_info = Arc::new(Mutex::new(StreamInfoRegistry::new(
         &camera_names,
         &robot_names,
@@ -192,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_config.max_preview_height,
     ));
     let latest_episode_status = Arc::new(Mutex::new(None::<String>));
+    let latest_setup_state = Arc::new(Mutex::new(None::<String>));
 
     // Start WebSocket server
     let ws_addr: SocketAddr = ([0, 0, 0, 0], runtime_config.port).into();
@@ -199,7 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_stream_info = stream_info.clone();
     let ws_preview_config = preview_config.clone();
     let ws_episode_command_tx = episode_command_tx.clone();
+    let ws_setup_command_tx = setup_command_tx.clone();
     let ws_latest_episode_status = latest_episode_status.clone();
+    let ws_latest_setup_state = latest_setup_state.clone();
     tokio::spawn(async move {
         websocket::run_server(
             ws_addr,
@@ -207,7 +211,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ws_stream_info,
             ws_preview_config,
             ws_episode_command_tx,
+            ws_setup_command_tx,
             ws_latest_episode_status,
+            ws_latest_setup_state,
         )
         .await;
     });
@@ -229,6 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_stream_info = stream_info.clone();
     let ipc_preview_config = preview_config.clone();
     let ipc_latest_episode_status = latest_episode_status.clone();
+    let ipc_latest_setup_state = latest_setup_state.clone();
 
     std::thread::Builder::new()
         .name("rollio-visualizer-ipc".to_string())
@@ -241,7 +248,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ipc_stream_info,
                 ipc_preview_config,
                 ipc_latest_episode_status,
+                ipc_latest_setup_state,
                 episode_command_rx,
+                setup_command_rx,
                 &ipc_shutdown,
             ) {
                 log::error!("IPC poll loop failed: {e}");
@@ -271,7 +280,9 @@ fn ipc_poll_loop(
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
     latest_episode_status: Arc<Mutex<Option<String>>>,
+    latest_setup_state: Arc<Mutex<Option<String>>>,
     episode_command_rx: mpsc::Receiver<EpisodeCommand>,
+    setup_command_rx: mpsc::Receiver<SetupCommandMessage>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let poller = IpcPoller::new(camera_names, robot_names)?;
@@ -295,6 +306,9 @@ fn ipc_poll_loop(
     while !shutdown.load(Ordering::Relaxed) {
         while let Ok(command) = episode_command_rx.try_recv() {
             poller.publish_episode_command(command)?;
+        }
+        while let Ok(command) = setup_command_rx.try_recv() {
+            poller.publish_setup_command(command)?;
         }
         let messages = poller.poll();
 
@@ -333,6 +347,12 @@ fn ipc_poll_loop(
                         *latest = Some(json.clone());
                     }
                     let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(json)));
+                }
+                IpcMessage::SetupStateMsg { payload_json } => {
+                    if let Ok(mut latest) = latest_setup_state.lock() {
+                        *latest = Some(payload_json.clone());
+                    }
+                    let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(payload_json)));
                 }
             }
         }

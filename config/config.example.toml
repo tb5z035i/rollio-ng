@@ -1,3 +1,6 @@
+project_name = "default"
+mode = "teleop"
+
 [episode]
 format = "lerobot-v2.1"
 fps = 30
@@ -84,7 +87,8 @@ discard_key = "x"
 # --- Encoder ---
 
 [encoder]
-codec = "libx264"
+video_codec = "libx264"
+depth_codec = "rvl"
 queue_size = 32
 
 # --- Storage ---

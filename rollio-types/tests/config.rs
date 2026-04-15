@@ -1,20 +1,28 @@
 use rollio_types::config::*;
 use rollio_types::messages::PixelFormat;
+use rollio_types::schema::build_config_schema;
 use std::str::FromStr;
 
 #[test]
 fn parse_example_config() {
     let toml_text = include_str!("../../config/config.example.toml");
     let config = Config::from_str(toml_text).expect("config.example.toml should parse");
+    assert_eq!(config.project_name, "default");
+    assert_eq!(config.mode, CollectionMode::Teleop);
     assert_eq!(config.devices.len(), 4);
     assert_eq!(config.pairing.len(), 1);
     assert_eq!(config.episode.fps, 30);
     assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
-    assert_eq!(config.encoder.codec, EncoderCodec::H264);
+    assert_eq!(config.encoder.video_codec, EncoderCodec::H264);
+    assert_eq!(config.encoder.depth_codec, EncoderCodec::Rvl);
     assert_eq!(config.encoder.backend, EncoderBackend::Auto);
     assert_eq!(
         config.encoder.resolved_artifact_format(),
         EncoderArtifactFormat::Mp4
+    );
+    assert_eq!(
+        config.encoder.resolved_depth_artifact_format(),
+        EncoderArtifactFormat::Rvl
     );
     assert_eq!(config.assembler.encoded_handoff, EncodedHandoffMode::File);
     #[cfg(target_os = "linux")]
@@ -85,6 +93,341 @@ fn ui_runtime_config_defaults_upstream_to_visualizer_port() {
     assert_eq!(
         ui_runtime_config.websocket_url.as_deref(),
         Some("ws://127.0.0.1:9910")
+    );
+}
+
+#[test]
+fn draft_setup_template_starts_with_setup_friendly_defaults() {
+    let config = Config::draft_setup_template();
+    assert_eq!(config.project_name, "default");
+    assert_eq!(config.mode, CollectionMode::Intervention);
+    assert!(config.devices.is_empty());
+    assert!(config.pairing.is_empty());
+    assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
+    assert_eq!(config.episode.fps, 30);
+    assert_eq!(config.encoder.video_codec, EncoderCodec::H264);
+    assert_eq!(config.encoder.depth_codec, EncoderCodec::Rvl);
+    assert_eq!(config.storage.backend, StorageBackend::Local);
+    assert_eq!(config.storage.output_path.as_deref(), Some("./output"));
+    assert_eq!(config.visualizer.port, 9090);
+    assert_eq!(config.ui.start_key, "s");
+}
+
+#[test]
+fn legacy_configs_infer_mode_from_pairings() {
+    let teleop_toml = r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "leader_arm"
+type = "robot"
+driver = "pseudo"
+id = "r0"
+dof = 6
+mode = "free-drive"
+
+[[devices]]
+name = "follower_arm"
+type = "robot"
+driver = "pseudo"
+id = "r1"
+dof = 6
+mode = "command-following"
+
+[[pairing]]
+leader = "leader_arm"
+follower = "follower_arm"
+
+[encoder]
+codec = "libx264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let teleop = Config::from_str(teleop_toml).expect("legacy teleop config should parse");
+    assert_eq!(teleop.mode, CollectionMode::Teleop);
+
+    let intervention_toml = r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+type = "camera"
+driver = "pseudo"
+id = "c0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+
+[encoder]
+codec = "libx264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let intervention =
+        Config::from_str(intervention_toml).expect("legacy intervention config should parse");
+    assert_eq!(intervention.mode, CollectionMode::Intervention);
+}
+
+#[test]
+fn explicit_mode_rejects_pairing_mismatches() {
+    let teleop_without_pairs = r#"
+project_name = "demo"
+mode = "teleop"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+type = "camera"
+driver = "pseudo"
+id = "c0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+
+[encoder]
+video_codec = "libx264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let err =
+        Config::from_str(teleop_without_pairs).expect_err("teleop mode should require pairing");
+    assert!(
+        err.to_string()
+            .contains("mode=teleop requires at least one [[pairing]] entry"),
+        "unexpected error: {err}"
+    );
+
+    let intervention_with_pairs = r#"
+project_name = "demo"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "leader_arm"
+type = "robot"
+driver = "pseudo"
+id = "r0"
+dof = 6
+mode = "free-drive"
+
+[[devices]]
+name = "follower_arm"
+type = "robot"
+driver = "pseudo"
+id = "r1"
+dof = 6
+mode = "command-following"
+
+[[pairing]]
+leader = "leader_arm"
+follower = "follower_arm"
+
+[encoder]
+video_codec = "libx264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let err = Config::from_str(intervention_with_pairs)
+        .expect_err("intervention mode should reject pairings");
+    assert!(
+        err.to_string()
+            .contains("mode=intervention does not allow [[pairing]] entries"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn legacy_encoder_codec_populates_both_stream_classes() {
+    let toml_text = r#"
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+type = "camera"
+driver = "pseudo"
+id = "c0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+
+[encoder]
+codec = "h264"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let config = Config::from_str(toml_text).expect("legacy codec alias should parse");
+    assert_eq!(config.encoder.video_codec, EncoderCodec::H264);
+    assert_eq!(config.encoder.depth_codec, EncoderCodec::H264);
+}
+
+#[test]
+fn encoder_runtime_configs_pick_depth_codec_for_depth_streams() {
+    let toml_text = r#"
+project_name = "demo"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "camera_rgb"
+type = "camera"
+driver = "pseudo"
+id = "rgb0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "rgb24"
+stream = "color"
+
+[[devices]]
+name = "camera_depth"
+type = "camera"
+driver = "pseudo"
+id = "depth0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "depth16"
+stream = "depth"
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let config = Config::from_str(toml_text).expect("mixed camera config should parse");
+    let encoder_configs = config.encoder_runtime_configs();
+    assert_eq!(encoder_configs.len(), 2);
+    assert_eq!(encoder_configs[0].codec, EncoderCodec::H264);
+    assert_eq!(encoder_configs[1].codec, EncoderCodec::Rvl);
+
+    let assembler_runtime = config.assembler_runtime_config(toml_text.to_string());
+    assert_eq!(assembler_runtime.cameras.len(), 2);
+    assert_eq!(assembler_runtime.cameras[0].codec, EncoderCodec::H264);
+    assert_eq!(assembler_runtime.cameras[1].codec, EncoderCodec::Rvl);
+}
+
+#[test]
+fn schema_export_includes_expected_sections_and_defaults() {
+    let schema = build_config_schema();
+    assert_eq!(schema.format, "rollio-config-schema");
+    assert_eq!(schema.version, 1);
+
+    let section_ids = schema
+        .sections
+        .iter()
+        .map(|section| section.name)
+        .collect::<Vec<_>>();
+    assert!(section_ids.contains(&"root"));
+    assert!(section_ids.contains(&"episode"));
+    assert!(section_ids.contains(&"devices"));
+    assert!(section_ids.contains(&"storage"));
+    assert!(section_ids.contains(&"ui"));
+
+    let root = schema
+        .sections
+        .iter()
+        .find(|section| section.name == "root")
+        .expect("root section should exist");
+    let mode_field = root
+        .fields
+        .iter()
+        .find(|field| field.name == "mode")
+        .expect("mode field should exist");
+    assert_eq!(
+        mode_field.default.as_ref(),
+        Some(&toml::Value::String("intervention".into()))
+    );
+
+    let episode = schema
+        .sections
+        .iter()
+        .find(|section| section.name == "episode")
+        .expect("episode section should exist");
+    let format_field = episode
+        .fields
+        .iter()
+        .find(|field| field.name == "format")
+        .expect("episode format field should exist");
+    assert_eq!(
+        format_field.default.as_ref(),
+        Some(&toml::Value::String("lerobot-v2.1".into()))
+    );
+    assert!(
+        format_field
+            .enum_values
+            .as_ref()
+            .is_some_and(|values| values.contains(&"mcap")),
+        "episode format field should include mcap"
+    );
+
+    let storage = schema
+        .sections
+        .iter()
+        .find(|section| section.name == "storage")
+        .expect("storage section should exist");
+    let backend_field = storage
+        .fields
+        .iter()
+        .find(|field| field.name == "backend")
+        .expect("storage backend field should exist");
+    let backend_values = backend_field
+        .enum_values
+        .as_ref()
+        .expect("storage backend field should declare enum values");
+    assert!(backend_values.contains(&"local"));
+    assert!(backend_values.contains(&"http"));
+
+    let encoder = schema
+        .sections
+        .iter()
+        .find(|section| section.name == "encoder")
+        .expect("encoder section should exist");
+    assert!(
+        encoder
+            .fields
+            .iter()
+            .any(|field| field.name == "video_codec"),
+        "encoder section should expose video_codec"
+    );
+    assert!(
+        encoder
+            .fields
+            .iter()
+            .any(|field| field.name == "depth_codec"),
+        "encoder section should expose depth_codec"
     );
 }
 
@@ -449,7 +792,8 @@ output_path = "./out"
 "#;
     let err = Config::from_str(toml_text).expect_err("rvl+mp4 should be rejected");
     assert!(
-        err.to_string().contains("rvl requires artifact_format=rvl"),
+        err.to_string()
+            .contains("video_codec=rvl requires artifact_format=rvl"),
         "unexpected error: {err}"
     );
 }

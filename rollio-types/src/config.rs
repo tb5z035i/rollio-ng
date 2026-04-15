@@ -26,7 +26,10 @@ pub enum ConfigError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "ConfigSerde")]
 pub struct Config {
+    pub project_name: String,
+    pub mode: CollectionMode,
     pub episode: EpisodeConfig,
     pub devices: Vec<DeviceConfig>,
     #[serde(default)]
@@ -45,13 +48,94 @@ pub struct Config {
     pub ui: UiRuntimeConfig,
 }
 
+#[derive(Debug, Deserialize)]
+struct ConfigSerde {
+    #[serde(default = "default_project_name")]
+    project_name: String,
+    #[serde(default)]
+    mode: Option<CollectionMode>,
+    episode: EpisodeConfig,
+    devices: Vec<DeviceConfig>,
+    #[serde(default)]
+    pairing: Vec<PairConfig>,
+    encoder: EncoderConfig,
+    #[serde(default)]
+    assembler: AssemblerConfig,
+    storage: StorageConfig,
+    #[serde(default)]
+    monitor: MonitorConfig,
+    #[serde(default)]
+    controller: ControllerConfig,
+    #[serde(default)]
+    visualizer: VisualizerRuntimeConfig,
+    #[serde(default)]
+    ui: UiRuntimeConfig,
+}
+
+impl From<ConfigSerde> for Config {
+    fn from(value: ConfigSerde) -> Self {
+        let mode = value
+            .mode
+            .unwrap_or_else(|| infer_collection_mode(&value.pairing));
+        Self {
+            project_name: value.project_name,
+            mode,
+            episode: value.episode,
+            devices: value.devices,
+            pairing: value.pairing,
+            encoder: value.encoder,
+            assembler: value.assembler,
+            storage: value.storage,
+            monitor: value.monitor,
+            controller: value.controller,
+            visualizer: value.visualizer,
+            ui: value.ui,
+        }
+    }
+}
+
+fn default_project_name() -> String {
+    "default".into()
+}
+
+fn infer_collection_mode(pairing: &[PairConfig]) -> CollectionMode {
+    if pairing.is_empty() {
+        CollectionMode::Intervention
+    } else {
+        CollectionMode::Teleop
+    }
+}
+
 impl Config {
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path)?;
         text.parse()
     }
 
+    pub fn draft_setup_template() -> Self {
+        Self {
+            project_name: default_project_name(),
+            mode: CollectionMode::Intervention,
+            episode: EpisodeConfig::default(),
+            devices: Vec::new(),
+            pairing: Vec::new(),
+            encoder: EncoderConfig::default(),
+            assembler: AssemblerConfig::default(),
+            storage: StorageConfig::default(),
+            monitor: MonitorConfig::default(),
+            controller: ControllerConfig::default(),
+            visualizer: VisualizerRuntimeConfig::default(),
+            ui: UiRuntimeConfig::default(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.project_name.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "project_name must not be empty".into(),
+            ));
+        }
+
         self.episode.validate()?;
 
         if self.devices.is_empty() {
@@ -92,6 +176,23 @@ impl Config {
                 .device_named(&pair.follower)
                 .expect("validated follower should exist");
             pair.validate_with_devices(leader, follower)?;
+        }
+
+        match self.mode {
+            CollectionMode::Teleop => {
+                if self.pairing.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "mode=teleop requires at least one [[pairing]] entry".into(),
+                    ));
+                }
+            }
+            CollectionMode::Intervention => {
+                if !self.pairing.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "mode=intervention does not allow [[pairing]] entries".into(),
+                    ));
+                }
+            }
         }
 
         self.encoder.validate()?;
@@ -150,16 +251,19 @@ impl Config {
 
     pub fn encoder_runtime_configs(&self) -> Vec<EncoderRuntimeConfig> {
         self.camera_devices()
-            .map(|camera| EncoderRuntimeConfig {
-                process_id: encoder_process_id(&camera.name),
-                camera_name: Some(camera.name.clone()),
-                frame_topic: Some(camera_frames_topic(&camera.name)),
-                output_dir: encoder_output_dir(&self.assembler.staging_dir, &camera.name),
-                codec: self.encoder.codec,
-                backend: self.encoder.backend,
-                artifact_format: self.encoder.artifact_format,
-                queue_size: self.encoder.queue_size,
-                fps: camera.fps.unwrap_or(self.episode.fps),
+            .map(|camera| {
+                let codec = self.encoder.codec_for_camera(camera);
+                EncoderRuntimeConfig {
+                    process_id: encoder_process_id(&camera.name),
+                    camera_name: Some(camera.name.clone()),
+                    frame_topic: Some(camera_frames_topic(&camera.name)),
+                    output_dir: encoder_output_dir(&self.assembler.staging_dir, &camera.name),
+                    codec,
+                    backend: self.encoder.backend,
+                    artifact_format: self.encoder.resolved_artifact_format_for(codec),
+                    queue_size: self.encoder.queue_size,
+                    fps: camera.fps.unwrap_or(self.episode.fps),
+                }
             })
             .collect()
     }
@@ -175,15 +279,18 @@ impl Config {
             encoded_handoff: self.assembler.encoded_handoff,
             cameras: self
                 .camera_devices()
-                .map(|camera| AssemblerCameraRuntimeConfig {
-                    camera_name: camera.name.clone(),
-                    encoder_process_id: encoder_process_id(&camera.name),
-                    width: camera.width.unwrap_or_default(),
-                    height: camera.height.unwrap_or_default(),
-                    fps: camera.fps.unwrap_or(self.episode.fps),
-                    pixel_format: camera.pixel_format.unwrap_or(PixelFormat::Rgb24),
-                    codec: self.encoder.codec,
-                    artifact_format: self.encoder.resolved_artifact_format(),
+                .map(|camera| {
+                    let codec = self.encoder.codec_for_camera(camera);
+                    AssemblerCameraRuntimeConfig {
+                        camera_name: camera.name.clone(),
+                        encoder_process_id: encoder_process_id(&camera.name),
+                        width: camera.width.unwrap_or_default(),
+                        height: camera.height.unwrap_or_default(),
+                        fps: camera.fps.unwrap_or(self.episode.fps),
+                        pixel_format: camera.pixel_format.unwrap_or(PixelFormat::Rgb24),
+                        codec,
+                        artifact_format: self.encoder.resolved_artifact_format_for(codec),
+                    }
                 })
                 .collect(),
             robots: self
@@ -231,6 +338,13 @@ impl FromStr for Config {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CollectionMode {
+    Teleop,
+    Intervention,
+}
+
 // ---------------------------------------------------------------------------
 // Episode
 // ---------------------------------------------------------------------------
@@ -245,6 +359,16 @@ pub struct EpisodeConfig {
 
 fn default_chunk_size() -> u32 {
     1000
+}
+
+impl Default for EpisodeConfig {
+    fn default() -> Self {
+        Self {
+            format: EpisodeFormat::default(),
+            fps: 30,
+            chunk_size: default_chunk_size(),
+        }
+    }
 }
 
 impl EpisodeConfig {
@@ -272,6 +396,12 @@ pub enum EpisodeFormat {
     #[serde(rename = "lerobot-v3.0")]
     LeRobotV3_0,
     Mcap,
+}
+
+impl Default for EpisodeFormat {
+    fn default() -> Self {
+        Self::LeRobotV2_1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +582,27 @@ impl DeviceConfig {
             DeviceType::Camera => format!("rollio-camera-{driver_name}"),
             DeviceType::Robot => format!("rollio-robot-{driver_name}"),
         }
+    }
+
+    pub fn uses_depth_codec(&self) -> bool {
+        if self.device_type != DeviceType::Camera {
+            return false;
+        }
+
+        if matches!(
+            self.pixel_format,
+            Some(PixelFormat::Depth16 | PixelFormat::Gray8)
+        ) {
+            return true;
+        }
+
+        self.stream.as_ref().is_some_and(|stream| {
+            let normalized = stream.trim().to_ascii_lowercase();
+            matches!(
+                normalized.as_str(),
+                "depth" | "infrared" | "ir" | "gray" | "grayscale"
+            )
+        })
     }
 
     fn validate_camera_fields(&self) -> Result<(), ConfigError> {
@@ -643,7 +794,7 @@ impl DirectJointMappingKind {
 // Pairing
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PairConfig {
     pub leader: String,
     pub follower: String,
@@ -1163,6 +1314,12 @@ pub enum EncoderCodec {
     Rvl,
 }
 
+impl Default for EncoderCodec {
+    fn default() -> Self {
+        Self::H264
+    }
+}
+
 impl EncoderCodec {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1241,8 +1398,10 @@ pub struct EncoderCapabilityReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "EncoderConfigSerde")]
 pub struct EncoderConfig {
-    pub codec: EncoderCodec,
+    pub video_codec: EncoderCodec,
+    pub depth_codec: EncoderCodec,
     #[serde(default)]
     pub backend: EncoderBackend,
     #[serde(default)]
@@ -1251,17 +1410,79 @@ pub struct EncoderConfig {
     pub queue_size: u32,
 }
 
+#[derive(Debug, Deserialize)]
+struct EncoderConfigSerde {
+    #[serde(default)]
+    codec: Option<EncoderCodec>,
+    #[serde(default)]
+    video_codec: Option<EncoderCodec>,
+    #[serde(default)]
+    depth_codec: Option<EncoderCodec>,
+    #[serde(default)]
+    backend: EncoderBackend,
+    #[serde(default)]
+    artifact_format: EncoderArtifactFormat,
+    #[serde(default = "default_queue_size")]
+    queue_size: u32,
+}
+
+impl From<EncoderConfigSerde> for EncoderConfig {
+    fn from(value: EncoderConfigSerde) -> Self {
+        let legacy_codec = value.codec;
+        let video_codec = value.video_codec.or(legacy_codec).unwrap_or_default();
+        let depth_codec = value
+            .depth_codec
+            .or(legacy_codec)
+            .unwrap_or_else(default_depth_codec);
+        Self {
+            video_codec,
+            depth_codec,
+            backend: value.backend,
+            artifact_format: value.artifact_format,
+            queue_size: value.queue_size,
+        }
+    }
+}
+
 fn default_queue_size() -> u32 {
     32
 }
 
+impl Default for EncoderConfig {
+    fn default() -> Self {
+        Self {
+            video_codec: EncoderCodec::default(),
+            depth_codec: default_depth_codec(),
+            backend: EncoderBackend::default(),
+            artifact_format: EncoderArtifactFormat::default(),
+            queue_size: default_queue_size(),
+        }
+    }
+}
+
 impl EncoderConfig {
+    pub fn codec_for_camera(&self, camera: &DeviceConfig) -> EncoderCodec {
+        if camera.uses_depth_codec() {
+            self.depth_codec
+        } else {
+            self.video_codec
+        }
+    }
+
     pub fn resolved_artifact_format(&self) -> EncoderArtifactFormat {
+        self.resolved_artifact_format_for(self.video_codec)
+    }
+
+    pub fn resolved_depth_artifact_format(&self) -> EncoderArtifactFormat {
+        self.resolved_artifact_format_for(self.depth_codec)
+    }
+
+    pub fn resolved_artifact_format_for(&self, codec: EncoderCodec) -> EncoderArtifactFormat {
         if self.artifact_format != EncoderArtifactFormat::Auto {
             return self.artifact_format;
         }
 
-        match self.codec {
+        match codec {
             EncoderCodec::H264 | EncoderCodec::H265 => EncoderArtifactFormat::Mp4,
             EncoderCodec::Av1 => EncoderArtifactFormat::Mkv,
             EncoderCodec::Rvl => EncoderArtifactFormat::Rvl,
@@ -1274,43 +1495,46 @@ impl EncoderConfig {
                 "encoder: queue_size must be > 0".into(),
             ));
         }
-        if self.codec == EncoderCodec::Rvl && self.backend == EncoderBackend::Vaapi {
-            return Err(ConfigError::Validation(
-                "encoder: rvl only supports cpu or auto backends".into(),
-            ));
+        self.validate_codec("video_codec", self.video_codec)?;
+        self.validate_codec("depth_codec", self.depth_codec)?;
+        Ok(())
+    }
+
+    fn validate_codec(&self, field_name: &str, codec: EncoderCodec) -> Result<(), ConfigError> {
+        if codec == EncoderCodec::Rvl && self.backend == EncoderBackend::Vaapi {
+            return Err(ConfigError::Validation(format!(
+                "encoder: {field_name}=rvl only supports cpu or auto backends"
+            )));
         }
-        if self.codec == EncoderCodec::Rvl && self.backend == EncoderBackend::Nvidia {
-            return Err(ConfigError::Validation(
-                "encoder: rvl only supports cpu or auto backends".into(),
-            ));
+        if codec == EncoderCodec::Rvl && self.backend == EncoderBackend::Nvidia {
+            return Err(ConfigError::Validation(format!(
+                "encoder: {field_name}=rvl only supports cpu or auto backends"
+            )));
         }
 
-        match (self.codec, self.resolved_artifact_format()) {
+        match (codec, self.resolved_artifact_format_for(codec)) {
             (EncoderCodec::Rvl, EncoderArtifactFormat::Rvl)
             | (EncoderCodec::H264, EncoderArtifactFormat::Mp4)
             | (EncoderCodec::H265, EncoderArtifactFormat::Mp4)
-            | (EncoderCodec::Av1, EncoderArtifactFormat::Mkv) => {}
-            (EncoderCodec::Rvl, other) => {
-                return Err(ConfigError::Validation(format!(
-                    "encoder: rvl requires artifact_format=rvl, got {:?}",
-                    other
-                )));
-            }
-            (_, EncoderArtifactFormat::Rvl) => {
-                return Err(ConfigError::Validation(
-                    "encoder: artifact_format=rvl requires codec=rvl".into(),
-                ));
-            }
-            (codec, other) => {
-                return Err(ConfigError::Validation(format!(
-                    "encoder: codec {} does not support artifact_format {:?}",
-                    codec.as_str(),
-                    other
-                )));
-            }
+            | (EncoderCodec::Av1, EncoderArtifactFormat::Mkv) => Ok(()),
+            (EncoderCodec::Rvl, other) => Err(ConfigError::Validation(format!(
+                "encoder: {field_name}=rvl requires artifact_format=rvl, got {:?}",
+                other
+            ))),
+            (_, EncoderArtifactFormat::Rvl) => Err(ConfigError::Validation(format!(
+                "encoder: artifact_format=rvl requires {field_name}=rvl"
+            ))),
+            (codec, other) => Err(ConfigError::Validation(format!(
+                "encoder: {field_name}={} does not support artifact_format {:?}",
+                codec.as_str(),
+                other
+            ))),
         }
-        Ok(())
     }
+}
+
+fn default_depth_codec() -> EncoderCodec {
+    EncoderCodec::Rvl
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1339,7 +1563,8 @@ impl EncoderRuntimeConfig {
 
     pub fn resolved_artifact_format(&self) -> EncoderArtifactFormat {
         EncoderConfig {
-            codec: self.codec,
+            video_codec: self.codec,
+            depth_codec: self.codec,
             backend: self.backend,
             artifact_format: self.artifact_format,
             queue_size: self.queue_size,
@@ -1398,7 +1623,8 @@ impl EncoderRuntimeConfig {
         }
 
         EncoderConfig {
-            codec: self.codec,
+            video_codec: self.codec,
+            depth_codec: self.codec,
             backend: self.backend,
             artifact_format: self.artifact_format,
             queue_size: self.queue_size,
@@ -1432,6 +1658,17 @@ pub struct StorageConfig {
 
 fn default_storage_queue_size() -> u32 {
     32
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: StorageBackend::default(),
+            output_path: Some("./output".into()),
+            endpoint: None,
+            queue_size: default_storage_queue_size(),
+        }
+    }
 }
 
 impl StorageConfig {
@@ -1475,6 +1712,12 @@ impl StorageConfig {
 pub enum StorageBackend {
     Local,
     Http,
+}
+
+impl Default for StorageBackend {
+    fn default() -> Self {
+        Self::Local
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

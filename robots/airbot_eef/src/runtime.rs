@@ -2,12 +2,12 @@ use crate::DriverProfile;
 use airbot_play_rust::can::router::CanFrameRouter;
 use airbot_play_rust::can::worker::{CanTxPriority, CanWorker, CanWorkerBackend, CanWorkerConfig};
 use airbot_play_rust::eef::{
-    spawn_eef_runtime_task, EefRuntime, EefRuntimeError, EefState, SingleEefCommand,
-    SingleEefFeedback,
+    EefRuntime, EefRuntimeError, EefState, SingleEefCommand, SingleEefFeedback,
+    spawn_eef_runtime_task,
 };
 use async_trait::async_trait;
 use iceoryx2::prelude::*;
-use rollio_bus::{robot_command_service_name, robot_state_service_name, CONTROL_EVENTS_SERVICE};
+use rollio_bus::{CONTROL_EVENTS_SERVICE, robot_command_service_name, robot_state_service_name};
 use rollio_types::config::RobotMode;
 use rollio_types::messages::{
     CommandMode, ControlEvent, EndEffectorStatus, RobotCommand, RobotState,
@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 
 type StatePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, RobotState, ()>;
 type CommandSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, RobotCommand, ()>;
@@ -105,9 +105,9 @@ trait RuntimeTransport: Send + Sync {
     fn current_status(&self) -> EndEffectorStatus;
     async fn set_state(&self, state: EefState) -> Result<(), RollioRuntimeError>;
     async fn submit_e2_command(&self, command: &SingleEefCommand)
-        -> Result<(), RollioRuntimeError>;
+    -> Result<(), RollioRuntimeError>;
     async fn submit_g2_command(&self, command: &SingleEefCommand)
-        -> Result<(), RollioRuntimeError>;
+    -> Result<(), RollioRuntimeError>;
     async fn shutdown_gracefully(&self) -> Result<(), RollioRuntimeError>;
 }
 
@@ -448,8 +448,8 @@ async fn shutdown_signal() -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::time::{sleep, timeout};
 
     struct TestPorts {
@@ -554,8 +554,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn publishes_robot_state_with_end_effector_status(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn publishes_robot_state_with_end_effector_status()
+    -> Result<(), Box<dyn std::error::Error>> {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -639,11 +639,13 @@ mod tests {
                         .position,
                     0.018
                 );
-                assert!(transport
-                    .g2_commands
-                    .lock()
-                    .expect("g2 commands lock poisoned")
-                    .is_empty());
+                assert!(
+                    transport
+                        .g2_commands
+                        .lock()
+                        .expect("g2 commands lock poisoned")
+                        .is_empty()
+                );
 
                 send_control_event(&ports.control_publisher, ControlEvent::Shutdown)?;
                 task.await??;
@@ -703,11 +705,13 @@ mod tests {
                         .position,
                     0.057
                 );
-                assert!(transport
-                    .e2_commands
-                    .lock()
-                    .expect("e2 commands lock poisoned")
-                    .is_empty());
+                assert!(
+                    transport
+                        .e2_commands
+                        .lock()
+                        .expect("e2 commands lock poisoned")
+                        .is_empty()
+                );
 
                 send_control_event(&ports.control_publisher, ControlEvent::Shutdown)?;
                 task.await??;

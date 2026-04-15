@@ -4,6 +4,7 @@ import { resolveRuntimeConfig } from "../src/runtime-config.js";
 
 test("resolveRuntimeConfig falls back to the default websocket endpoint", () => {
   const runtimeConfig = resolveRuntimeConfig([], {});
+  assert.equal(runtimeConfig.appMode, "collect");
   assert.equal(runtimeConfig.websocketUrl, "ws://localhost:9090");
   assert.equal(runtimeConfig.asciiRendererId, "native-rust");
   assert.deepEqual(runtimeConfig.episodeKeyBindings, {
@@ -16,6 +17,7 @@ test("resolveRuntimeConfig falls back to the default websocket endpoint", () => 
 
 test("resolveRuntimeConfig prefers environment configuration", () => {
   const runtimeConfig = resolveRuntimeConfig([], {
+    ROLLIO_UI_MODE: "setup",
     ROLLIO_VISUALIZER_WS: "ws://127.0.0.1:9911",
     ROLLIO_ASCII_RENDERER: "native-rust",
     ROLLIO_UI_START_KEY: "a",
@@ -23,6 +25,7 @@ test("resolveRuntimeConfig prefers environment configuration", () => {
     ROLLIO_UI_KEEP_KEY: "c",
     ROLLIO_UI_DISCARD_KEY: "v",
   });
+  assert.equal(runtimeConfig.appMode, "setup");
   assert.equal(runtimeConfig.websocketUrl, "ws://127.0.0.1:9911");
   assert.equal(runtimeConfig.asciiRendererId, "native-rust");
   assert.equal(runtimeConfig.episodeKeyBindings.startKey, "a");
@@ -34,6 +37,8 @@ test("resolveRuntimeConfig prefers environment configuration", () => {
 test("resolveRuntimeConfig lets CLI flags override environment values", () => {
   const runtimeConfig = resolveRuntimeConfig(
     [
+      "--mode",
+      "setup",
       "--ws",
       "ws://127.0.0.1:9922",
       "--renderer",
@@ -56,6 +61,7 @@ test("resolveRuntimeConfig lets CLI flags override environment values", () => {
       ROLLIO_UI_DISCARD_KEY: "v",
     },
   );
+  assert.equal(runtimeConfig.appMode, "setup");
   assert.equal(runtimeConfig.websocketUrl, "ws://127.0.0.1:9922");
   assert.equal(runtimeConfig.asciiRendererId, "ts-half-block");
   assert.deepEqual(runtimeConfig.episodeKeyBindings, {

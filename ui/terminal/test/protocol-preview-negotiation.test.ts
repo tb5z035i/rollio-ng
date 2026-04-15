@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   encodeEpisodeCommand,
+  encodeSetupCommand,
   encodeSetPreviewSize,
   parseBinaryMessage,
   parseJsonMessage,
@@ -98,5 +99,110 @@ test("parseJsonMessage accepts robot state payloads with end-effector status", (
     efforts: [1.25],
     end_effector_status: "enabled",
     end_effector_feedback_valid: true,
+  });
+});
+
+test("encodeSetupCommand emits setup websocket messages", () => {
+  assert.deepEqual(
+    JSON.parse(
+      encodeSetupCommand("setup_toggle_device", {
+        name: "camera_top",
+        delta: 1,
+      }),
+    ),
+    {
+      type: "command",
+      action: "setup_toggle_device",
+      name: "camera_top",
+      delta: 1,
+    },
+  );
+});
+
+test("encodeSetupCommand preserves value payloads for setup editors", () => {
+  assert.deepEqual(
+    JSON.parse(
+      encodeSetupCommand("setup_set_project_name", {
+        value: "demo_project",
+      }),
+    ),
+    {
+      type: "command",
+      action: "setup_set_project_name",
+      value: "demo_project",
+    },
+  );
+});
+
+test("encodeSetupCommand supports per-device name edits", () => {
+  assert.deepEqual(
+    JSON.parse(
+      encodeSetupCommand("setup_set_device_name", {
+        name: "robot|airbot-play|PZ123|-|-",
+        value: "leader",
+      }),
+    ),
+    {
+      type: "command",
+      action: "setup_set_device_name",
+      name: "robot|airbot-play|PZ123|-|-",
+      value: "leader",
+    },
+  );
+});
+
+test("parseJsonMessage accepts setup state payloads", () => {
+  const message = parseJsonMessage(
+    JSON.stringify({
+      type: "setup_state",
+      step: "devices",
+      step_index: 1,
+      step_name: "Devices",
+      total_steps: 3,
+      output_path: "config.toml",
+      resume_mode: false,
+      status: "editing",
+      identify_device: "camera|realsense|123|color|-",
+      warnings: [],
+      config: {
+        project_name: "default",
+        mode: "intervention",
+        episode: { format: "lerobot-v2.1" },
+        devices: [],
+        pairing: [],
+        encoder: {
+          video_codec: "h264",
+          depth_codec: "rvl",
+        },
+        storage: { backend: "local", output_path: "./output" },
+      },
+      available_devices: [],
+    }),
+  );
+
+  assert.deepEqual(message, {
+    type: "setup_state",
+    step: "devices",
+    step_index: 1,
+    step_name: "Devices",
+    total_steps: 3,
+    output_path: "config.toml",
+    resume_mode: false,
+    status: "editing",
+    identify_device: "camera|realsense|123|color|-",
+    warnings: [],
+    config: {
+      project_name: "default",
+      mode: "intervention",
+      episode: { format: "lerobot-v2.1" },
+      devices: [],
+      pairing: [],
+      encoder: {
+        video_codec: "h264",
+        depth_codec: "rvl",
+      },
+      storage: { backend: "local", output_path: "./output" },
+    },
+    available_devices: [],
   });
 });

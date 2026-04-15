@@ -2201,13 +2201,16 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "rollio"
 version = "0.1.0"
 dependencies = [
+ "airbot_play_rust",
  "clap",
  "iceoryx2",
  "libc",
  "rollio-bus",
  "rollio-types",
+ "serde",
  "serde_json",
  "signal-hook",
+ "tokio",
  "toml 0.8.23",
 ]
 
@@ -2376,8 +2379,10 @@ dependencies = [
 name = "rollio-types"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "iceoryx2",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml 0.8.23",
 ]

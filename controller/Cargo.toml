@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+airbot_play_rust = { path = "../third_party/airbot-play-rust", default-features = false }
 rollio-bus = { path = "../rollio-bus" }
 rollio-types = { path = "../rollio-types" }
 iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }
 clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = { version = "0.8", features = ["display"] }
 libc = "0.2.184"
-
-[dev-dependencies]
-serde_json = "1.0.149"
+tokio = { version = "1", features = ["rt"] }

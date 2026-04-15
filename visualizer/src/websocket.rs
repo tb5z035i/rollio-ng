@@ -11,7 +11,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
-use rollio_types::messages::EpisodeCommand;
+use rollio_types::messages::{EpisodeCommand, SetupCommandMessage};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -38,7 +38,9 @@ pub async fn run_server(
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
     episode_command_tx: Sender<EpisodeCommand>,
+    setup_command_tx: Sender<SetupCommandMessage>,
     latest_episode_status: Arc<Mutex<Option<String>>>,
+    latest_setup_state: Arc<Mutex<Option<String>>>,
 ) {
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => {
@@ -59,7 +61,9 @@ pub async fn run_server(
                 let client_stream_info = stream_info.clone();
                 let client_preview_config = preview_config.clone();
                 let client_episode_command_tx = episode_command_tx.clone();
+                let client_setup_command_tx = setup_command_tx.clone();
                 let client_latest_episode_status = latest_episode_status.clone();
+                let client_latest_setup_state = latest_setup_state.clone();
                 tokio::spawn(handle_client(
                     stream,
                     peer,
@@ -67,7 +71,9 @@ pub async fn run_server(
                     client_stream_info,
                     client_preview_config,
                     client_episode_command_tx,
+                    client_setup_command_tx,
                     client_latest_episode_status,
+                    client_latest_setup_state,
                 ));
             }
             Err(e) => {
@@ -88,7 +94,9 @@ async fn handle_client(
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
     episode_command_tx: Sender<EpisodeCommand>,
+    setup_command_tx: Sender<SetupCommandMessage>,
     latest_episode_status: Arc<Mutex<Option<String>>>,
+    latest_setup_state: Arc<Mutex<Option<String>>>,
 ) {
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
@@ -119,6 +127,17 @@ async fn handle_client(
     if let Some(status_json) = initial_episode_status {
         if let Err(e) = ws_sink.send(Message::Text(status_json.into())).await {
             log::debug!("failed to send initial episode status to {peer}: {e}");
+            let _ = ws_sink.close().await;
+            return;
+        }
+    }
+    let initial_setup_state = latest_setup_state
+        .lock()
+        .expect("setup state mutex poisoned")
+        .clone();
+    if let Some(setup_json) = initial_setup_state {
+        if let Err(e) = ws_sink.send(Message::Text(setup_json.into())).await {
+            log::debug!("failed to send initial setup state to {peer}: {e}");
             let _ = ws_sink.close().await;
             return;
         }
@@ -167,7 +186,16 @@ async fn handle_client(
                                     }
                                 }
                                 _ => {
-                                    if let Some(episode_command) = protocol::decode_episode_command(&cmd) {
+                                    if cmd.action.starts_with("setup_") {
+                                        if let Err(e) =
+                                            setup_command_tx.send(SetupCommandMessage::new(text.as_str()))
+                                        {
+                                            log::warn!(
+                                                "failed to forward setup command from {peer}: {e}"
+                                            );
+                                            break;
+                                        }
+                                    } else if let Some(episode_command) = protocol::decode_episode_command(&cmd) {
                                         if let Err(e) = episode_command_tx.send(episode_command) {
                                             log::warn!("failed to forward episode command from {peer}: {e}");
                                             break;

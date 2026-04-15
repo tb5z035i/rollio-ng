@@ -62,6 +62,7 @@ pub struct ProbeDevice {
     pub driver: String,
     pub interface: String,
     pub product_variant: String,
+    pub end_effector: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,16 +71,18 @@ pub struct ValidateReport {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilitiesReport {
     pub id: String,
     pub driver: String,
     pub dof: u32,
     pub supported_modes: [String; 2],
+    pub default_frequency_hz: f64,
     pub transport: String,
     pub interface: String,
     pub product_variant: String,
     pub serial_number: String,
+    pub end_effector: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +90,7 @@ struct ResolvedProbeDevice {
     id: String,
     interface: String,
     product_variant: String,
+    end_effector: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -302,6 +306,7 @@ where
             driver: DRIVER_NAME.to_owned(),
             interface: device.interface,
             product_variant: device.product_variant,
+            end_effector: device.end_effector,
         })
         .collect())
 }
@@ -320,10 +325,12 @@ where
         driver: DRIVER_NAME.to_owned(),
         dof: DEFAULT_DOF,
         supported_modes: SUPPORTED_MODES.map(str::to_owned),
+        default_frequency_hz: 250.0,
         transport: "can".to_owned(),
         interface: device.interface,
         product_variant: device.product_variant,
         serial_number: device.id,
+        end_effector: device.end_effector,
     })
 }
 
@@ -380,6 +387,7 @@ fn resolve_probe_devices(instances: Vec<DiscoveredInstance>) -> Vec<ResolvedProb
             // Keep the existing Rollio-facing product variant stable until the
             // wrapper grows a stronger AIRBOT model/variant contract.
             product_variant: DEFAULT_PRODUCT_VARIANT.to_owned(),
+            end_effector: instance.mounted_eef.map(|value| value.to_ascii_lowercase()),
         });
     }
 
@@ -454,6 +462,7 @@ mod tests {
         assert_eq!(parsed[0]["driver"], DRIVER_NAME);
         assert_eq!(parsed[0]["interface"], "can0");
         assert_eq!(parsed[0]["product_variant"], DEFAULT_PRODUCT_VARIANT);
+        assert_eq!(parsed[0]["end_effector"], "g2");
     }
 
     #[tokio::test]
@@ -497,10 +506,12 @@ mod tests {
         assert_eq!(capabilities.id, "SN12345678");
         assert_eq!(capabilities.driver, DRIVER_NAME);
         assert_eq!(capabilities.dof, DEFAULT_DOF);
+        assert_eq!(capabilities.default_frequency_hz, 250.0);
         assert_eq!(capabilities.transport, "can");
         assert_eq!(capabilities.interface, "can0");
         assert_eq!(capabilities.product_variant, DEFAULT_PRODUCT_VARIANT);
         assert_eq!(capabilities.serial_number, "SN12345678");
+        assert_eq!(capabilities.end_effector.as_deref(), Some("g2"));
         assert_eq!(
             capabilities.supported_modes,
             SUPPORTED_MODES.map(str::to_owned)
