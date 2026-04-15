@@ -1,13 +1,14 @@
 use crate::cli::CollectArgs;
 use crate::episode::EpisodeLifecycle;
 use crate::process::{
-    ChildSpec, ManagedChild, ResolvedCommand, ShutdownTrigger, poll_children_once, spawn_child,
-    terminate_children,
+    poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild, ResolvedCommand,
+    ShutdownTrigger,
 };
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
-    EPISODE_STORED_SERVICE, robot_command_service_name, robot_state_service_name,
+    robot_command_service_name, robot_state_service_name, BACKPRESSURE_SERVICE,
+    CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
+    EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::{
     AssemblerRuntimeConfig, Config, DeviceConfig, DeviceType, EncoderRuntimeConfig,
@@ -20,8 +21,8 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::error::Error;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -241,7 +242,7 @@ fn build_collect_specs(
     ui_runtime_config
         .websocket_url
         .as_ref()
-        .ok_or("ui runtime config did not produce a websocket url")?;
+        .ok_or("ui runtime config did not produce an upstream websocket url")?;
     eprintln!(
         "rollio: web ui available at {}",
         ui_browser_url(&ui_runtime_config.http_host, ui_runtime_config.http_port)
@@ -660,7 +661,7 @@ impl ControllerIpc {
 mod tests {
     use super::*;
     use rollio_types::config::Config;
-    use rollio_types::messages::{FixedString64, FixedString256};
+    use rollio_types::messages::{FixedString256, FixedString64};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

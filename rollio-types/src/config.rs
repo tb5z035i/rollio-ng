@@ -1,4 +1,4 @@
-use crate::messages::{MAX_JOINTS, PixelFormat};
+use crate::messages::{PixelFormat, MAX_JOINTS};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

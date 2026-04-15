@@ -74,6 +74,21 @@ fn parse_example_config() {
 }
 
 #[test]
+fn ui_runtime_config_defaults_upstream_to_visualizer_port() {
+    let mut config = include_str!("../../config/config.example.toml")
+        .parse::<Config>()
+        .expect("example config should parse");
+    config.visualizer.port = 9910;
+    config.ui.websocket_url = None;
+
+    let ui_runtime_config = config.ui_runtime_config();
+    assert_eq!(
+        ui_runtime_config.websocket_url.as_deref(),
+        Some("ws://127.0.0.1:9910")
+    );
+}
+
+#[test]
 fn parse_hardware_example_config() {
     let toml_text = include_str!("../../config/config.hardware.example.toml");
     let config = Config::from_str(toml_text).expect("hardware example should parse");

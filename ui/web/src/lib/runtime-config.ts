@@ -10,6 +10,8 @@ export interface UiRuntimeConfig {
   episodeKeyBindings: EpisodeKeyBindings;
 }
 
+type LocationLike = Pick<Location, "protocol" | "host">;
+
 type RawUiRuntimeConfig = {
   websocketUrl?: unknown;
   episodeKeyBindings?: Partial<Record<keyof EpisodeKeyBindings, unknown>>;
@@ -30,8 +32,48 @@ function normalizeKey(
   return normalized;
 }
 
+function isAbsoluteUrl(value: string): boolean {
+  return /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(value);
+}
+
+function normalizeWebSocketProtocol(protocol: string): string {
+  if (protocol === "https:") {
+    return "wss:";
+  }
+  if (protocol === "http:") {
+    return "ws:";
+  }
+  return protocol;
+}
+
+function browserWebSocketOrigin(location: LocationLike): string {
+  return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+}
+
+export function resolveWebSocketUrl(
+  websocketUrl: string,
+  location: LocationLike = window.location,
+): string {
+  const trimmed = websocketUrl.trim();
+  if (trimmed === "") {
+    throw new Error('runtime config "websocketUrl" must be a non-empty string');
+  }
+
+  if (isAbsoluteUrl(trimmed)) {
+    const resolved = new URL(trimmed);
+    resolved.protocol = normalizeWebSocketProtocol(resolved.protocol);
+    if (resolved.protocol !== "ws:" && resolved.protocol !== "wss:") {
+      throw new Error('runtime config "websocketUrl" must use ws:// or wss://');
+    }
+    return resolved.toString();
+  }
+
+  return new URL(trimmed, browserWebSocketOrigin(location)).toString();
+}
+
 export function normalizeRuntimeConfig(
   config: RawUiRuntimeConfig,
+  location: LocationLike = window.location,
 ): UiRuntimeConfig {
   if (typeof config.websocketUrl !== "string" || config.websocketUrl.trim() === "") {
     throw new Error('runtime config "websocketUrl" must be a non-empty string');
@@ -53,13 +95,14 @@ export function normalizeRuntimeConfig(
   }
 
   return {
-    websocketUrl: config.websocketUrl.trim(),
+    websocketUrl: resolveWebSocketUrl(config.websocketUrl, location),
     episodeKeyBindings,
   };
 }
 
 export async function loadRuntimeConfig(
   fetchImpl: typeof fetch = fetch,
+  location: LocationLike = window.location,
 ): Promise<UiRuntimeConfig> {
   const response = await fetchImpl("/api/runtime-config", {
     cache: "no-store",
@@ -73,5 +116,5 @@ export async function loadRuntimeConfig(
   }
 
   const payload = (await response.json()) as RawUiRuntimeConfig;
-  return normalizeRuntimeConfig(payload);
+  return normalizeRuntimeConfig(payload, location);
 }

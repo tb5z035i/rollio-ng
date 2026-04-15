@@ -135,6 +135,7 @@ fn wait_for_ui_runtime_config(port: u16, timeout: Duration) -> Result<(), Box<dy
         match fetch_http_body(port, "/api/runtime-config") {
             Ok(body) => {
                 let payload: serde_json::Value = serde_json::from_str(&body)?;
+                assert_eq!(payload["websocketUrl"], "/ws");
                 assert_eq!(payload["episodeKeyBindings"]["startKey"], "s");
                 return Ok(());
             }
