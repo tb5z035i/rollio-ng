@@ -738,6 +738,9 @@ function buildDetailLines(
   switch (setupState.step) {
     case "devices": {
       const focusedDevice = setupState.available_devices[focusedIndex];
+      const deviceRowWidths = computeDeviceRowWidths(
+        setupState.available_devices,
+      );
       return [
         textLine(
           "devices-title",
@@ -752,6 +755,7 @@ function buildDetailLines(
             setupState.identify_device === device.name,
             editingField,
             draftValue,
+            deviceRowWidths,
           ),
         ),
         ...(focusedDevice
@@ -973,6 +977,45 @@ function deviceIdentityKey(device: SetupBinaryDeviceConfig): string {
   return [kind, device.driver, device.id, channelType, "-"].join("|");
 }
 
+type DeviceRowWidths = {
+  label: number;
+  id: number;
+  name: number;
+  channels: number;
+  config: number;
+};
+
+function deviceRowChannelName(device: SetupAvailableDevice): string {
+  const channel = device.current.channels[0];
+  return channel?.name?.trim() || channel?.channel_type || device.current.name;
+}
+
+function deviceRowLabel(device: SetupAvailableDevice): string {
+  const channel = device.current.channels[0];
+  return channel?.channel_label?.trim() || device.display_name;
+}
+
+function computeDeviceRowWidths(
+  devices: SetupAvailableDevice[],
+): DeviceRowWidths {
+  let label = 0;
+  let id = 0;
+  let name = 0;
+  let channels = 0;
+  let config = 0;
+  for (const device of devices) {
+    label = Math.max(label, deviceRowLabel(device).length);
+    id = Math.max(id, device.id.length);
+    name = Math.max(name, deviceRowChannelName(device).length);
+    channels = Math.max(
+      channels,
+      configuredChannelSummary(device.current).length,
+    );
+    config = Math.max(config, deviceConfigurationSummary(device).length);
+  }
+  return { label, id, name, channels, config };
+}
+
 function deviceRowLine(
   device: SetupAvailableDevice,
   focused: boolean,
@@ -980,21 +1023,24 @@ function deviceRowLine(
   identifying: boolean,
   editingField: EditableFieldId | null,
   draftValue: string,
+  widths: DeviceRowWidths,
 ): DetailLine {
   const rowDim = !selected;
   const isEditing = editingField === deviceNameFieldId(device.name);
-  const channel = device.current.channels[0];
   // Per-channel name (with fallback to channel_type) — separate from the
   // parent BinaryDeviceConfig.name so renaming one row no longer mutates
   // sibling channels' rows.
-  const channelName =
-    channel?.name?.trim() || channel?.channel_type || device.current.name;
+  const channelName = deviceRowChannelName(device);
   const renderedName = isEditing ? `${draftValue}|` : channelName;
   // Per-channel display label (e.g. "AIRBOT E2") provided by the device
   // executable; fall back to device-level display_name when missing.
-  const rowLabel =
-    channel?.channel_label?.trim() || device.display_name;
+  const rowLabel = deviceRowLabel(device);
   const channelSummary = configuredChannelSummary(device.current);
+  const configSummary = deviceConfigurationSummary(device);
+  const dimStyle = {
+    color: selected ? undefined : "gray",
+    dimColor: rowDim,
+  };
   return buildDetailLine(`device:${device.name}`, [
     focusPrefix(focused, rowDim),
     textSegment("[", { dimColor: rowDim }),
@@ -1003,37 +1049,23 @@ function deviceRowLine(
       bold: selected,
     }),
     textSegment("] ", { dimColor: rowDim }),
-    textSegment(rowLabel, {
+    textSegment(rowLabel.padEnd(widths.label), {
       bold: focused || selected,
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
+      ...dimStyle,
     }),
+    textSegment(` | id=${device.id.padEnd(widths.id)}`, dimStyle),
+    textSegment(` | name=${renderedName.padEnd(widths.name)}`, dimStyle),
+    textSegment(
+      ` | channels=${channelSummary.padEnd(widths.channels)}`,
+      dimStyle,
+    ),
+    textSegment(` | ${configSummary.padEnd(widths.config)}`, dimStyle),
     identifying
       ? textSegment(" [identifying]", { color: "yellow", bold: true })
       : null,
-    textSegment(` | id=${device.id}`, {
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
-    }),
-    textSegment(" | name=", {
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
-    }),
-    textSegment(renderedName, {
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
-    }),
     isEditing
       ? textSegment(" [Enter save, Esc cancel]", { color: "cyan" })
       : null,
-    textSegment(` | channels=${channelSummary}`, {
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
-    }),
-    textSegment(` | ${deviceConfigurationSummary(device)}`, {
-      color: selected ? undefined : "gray",
-      dimColor: rowDim,
-    }),
   ]);
 }
 

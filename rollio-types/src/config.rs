@@ -1478,18 +1478,35 @@ impl Default for EncoderConfig {
 
 impl EncoderConfig {
     pub fn codec_for_camera(&self, camera: &DeviceConfig) -> EncoderCodec {
+        if let Some(pixel_format) = camera.pixel_format {
+            return self.codec_for_pixel_format(pixel_format);
+        }
         if camera.uses_depth_codec() {
-            self.depth_codec
+            self.depth_codec_with_gray8_fallback()
         } else {
             self.video_codec
         }
     }
 
     pub fn codec_for_pixel_format(&self, pixel_format: PixelFormat) -> EncoderCodec {
-        if matches!(pixel_format, PixelFormat::Depth16 | PixelFormat::Gray8) {
-            self.depth_codec
-        } else {
+        match pixel_format {
+            PixelFormat::Depth16 => self.depth_codec,
+            // Gray8 (e.g. RealSense infrared) is plain monochrome video.
+            // It nominally shares depth_codec, but the RVL encoder is
+            // depth-specific and physically rejects non-depth16 frames, so
+            // fall back to video_codec when depth_codec=rvl. Without this
+            // fallback the infrared encoder process exits at episode start
+            // with `rvl requires depth16 frames, got Gray8`.
+            PixelFormat::Gray8 => self.depth_codec_with_gray8_fallback(),
+            _ => self.video_codec,
+        }
+    }
+
+    fn depth_codec_with_gray8_fallback(&self) -> EncoderCodec {
+        if self.depth_codec == EncoderCodec::Rvl {
             self.video_codec
+        } else {
+            self.depth_codec
         }
     }
 

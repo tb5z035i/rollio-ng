@@ -124,6 +124,53 @@ output_path = "./out"
     );
 }
 
+/// Regression: when `depth_codec=rvl` and a camera channel publishes
+/// `gray8` frames (e.g. RealSense infrared), the encoder must use the
+/// video codec instead. RVL is depth-only and physically rejects
+/// non-`Depth16` frames, so without the fallback the infrared encoder
+/// process exits at episode start with `rvl requires depth16 frames,
+/// got Gray8`.
+#[test]
+fn gray8_infrared_falls_back_to_video_codec_when_depth_codec_is_rvl() {
+    let encoder = EncoderConfig {
+        video_codec: EncoderCodec::H264,
+        depth_codec: EncoderCodec::Rvl,
+        ..EncoderConfig::default()
+    };
+
+    assert_eq!(
+        encoder.codec_for_pixel_format(PixelFormat::Depth16),
+        EncoderCodec::Rvl,
+        "depth16 still routes to depth_codec",
+    );
+    assert_eq!(
+        encoder.codec_for_pixel_format(PixelFormat::Gray8),
+        EncoderCodec::H264,
+        "gray8 must fall back to video_codec when depth_codec=rvl",
+    );
+    assert_eq!(
+        encoder.codec_for_pixel_format(PixelFormat::Rgb24),
+        EncoderCodec::H264,
+    );
+}
+
+/// When the operator picks a depth codec that *can* encode grayscale
+/// frames (any libav-backed codec), `gray8` should keep using it so that
+/// infrared streams stay grouped with depth in the produced artifacts.
+#[test]
+fn gray8_infrared_uses_depth_codec_when_depth_codec_supports_it() {
+    let encoder = EncoderConfig {
+        video_codec: EncoderCodec::H264,
+        depth_codec: EncoderCodec::H265,
+        ..EncoderConfig::default()
+    };
+
+    assert_eq!(
+        encoder.codec_for_pixel_format(PixelFormat::Gray8),
+        EncoderCodec::H265,
+    );
+}
+
 #[test]
 fn schema_export_is_v2_and_includes_nested_sections() {
     let schema = build_config_schema();

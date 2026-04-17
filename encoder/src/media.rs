@@ -165,7 +165,10 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24],
+        // Gray8 is encoded by scaling to YUV420P first (chroma planes are
+        // filled with neutral gray), which lets infrared cameras share the
+        // video codec used for color streams.
+        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
         &[EncoderArtifactFormat::Mp4],
     ));
     codecs.extend(probe_video_capabilities(
@@ -175,7 +178,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24],
+        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
         &[EncoderArtifactFormat::Mp4],
     ));
     codecs.extend(probe_video_capabilities(
@@ -185,7 +188,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24],
+        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
         &[EncoderArtifactFormat::Mkv],
     ));
     codecs.push(EncoderCapability {

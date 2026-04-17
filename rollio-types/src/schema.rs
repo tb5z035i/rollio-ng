@@ -382,7 +382,7 @@ pub fn config_schema() -> ConfigSchema {
                     ),
                     enum_field(
                         "depth_codec",
-                        "Codec used for depth or grayscale camera streams.",
+                        "Codec used for depth16 camera streams. Grayscale (gray8 / infrared) streams also use this codec when it can encode them; rvl is depth-only, so gray8 falls back to video_codec when depth_codec=rvl.",
                         false,
                         "rvl",
                         &["h264", "h265", "av1", "rvl"],
@@ -967,7 +967,7 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                     ),
                     enum_field(
                         "depth_codec",
-                        "Codec used for depth-like camera channels.",
+                        "Codec used for depth16 camera channels. Grayscale (gray8 / infrared) channels also use this codec when it can encode them; rvl is depth-only, so gray8 falls back to video_codec when depth_codec=rvl.",
                         false,
                         "rvl",
                         &["h264", "h265", "av1", "rvl"],

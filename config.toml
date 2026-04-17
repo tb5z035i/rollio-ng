@@ -22,9 +22,9 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 1920
-height = 1080
-fps = 30
+width = 640
+height = 480
+fps = 60
 pixel_format = "rgb24"
 
 [devices.channels.command_defaults]
@@ -56,7 +56,7 @@ parallel_mit_kd = []
 [[devices.channels]]
 channel_type = "infrared"
 kind = "camera"
-enabled = true
+enabled = false
 name = "realsense_ir"
 publish_states = []
 recorded_states = []
@@ -90,9 +90,9 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 160
-height = 120
-fps = 5
+width = 1280
+height = 720
+fps = 30
 pixel_format = "rgb24"
 native_pixel_format = "MJPG"
 
@@ -119,8 +119,8 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 320
-height = 240
+width = 1280
+height = 720
 fps = 30
 pixel_format = "rgb24"
 native_pixel_format = "MJPG"
@@ -145,7 +145,7 @@ transport = "can"
 channel_type = "arm"
 kind = "robot"
 enabled = true
-name = "airbot_play_arm"
+name = "airbot_play_arm_1"
 channel_label = "AIRBOT Play"
 mode = "free-drive"
 dof = 6
@@ -203,7 +203,7 @@ transport = "can"
 channel_type = "arm"
 kind = "robot"
 enabled = true
-name = "airbot_play_arm"
+name = "airbot_play_arm_2"
 channel_label = "AIRBOT Play"
 mode = "command-following"
 dof = 6
@@ -297,7 +297,7 @@ encoded_handoff = "file"
 
 [storage]
 backend = "local"
-output_path = "./output"
+output_path = "./output_2"
 queue_size = 32
 
 [monitor]
