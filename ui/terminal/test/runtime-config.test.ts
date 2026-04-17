@@ -6,7 +6,7 @@ test("resolveRuntimeConfig falls back to the default control + preview endpoints
   const runtimeConfig = resolveRuntimeConfig([], {});
   assert.equal(runtimeConfig.appMode, "collect");
   assert.equal(runtimeConfig.controlWebsocketUrl, "ws://localhost:9091");
-  assert.equal(runtimeConfig.previewWebsocketUrl, "ws://localhost:9090");
+  assert.equal(runtimeConfig.previewWebsocketUrl, "ws://localhost:19090");
   assert.equal(runtimeConfig.asciiRendererId, "native-rust");
   assert.deepEqual(runtimeConfig.episodeKeyBindings, {
     startKey: "s",

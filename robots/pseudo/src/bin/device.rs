@@ -228,6 +228,14 @@ fn load_device_config(args: &RunArgs) -> Result<BinaryDeviceConfig, Box<dyn Erro
 
 fn run_device(device: BinaryDeviceConfig) -> Result<(), Box<dyn Error>> {
     let stop = Arc::new(AtomicBool::new(false));
+
+    // See `robots/airbot_play_rust/src/bin/device.rs::run_device`. The same
+    // SIGINT/SIGTERM rationale applies — the per-channel loops poll `stop`
+    // and want a chance to run their cleanup (publish a final state
+    // snapshot, transition to Disabled) before the process exits.
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&stop))?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&stop))?;
+
     let mut handles = Vec::new();
 
     for channel in device.channels.iter().filter(|channel| channel.enabled).cloned() {

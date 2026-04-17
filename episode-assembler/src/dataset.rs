@@ -327,6 +327,21 @@ fn write_parquet(
     Ok(())
 }
 
+/// Shared inner field for every `List<Float64>` column.
+///
+/// LeRobot feature vectors never contain null elements, so the inner field is
+/// declared non-nullable. Both the schema and the `ListBuilder` must reference
+/// the same field definition; otherwise `RecordBatch::try_new` rejects the
+/// batch with `column types must match schema types, expected
+/// List(non-null Float64) but found List(Float64)`.
+fn feature_list_inner_field() -> Arc<Field> {
+    Arc::new(Field::new("item", DataType::Float64, false))
+}
+
+fn feature_list_data_type() -> DataType {
+    DataType::List(feature_list_inner_field())
+}
+
 fn parquet_schema(config: &AssemblerRuntimeConfigV2) -> Schema {
     let mut fields = vec![
         Field::new("timestamp", DataType::Float64, false),
@@ -335,16 +350,12 @@ fn parquet_schema(config: &AssemblerRuntimeConfigV2) -> Schema {
         Field::new("global_index", DataType::Int64, false),
         Field::new("task_index", DataType::Int64, false),
         Field::new("done", DataType::Boolean, false),
-        Field::new(
-            "action",
-            DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
-            false,
-        ),
+        Field::new("action", feature_list_data_type(), false),
     ];
     for observation in &config.observations {
         fields.push(Field::new(
             &observation_feature_key(observation),
-            DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+            feature_list_data_type(),
             false,
         ));
     }
@@ -376,7 +387,7 @@ fn parquet_columns(config: &AssemblerRuntimeConfigV2, rows: &EpisodeRows) -> Vec
 
 fn build_list_array(rows: &[Vec<f64>]) -> arrow_array::ListArray {
     let values = Float64Builder::new();
-    let mut builder = ListBuilder::new(values);
+    let mut builder = ListBuilder::new(values).with_field(feature_list_inner_field());
     for row in rows {
         for value in row {
             builder.values().append_value(*value);
@@ -611,5 +622,69 @@ fn move_or_copy_file(source: &Path, target: &Path) -> Result<(), Box<dyn Error>>
 pub(crate) fn remove_episode_artifacts(episode: &EpisodeAssemblyInput) {
     for path in episode.video_paths.values() {
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rollio_types::config::{EncodedHandoffMode, EpisodeFormat};
+
+    fn sample_config_with_observation() -> AssemblerRuntimeConfigV2 {
+        AssemblerRuntimeConfigV2 {
+            process_id: "test-assembler".into(),
+            format: EpisodeFormat::LeRobotV2_1,
+            fps: 30,
+            chunk_size: 1000,
+            missing_video_timeout_ms: 5000,
+            staging_dir: "/tmp/rollio-assembler-test".into(),
+            encoded_handoff: EncodedHandoffMode::default(),
+            cameras: Vec::new(),
+            observations: vec![AssemblerObservationRuntimeConfigV2 {
+                channel_id: "robot_a/arm".into(),
+                state_kind: RobotStateKind::JointPosition,
+                state_topic: "robot_a/arm/states/joint_position".into(),
+                value_len: 6,
+            }],
+            actions: Vec::new(),
+            embedded_config_toml: String::new(),
+        }
+    }
+
+    fn sample_rows(observation_key_str: &str) -> EpisodeRows {
+        let mut observation_columns = BTreeMap::new();
+        observation_columns.insert(
+            observation_key_str.to_string(),
+            vec![vec![0.0_f64; 6], vec![1.0_f64; 6]],
+        );
+        EpisodeRows {
+            timestamps_s: vec![0.0, 1.0 / 30.0],
+            frame_indices: vec![0, 1],
+            episode_indices: vec![0, 0],
+            global_indices: vec![0, 1],
+            task_indices: vec![0, 0],
+            done_flags: vec![false, true],
+            observation_columns,
+            action_rows: vec![vec![0.1_f64; 6], vec![0.2_f64; 6]],
+        }
+    }
+
+    /// Regression: schema declares `List(non-null Float64)` but `ListBuilder`
+    /// defaults to `List(nullable Float64)`. Without `with_field`, the
+    /// `RecordBatch::try_new` call below fails with
+    /// `column types must match schema types, expected
+    /// List(non-null Float64) but found List(Float64)`,
+    /// which crashes the assembler when the user keeps an episode.
+    #[test]
+    fn record_batch_columns_match_schema_for_action_and_observations() {
+        let config = sample_config_with_observation();
+        let key = observation_key("robot_a/arm", RobotStateKind::JointPosition);
+        let rows = sample_rows(&key);
+
+        let schema = Arc::new(parquet_schema(&config));
+        let columns = parquet_columns(&config, &rows);
+        let batch = RecordBatch::try_new(schema, columns)
+            .expect("schema and columns must align for List<Float64> features");
+        assert_eq!(batch.num_rows(), 2);
     }
 }

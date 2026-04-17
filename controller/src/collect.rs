@@ -232,13 +232,24 @@ impl ControllerIpc {
             .signal_handling_mode(SignalHandlingMode::Disabled)
             .create::<ipc::Service>()?;
 
+        // CONTROL_EVENTS_SERVICE is the fan-out bus every device, encoder,
+        // teleop router, visualizer and assembler subscribes to for the
+        // session-end Shutdown event. With multi-channel cameras (e.g. a
+        // RealSense exposing color + depth + infrared = 3 encoders by
+        // itself, plus 2 V4L2 webcams + 2 robots + ...) the previous cap of
+        // 16 nodes is reached on a moderately-sized rig and the next
+        // device fails with `ExceedsMaxNumberOfNodes`. The controller
+        // always wins the race to create this service (`run_with_config`
+        // builds `ControllerIpc` before spawning any child), so bumping the
+        // caps here is enough — every subsequent `open_or_create` inherits
+        // them.
         let control_service_name: ServiceName = CONTROL_EVENTS_SERVICE.try_into()?;
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
             .max_publishers(4)
-            .max_subscribers(16)
-            .max_nodes(16)
+            .max_subscribers(32)
+            .max_nodes(32)
             .open_or_create()?;
 
         let command_service_name: ServiceName = EPISODE_COMMAND_SERVICE.try_into()?;

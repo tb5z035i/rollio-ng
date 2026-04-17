@@ -87,6 +87,27 @@ auto wait_for_failure(const pid_t pid, const std::chrono::seconds timeout) -> vo
     throw std::runtime_error("realsense run command did not fail within the timeout");
 }
 
+auto wait_for_success(const pid_t pid, const std::chrono::seconds timeout) -> void {
+    const auto deadline = SteadyClock::now() + timeout;
+    int status = 0;
+
+    while (SteadyClock::now() < deadline) {
+        const auto result = waitpid(pid, &status, WNOHANG);
+        if (result == pid) {
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                return;
+            }
+            throw std::runtime_error(
+                "realsense run command exited with non-zero status: " + std::to_string(status)
+            );
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    kill(pid, SIGKILL);
+    throw std::runtime_error("realsense run command did not finish within the timeout");
+}
+
 auto run_probe_test() -> void {
     const auto command = std::string("\"") + ROLLIO_CAMERA_REALSENSE_BIN + "\" probe";
     const auto output = capture_command_output(command);
@@ -119,6 +140,45 @@ auto run_invalid_runtime_test() -> void {
     wait_for_failure(pid, std::chrono::seconds(2));
 }
 
+// Regression: when the controller serializes a `BinaryDeviceConfig` via
+// `toml::to_string`, the Rust `toml` crate emits each channel's `profile`
+// and `command_defaults` as nested `[channels.profile]` /
+// `[channels.command_defaults]` table headers — not as inline tables. The
+// hand-rolled C++ parser used to choke on these headers and the realsense
+// driver would exit with status 1, which surfaced in the wizard as
+// "child \"device-realsense_rgb\" exited with status exit status: 1".
+auto run_serialized_runtime_dry_run_test() -> void {
+    const auto config_inline =
+        "name = \"realsense_rgb\"\n"
+        "executable = \"rollio-camera-realsense\"\n"
+        "driver = \"realsense\"\n"
+        "id = \"332322071743\"\n"
+        "bus_root = \"realsense_rgb\"\n"
+        "\n"
+        "[[channels]]\n"
+        "channel_type = \"color\"\n"
+        "kind = \"camera\"\n"
+        "enabled = true\n"
+        "name = \"realsense_rgb\"\n"
+        "channel_label = \"Intel RealSense RGB\"\n"
+        "publish_states = []\n"
+        "recorded_states = []\n"
+        "\n"
+        "[channels.profile]\n"
+        "width = 1920\n"
+        "height = 1080\n"
+        "fps = 30\n"
+        "pixel_format = \"rgb24\"\n"
+        "\n"
+        "[channels.command_defaults]\n"
+        "joint_mit_kp = []\n"
+        "joint_mit_kd = []\n"
+        "parallel_mit_kp = []\n"
+        "parallel_mit_kd = []\n";
+    const auto pid = spawn_run_command(config_inline, true);
+    wait_for_success(pid, std::chrono::seconds(2));
+}
+
 } // namespace
 
 auto main() -> int {
@@ -126,6 +186,7 @@ auto main() -> int {
         run_probe_test();
         run_invalid_capabilities_test();
         run_invalid_runtime_test();
+        run_serialized_runtime_dry_run_test();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "rollio-camera-realsense-tests: " << error.what() << '\n';

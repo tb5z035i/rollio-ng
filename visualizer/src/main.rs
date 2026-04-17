@@ -74,7 +74,7 @@ struct IpcPollConfig {
 
 fn legacy_runtime_config(args: &Args) -> VisualizerRuntimeConfigV2 {
     let defaults = VisualizerRuntimeConfigV2 {
-        port: 9090,
+        port: 19090,
         camera_sources: Vec::new(),
         robot_sources: Vec::new(),
         max_preview_width: 320,
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn legacy_runtime_defaults_match_previous_cli_behavior() {
         let config = load_runtime_config(&empty_args()).expect("legacy runtime config should load");
-        assert_eq!(config.port, 9090);
+        assert_eq!(config.port, 19090);
         assert!(config.camera_sources.is_empty());
         assert!(config.robot_sources.is_empty());
     }

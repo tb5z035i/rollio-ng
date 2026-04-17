@@ -290,9 +290,32 @@ inline auto parse_profile_from_value(const std::string& value) -> CameraChannelP
     return profile;
 }
 
+inline auto parse_u32_value(std::string_view raw_value) -> uint32_t {
+    const auto s = trim(std::string(raw_value));
+    uint32_t value = 0;
+    const auto* begin = s.data();
+    const auto* end = s.data() + s.size();
+    const auto [ptr, error] = std::from_chars(begin, end, value);
+    if (error != std::errc{} || ptr != end) {
+        throw std::runtime_error("failed to parse integer value: " + s);
+    }
+    return value;
+}
+
+inline auto starts_with(std::string_view value, std::string_view prefix) -> bool {
+    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+}
+
 inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceConfig {
     BinaryDeviceConfig device;
-    enum class Section { Root, Channel };
+    // `Channel` consumes keys for the most recent `[[channels]]` entry.
+    // `ChannelProfile` consumes keys for `[channels.profile]` (or
+    // `[devices.channels.profile]`) and writes them into the most recent
+    // channel's profile. `ChannelSkip` swallows keys for any other channel
+    // sub-table (e.g. `[channels.command_defaults]`, `[channels.extra]`)
+    // without crashing — these are emitted by the Rust `toml` serializer for
+    // fields the C++ drivers don't need.
+    enum class Section { Root, Channel, ChannelProfile, ChannelSkip };
     auto section = Section::Root;
 
     std::size_t cursor = 0;
@@ -311,6 +334,28 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             if (trimmed == "[[channels]]" || trimmed == "[[devices.channels]]") {
                 device.channels.emplace_back();
                 section = Section::Channel;
+                continue;
+            }
+            // Sub-tables of the most recent channel are produced by the Rust
+            // `toml` serializer for nested structs (profile, command_defaults,
+            // flattened extra). We only care about `profile`; everything else
+            // is intentionally skipped to keep this parser forward-compatible.
+            const bool is_channel_subtable =
+                starts_with(trimmed, "[channels.") || starts_with(trimmed, "[devices.channels.");
+            if (is_channel_subtable) {
+                if (device.channels.empty()) {
+                    throw std::runtime_error(
+                        "channel sub-table before first [[channels]] entry: " + trimmed
+                    );
+                }
+                if (trimmed == "[channels.profile]" || trimmed == "[devices.channels.profile]") {
+                    if (!device.channels.back().profile.has_value()) {
+                        device.channels.back().profile.emplace();
+                    }
+                    section = Section::ChannelProfile;
+                } else {
+                    section = Section::ChannelSkip;
+                }
                 continue;
             }
             throw std::runtime_error("unsupported TOML table header: " + trimmed);
@@ -332,7 +377,7 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             } else {
                 // Forward-compatible: ignore unknown root keys (matches serde flatten/extra usage).
             }
-        } else {
+        } else if (section == Section::Channel) {
             if (device.channels.empty()) {
                 throw std::runtime_error("channel key before first [[channels]] table");
             }
@@ -350,18 +395,34 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             } else if (key == "profile") {
                 ch.profile = parse_profile_from_value(raw_value);
             } else if (key == "stream_index") {
-                uint32_t v = 0;
-                const auto s = trim(raw_value);
-                const auto* b = s.data();
-                const auto* e = s.data() + s.size();
-                const auto [ptr, err] = std::from_chars(b, e, v);
-                if (err != std::errc{} || ptr != e) {
-                    throw std::runtime_error("invalid stream_index");
-                }
-                ch.stream_index = v;
+                ch.stream_index = parse_u32_value(raw_value);
             } else {
                 // Ignore unknown channel keys (extra / future fields).
             }
+        } else if (section == Section::ChannelProfile) {
+            if (device.channels.empty() || !device.channels.back().profile.has_value()) {
+                throw std::runtime_error("profile key without [channels.profile] table");
+            }
+            auto& profile = *device.channels.back().profile;
+            if (key == "width") {
+                profile.width = parse_u32_value(raw_value);
+            } else if (key == "height") {
+                profile.height = parse_u32_value(raw_value);
+            } else if (key == "fps") {
+                profile.fps = parse_u32_value(raw_value);
+            } else if (key == "pixel_format") {
+                const auto pixel_format_name = strip_quotes(raw_value);
+                const auto pixel_format = pixel_format_from_string(pixel_format_name);
+                if (!pixel_format.has_value()) {
+                    throw std::runtime_error("unsupported pixel_format: " + pixel_format_name);
+                }
+                profile.pixel_format = *pixel_format;
+            } else {
+                // Ignore unknown profile keys (e.g. native_pixel_format).
+            }
+        } else {
+            // Section::ChannelSkip — intentionally ignore every key in
+            // unrelated channel sub-tables.
         }
     }
 

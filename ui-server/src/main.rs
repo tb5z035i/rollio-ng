@@ -314,7 +314,7 @@ mod tests {
     fn sample_runtime_config() -> UiRuntimeConfig {
         r#"
 control_websocket_url = "ws://127.0.0.1:9091"
-preview_websocket_url = "ws://127.0.0.1:9090"
+preview_websocket_url = "ws://127.0.0.1:19090"
 start_key = "s"
 stop_key = "e"
 keep_key = "k"
@@ -407,7 +407,7 @@ http_port = 3000
             "s"
         );
         assert_eq!(state.upstream_control_websocket_url, "ws://127.0.0.1:9091");
-        assert_eq!(state.upstream_preview_websocket_url, "ws://127.0.0.1:9090");
+        assert_eq!(state.upstream_preview_websocket_url, "ws://127.0.0.1:19090");
     }
 
     #[tokio::test]

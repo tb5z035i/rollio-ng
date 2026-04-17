@@ -28,6 +28,73 @@ struct TestPorts {
     backpressure_subscriber: BackpressureSubscriber,
 }
 
+/// Regression: `VIDEO_READY_SERVICE` and `BACKPRESSURE_SERVICE` are shared
+/// across every encoder process. iceoryx2 defaults `max_publishers` to 2,
+/// so a project with 3+ enabled camera channels (e.g. 2 V4L2 webcams + a
+/// RealSense color/depth/infrared device = 5 encoders) used to crash the
+/// 3rd encoder with `PublisherCreateError::ExceedsMaxSupportedPublishers`,
+/// which surfaced as `child "encoder-realsense-infrared" exited with
+/// status exit status: 1`.
+///
+/// The fix raises the cap to 16 in both `encoder::runtime::run` and
+/// `episode_assembler::runtime::create_video_ready_subscriber`. This test
+/// re-creates the failure mode in-process: open the two shared services
+/// with the production caps once, then attach 5 publishers in succession.
+#[test]
+fn five_publishers_can_share_video_ready_and_backpressure_services() {
+    let _guard = test_guard();
+    let node = NodeBuilder::new()
+        .signal_handling_mode(SignalHandlingMode::Disabled)
+        .create::<ipc::Service>()
+        .expect("node should build");
+
+    let ready_service_name: ServiceName =
+        VIDEO_READY_SERVICE.try_into().expect("ready service name");
+    let ready_service = node
+        .service_builder(&ready_service_name)
+        .publish_subscribe::<VideoReady>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
+        .open_or_create()
+        .expect("video ready service should create with 16-publisher cap");
+
+    let backpressure_service_name: ServiceName = BACKPRESSURE_SERVICE
+        .try_into()
+        .expect("backpressure service name");
+    let backpressure_service = node
+        .service_builder(&backpressure_service_name)
+        .publish_subscribe::<BackpressureEvent>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
+        .open_or_create()
+        .expect("backpressure service should create with 16-publisher cap");
+
+    let mut ready_publishers = Vec::new();
+    let mut backpressure_publishers = Vec::new();
+    for index in 0..5 {
+        ready_publishers.push(
+            ready_service
+                .publisher_builder()
+                .create()
+                .unwrap_or_else(|error| {
+                    panic!("video ready publisher #{index} should attach: {error:?}")
+                }),
+        );
+        backpressure_publishers.push(
+            backpressure_service
+                .publisher_builder()
+                .create()
+                .unwrap_or_else(|error| {
+                    panic!("backpressure publisher #{index} should attach: {error:?}")
+                }),
+        );
+    }
+    assert_eq!(ready_publishers.len(), 5);
+    assert_eq!(backpressure_publishers.len(), 5);
+}
+
 #[test]
 fn probe_default_output_is_human_friendly() {
     let _guard = test_guard();
@@ -198,7 +265,7 @@ fn rvl_round_trip_is_lossless_and_reports_efficiency() {
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ns: unix_timestamp_ns(),
+                timestamp_ms: unix_timestamp_ms(),
                 width,
                 height,
                 pixel_format: PixelFormat::Depth16,
@@ -283,7 +350,7 @@ fn backpressure_publishes_event_and_encoder_keeps_working() {
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ns: unix_timestamp_ns(),
+                timestamp_ms: unix_timestamp_ms(),
                 width,
                 height,
                 pixel_format: PixelFormat::Depth16,
@@ -366,7 +433,7 @@ fn run_video_roundtrip(
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ns: unix_timestamp_ns(),
+                timestamp_ms: unix_timestamp_ms(),
                 width,
                 height,
                 pixel_format: PixelFormat::Rgb24,
@@ -447,7 +514,15 @@ fn binary_path() -> &'static str {
 
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    // Recover from a poisoned mutex: when one test panics the next ones
+    // would otherwise unwrap to `PoisonError`, masking the real failure.
+    // The guard is purely a serialization tool — tests don't share mutable
+    // state through it — so taking the inner guard via `into_inner()` on
+    // poisoning is safe.
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = Command::new("pkill")
         .args(["-f", "rollio-encoder"])
         .status();
@@ -505,10 +580,21 @@ fn create_test_ports(camera_name: &str) -> Result<TestPorts, Box<dyn std::error:
         .open_or_create()?;
     let control_publisher = control_service.publisher_builder().create()?;
 
+    // Match the production quotas in `encoder::runtime::run` and
+    // `episode_assembler::runtime::create_video_ready_subscriber`. iceoryx2
+    // uses `max_publishers = 2` by default, and `open_or_create` rejects
+    // services whose existing config doesn't satisfy the requested caps —
+    // so if the test fixture opens these services first with defaults, the
+    // encoder under test then fails with
+    // `PublisherCreateError::ExceedsMaxSupportedPublishers` on its third
+    // publisher (or even the first, if the spec mismatches).
     let ready_service_name: ServiceName = VIDEO_READY_SERVICE.try_into()?;
     let ready_service = node
         .service_builder(&ready_service_name)
         .publish_subscribe::<VideoReady>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
         .open_or_create()?;
     let ready_subscriber = ready_service.subscriber_builder().create()?;
 
@@ -516,6 +602,9 @@ fn create_test_ports(camera_name: &str) -> Result<TestPorts, Box<dyn std::error:
     let backpressure_service = node
         .service_builder(&backpressure_service_name)
         .publish_subscribe::<BackpressureEvent>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
         .open_or_create()?;
     let backpressure_subscriber = backpressure_service.subscriber_builder().create()?;
 
@@ -685,9 +774,9 @@ fn current_rss_kb() -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
-fn unix_timestamp_ns() -> u64 {
+fn unix_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as u64
+        .as_millis() as u64
 }

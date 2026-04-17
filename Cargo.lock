@@ -2313,6 +2313,7 @@ dependencies = [
  "rollio-types",
  "serde",
  "serde_json",
+ "signal-hook",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
@@ -2327,6 +2328,7 @@ dependencies = [
  "rollio-bus",
  "rollio-types",
  "serde_json",
+ "signal-hook",
  "toml 0.8.23",
 ]
 

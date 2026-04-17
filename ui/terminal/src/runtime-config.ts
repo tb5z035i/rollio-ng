@@ -22,7 +22,7 @@ export type UiRuntimeConfig = {
 };
 
 const DEFAULT_CONTROL_WS_URL = "ws://localhost:9091";
-const DEFAULT_PREVIEW_WS_URL = "ws://localhost:9090";
+const DEFAULT_PREVIEW_WS_URL = "ws://localhost:19090";
 const DEFAULT_APP_MODE: AppMode = "collect";
 const DEFAULT_START_KEY = "s";
 const DEFAULT_STOP_KEY = "e";

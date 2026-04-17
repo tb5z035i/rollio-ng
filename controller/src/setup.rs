@@ -1642,12 +1642,25 @@ fn robot_default_channel_type(_driver: &str) -> String {
     "arm".into()
 }
 
+/// One channel + chosen profile + final user-visible name for a camera
+/// discovery row. Built by `build_discovery_config` so multi-stream cameras
+/// (e.g. RealSense color + depth + infrared) collapse into a single
+/// `BinaryDeviceConfig` driven by one process.
+#[derive(Debug, Clone)]
+struct CameraDiscoveryChannel {
+    channel_type: String,
+    profile: CameraProfile,
+    /// Final per-channel name after dedup. Always populated by
+    /// `build_discovery_config` so the wizard never shows a blank `name=`
+    /// column or two rows that both say `name=camera`.
+    name: String,
+}
+
 fn binary_device_from_camera_discovery(
     discovery: &DiscoveredDevice,
-    profile: &CameraProfile,
+    channels: &[CameraDiscoveryChannel],
     name: String,
 ) -> BinaryDeviceConfig {
-    let channel_type = camera_channel_type_for_profile(profile);
     let mut extra = toml::Table::new();
     if let Some(transport) = &discovery.transport {
         extra.insert("transport".into(), toml::Value::String(transport.clone()));
@@ -1667,39 +1680,75 @@ fn binary_device_from_camera_discovery(
             toml::Value::String(end_effector.clone()),
         );
     }
-    let channel_meta = discovery
-        .channel_meta_by_channel
-        .get(&channel_type)
-        .cloned()
-        .unwrap_or_default();
+    let device_channels = channels
+        .iter()
+        .map(|channel| {
+            let channel_meta = discovery
+                .channel_meta_by_channel
+                .get(&channel.channel_type)
+                .cloned()
+                .unwrap_or_default();
+            DeviceChannelConfigV2 {
+                channel_type: channel.channel_type.clone(),
+                kind: DeviceType::Camera,
+                enabled: true,
+                name: Some(channel.name.clone()),
+                channel_label: channel_meta.channel_label,
+                mode: None,
+                dof: None,
+                publish_states: Vec::new(),
+                recorded_states: Vec::new(),
+                control_frequency_hz: None,
+                profile: Some(CameraChannelProfile {
+                    width: channel.profile.width,
+                    height: channel.profile.height,
+                    fps: channel.profile.fps,
+                    pixel_format: channel.profile.pixel_format,
+                    native_pixel_format: channel.profile.native_pixel_format.clone(),
+                }),
+                command_defaults: ChannelCommandDefaults::default(),
+                extra: toml::Table::new(),
+            }
+        })
+        .collect();
     BinaryDeviceConfig {
         name: name.clone(),
         executable: Some(default_device_executable_name(&discovery.driver)),
         driver: discovery.driver.clone(),
         id: discovery.id.clone(),
         bus_root: name,
-        channels: vec![DeviceChannelConfigV2 {
-            channel_type,
-            kind: DeviceType::Camera,
-            enabled: true,
-            name: channel_meta.default_name,
-            channel_label: channel_meta.channel_label,
-            mode: None,
-            dof: None,
-            publish_states: Vec::new(),
-            recorded_states: Vec::new(),
-            control_frequency_hz: None,
-            profile: Some(CameraChannelProfile {
-                width: profile.width,
-                height: profile.height,
-                fps: profile.fps,
-                pixel_format: profile.pixel_format,
-                native_pixel_format: profile.native_pixel_format.clone(),
-            }),
-            command_defaults: ChannelCommandDefaults::default(),
-            extra: toml::Table::new(),
-        }],
+        channels: device_channels,
         extra,
+    }
+}
+
+/// Group a camera discovery's profiles by `channel_type`, picking the first
+/// profile encountered as the default for each group. Order is the order of
+/// first appearance in `camera_profiles`, so the highest-resolution profile
+/// per stream is preferred when the discovery sorts profiles.
+fn group_camera_profiles_by_channel(
+    profiles: &[CameraProfile],
+) -> Vec<(String, CameraProfile)> {
+    let mut groups: Vec<(String, CameraProfile)> = Vec::new();
+    for profile in profiles {
+        let channel_type = camera_channel_type_for_profile(profile);
+        if !groups.iter().any(|(existing, _)| existing == &channel_type) {
+            groups.push((channel_type, profile.clone()));
+        }
+    }
+    groups
+}
+
+/// Per-device base name when a discovery exposes more than one channel
+/// (e.g. RealSense reports color + depth + infrared from one physical unit).
+/// The single-channel path keeps using `default_device_name_base` so legacy
+/// configs and existing tests stay byte-identical.
+fn multi_channel_camera_device_base(driver: &str) -> String {
+    match driver {
+        "realsense" => "realsense".into(),
+        "v4l2" => "camera".into(),
+        "pseudo" => "pseudo_camera".into(),
+        _ => format!("{}_camera", driver.replace('-', "_")),
     }
 }
 
@@ -1977,13 +2026,20 @@ impl SetupIpc {
             .max_nodes(16)
             .open_or_create()?;
 
+        // Match `controller::collect::ControllerIpc::new` — see the long
+        // comment there. The setup preview runtime spawns the same set of
+        // device + encoder + teleop processes as collect, so the same node
+        // budget applies. Keeping the two call sites in sync also avoids a
+        // mismatch where collect would create the service with quota 32
+        // and a later setup re-run would try to open with 16, failing
+        // `verify_max_nodes`.
         let control_service_name: ServiceName = CONTROL_EVENTS_SERVICE.try_into()?;
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
             .max_publishers(4)
-            .max_subscribers(16)
-            .max_nodes(16)
+            .max_subscribers(32)
+            .max_nodes(32)
             .open_or_create()?;
 
         Ok(Self {
@@ -2463,26 +2519,71 @@ fn build_discovery_config(discoveries: &[DiscoveredDevice]) -> Result<ProjectCon
     for discovery in discoveries {
         match discovery.device_type {
             DeviceType::Camera => {
-                let profile = discovery.camera_profiles.first().cloned().ok_or_else(|| {
-                    format!("camera \"{}\" exposed no supported profiles", discovery.id)
-                })?;
-                let name = next_default_device_name(
+                let groups = group_camera_profiles_by_channel(&discovery.camera_profiles);
+                if groups.is_empty() {
+                    return Err(format!(
+                        "camera \"{}\" exposed no supported profiles",
+                        discovery.id
+                    )
+                    .into());
+                }
+
+                let multi_channel = groups.len() > 1;
+                let device_base = if multi_channel {
+                    multi_channel_camera_device_base(&discovery.driver)
+                } else {
+                    let (_, first_profile) = &groups[0];
                     default_device_name_base(
                         discovery.device_type,
                         &discovery.driver,
                         discovery.dof,
-                        profile.stream.as_deref(),
-                        profile.channel,
-                    ),
-                    &mut default_name_counts,
-                );
-                config
-                    .devices
-                    .push(binary_device_from_camera_discovery(
-                        discovery,
-                        &profile,
-                        name,
-                    ));
+                        first_profile.stream.as_deref(),
+                        first_profile.channel,
+                    )
+                };
+                let device_name =
+                    next_default_device_name(device_base, &mut default_name_counts);
+
+                let channels = groups
+                    .into_iter()
+                    .map(|(channel_type, profile)| {
+                        // Single-channel camera (e.g. V4L2 webcam): keep the
+                        // channel name in lockstep with the deduped device
+                        // name so the wizard never shows two rows that both
+                        // say `name=camera`. Multi-channel cameras
+                        // (RealSense) need per-channel names so users can
+                        // tell color/depth/infrared apart at a glance.
+                        let channel_name = if multi_channel {
+                            let base = discovery
+                                .channel_meta_by_channel
+                                .get(&channel_type)
+                                .and_then(|meta| meta.default_name.clone())
+                                .unwrap_or_else(|| {
+                                    default_device_name_base(
+                                        DeviceType::Camera,
+                                        &discovery.driver,
+                                        None,
+                                        profile.stream.as_deref(),
+                                        profile.channel,
+                                    )
+                                });
+                            next_default_device_name(base, &mut default_name_counts)
+                        } else {
+                            device_name.clone()
+                        };
+                        CameraDiscoveryChannel {
+                            channel_type,
+                            profile,
+                            name: channel_name,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                config.devices.push(binary_device_from_camera_discovery(
+                    discovery,
+                    &channels,
+                    device_name,
+                ));
             }
             DeviceType::Robot => {
                 let is_eef = discovery.dof == Some(1);
@@ -3537,5 +3638,171 @@ mod tests {
         };
 
         assert!(should_treat_trigger_as_shutdown(&trigger, false, false));
+    }
+
+    fn v4l2_discovery(id: &str) -> DiscoveredDevice {
+        DiscoveredDevice {
+            device_type: DeviceType::Camera,
+            driver: "v4l2".into(),
+            id: id.into(),
+            display_name: "V4L2 Camera".into(),
+            camera_profiles: vec![CameraProfile {
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: PixelFormat::Rgb24,
+                native_pixel_format: Some("MJPG".into()),
+                stream: Some("color".into()),
+                channel: None,
+            }],
+            supported_modes_by_channel: BTreeMap::new(),
+            channel_meta_by_channel: BTreeMap::from([(
+                "color".into(),
+                DiscoveredChannelMeta {
+                    channel_label: Some("V4L2 Camera".into()),
+                    default_name: Some("camera".into()),
+                },
+            )]),
+            dof: None,
+            supported_modes: Vec::new(),
+            default_frequency_hz: None,
+            transport: None,
+            interface: None,
+            product_variant: None,
+            end_effector: None,
+        }
+    }
+
+    fn realsense_multi_stream_discovery(id: &str) -> DiscoveredDevice {
+        DiscoveredDevice {
+            device_type: DeviceType::Camera,
+            driver: "realsense".into(),
+            id: id.into(),
+            display_name: "Intel RealSense".into(),
+            camera_profiles: vec![
+                CameraProfile {
+                    width: 1920,
+                    height: 1080,
+                    fps: 30,
+                    pixel_format: PixelFormat::Rgb24,
+                    native_pixel_format: None,
+                    stream: Some("color".into()),
+                    channel: None,
+                },
+                CameraProfile {
+                    width: 640,
+                    height: 480,
+                    fps: 30,
+                    pixel_format: PixelFormat::Depth16,
+                    native_pixel_format: None,
+                    stream: Some("depth".into()),
+                    channel: None,
+                },
+                CameraProfile {
+                    width: 640,
+                    height: 480,
+                    fps: 30,
+                    pixel_format: PixelFormat::Gray8,
+                    native_pixel_format: None,
+                    stream: Some("infrared".into()),
+                    channel: None,
+                },
+            ],
+            supported_modes_by_channel: BTreeMap::new(),
+            channel_meta_by_channel: BTreeMap::new(),
+            dof: None,
+            supported_modes: Vec::new(),
+            default_frequency_hz: None,
+            transport: None,
+            interface: None,
+            product_variant: None,
+            end_effector: None,
+        }
+    }
+
+    fn camera_channel_names(device: &BinaryDeviceConfig) -> Vec<Option<String>> {
+        device.channels.iter().map(|c| c.name.clone()).collect()
+    }
+
+    fn camera_channel_types(device: &BinaryDeviceConfig) -> Vec<String> {
+        device
+            .channels
+            .iter()
+            .map(|c| c.channel_type.clone())
+            .collect()
+    }
+
+    /// Regression for issue #1: when two V4L2 cameras are discovered, the
+    /// channel name for the second one used to be set from the V4L2 driver's
+    /// `default_name = "camera"` and was *not* deduplicated, so both setup
+    /// rows showed `name=camera` and the user couldn't tell them apart in
+    /// the wizard.
+    #[test]
+    fn build_discovery_config_dedupes_channel_name_for_two_v4l2_cameras() {
+        let config = build_discovery_config(&[
+            v4l2_discovery("/dev/video0"),
+            v4l2_discovery("/dev/video2"),
+        ])
+        .expect("config should build");
+
+        assert_eq!(
+            project_camera_device_names(&config),
+            vec!["camera", "camera_2"]
+        );
+        assert_eq!(
+            camera_channel_names(&config.devices[0]),
+            vec![Some("camera".to_string())]
+        );
+        assert_eq!(
+            camera_channel_names(&config.devices[1]),
+            vec![Some("camera_2".to_string())]
+        );
+    }
+
+    /// Regression for issue #3: a RealSense unit reports color + depth +
+    /// infrared in its `query --json` output, but `build_discovery_config`
+    /// used to keep only the first camera profile, so the wizard showed
+    /// just one `color` channel and depth / infrared were silently dropped.
+    #[test]
+    fn build_discovery_config_keeps_all_realsense_streams() {
+        let config = build_discovery_config(&[realsense_multi_stream_discovery("332322071743")])
+            .expect("config should build");
+
+        assert_eq!(config.devices.len(), 1);
+        let device = &config.devices[0];
+        assert_eq!(device.driver, "realsense");
+        assert_eq!(device.name, "realsense");
+        assert_eq!(device.bus_root, "realsense");
+        assert_eq!(
+            camera_channel_types(device),
+            vec!["color".to_string(), "depth".to_string(), "infrared".to_string()]
+        );
+        assert_eq!(
+            camera_channel_names(device),
+            vec![
+                Some("realsense_rgb".to_string()),
+                Some("realsense_depth".to_string()),
+                Some("realsense_ir".to_string()),
+            ]
+        );
+    }
+
+    /// Multi-channel + multi-device: two RealSense units both produce 3
+    /// channels and the device-level dedup counter must produce
+    /// `realsense` / `realsense_2`, not `realsense` / `realsense`.
+    #[test]
+    fn build_discovery_config_dedupes_multi_channel_devices() {
+        let config = build_discovery_config(&[
+            realsense_multi_stream_discovery("332322071743"),
+            realsense_multi_stream_discovery("332322071744"),
+        ])
+        .expect("config should build");
+
+        assert_eq!(config.devices.len(), 2);
+        assert_eq!(config.devices[0].name, "realsense");
+        assert_eq!(config.devices[1].name, "realsense_2");
+        // Each device still exposes all three streams.
+        assert_eq!(camera_channel_types(&config.devices[0]).len(), 3);
+        assert_eq!(camera_channel_types(&config.devices[1]).len(), 3);
     }
 }

@@ -8,7 +8,7 @@ shutdown_timeout_ms = 3000
 child_poll_interval_ms = 100
 
 [visualizer]
-port = 9090
+port = 19090
 max_preview_width = 320
 max_preview_height = 240
 jpeg_quality = 30

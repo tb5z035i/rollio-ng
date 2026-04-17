@@ -447,6 +447,18 @@ async fn run_device(config: RuntimeConfig) -> Result<(), Box<dyn Error>> {
     );
     let identify_led_gate = Arc::new(IdentifyLedGate::new());
     let stop = Arc::new(AtomicBool::new(false));
+
+    // Catch SIGINT / SIGTERM and flip the same `stop` flag the channel
+    // loops already poll, so the cleanup at the end of `run_arm_channel` /
+    // `run_eef_channel` can run `set_arm_state(ArmState::Disabled)` /
+    // `set_eef_state(EefState::Disabled)` before the process exits. Without
+    // this, Ctrl+C in the controller's terminal also reaches the device
+    // process group and kills the device with the default SIGINT action,
+    // bypassing the cleanup — so the arm motors stayed energized after a
+    // collect session ended.
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&stop))?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&stop))?;
+
     let mut handles = Vec::new();
 
     if let Some(arm) = config.arm.clone() {

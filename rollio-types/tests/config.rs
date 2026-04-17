@@ -16,11 +16,11 @@ fn parse_example_project_config() {
     assert_eq!(config.encoder.video_codec, EncoderCodec::H264);
     assert_eq!(config.encoder.depth_codec, EncoderCodec::Rvl);
     assert_eq!(config.storage.queue_size, 32);
-    assert_eq!(config.visualizer.port, 9090);
+    assert_eq!(config.visualizer.port, 19090);
     assert_eq!(config.controller.shutdown_timeout_ms, 3000);
     assert_eq!(
         config.ui_runtime_config().preview_websocket_url.as_deref(),
-        Some("ws://127.0.0.1:9090")
+        Some("ws://127.0.0.1:19090")
     );
     assert!(
         config.ui_runtime_config().control_websocket_url.is_none(),

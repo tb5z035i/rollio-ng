@@ -123,7 +123,7 @@ pub fn config_schema() -> ConfigSchema {
                 kind: SchemaSectionKind::Table,
                 description: "Visualizer WebSocket preview settings.",
                 fields: vec![
-                    int_field("port", "WebSocket port served by the visualizer.", false, 9090),
+                    int_field("port", "WebSocket port served by the visualizer.", false, 19090),
                     int_field(
                         "max_preview_width",
                         "Maximum preview frame width exposed to UIs.",
@@ -925,7 +925,7 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                 kind: SchemaSectionKind::Table,
                 description: "Visualizer preview settings. Runtime sources are derived from enabled channels.",
                 fields: vec![
-                    int_field("port", "WebSocket port served by the visualizer.", false, 9090),
+                    int_field("port", "WebSocket port served by the visualizer.", false, 19090),
                     int_field(
                         "max_preview_width",
                         "Maximum preview frame width exposed to UIs.",

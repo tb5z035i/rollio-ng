@@ -360,9 +360,19 @@ fn create_video_ready_subscriber(
     node: &Node<ipc::Service>,
 ) -> Result<iceoryx2::port::subscriber::Subscriber<ipc::Service, VideoReady, ()>, Box<dyn Error>> {
     let service_name: ServiceName = VIDEO_READY_SERVICE.try_into()?;
+    // Match the encoder's quotas — see the comment in
+    // `encoder::runtime::run`. Either the assembler or one of the encoders
+    // can win the race to create this service, and `open_or_create` rejects
+    // a service whose existing config doesn't satisfy the requested
+    // `max_publishers`. Stating the same caps on both sides means whichever
+    // creates first sets a quota that all encoders + the assembler can
+    // share.
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<VideoReady>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }

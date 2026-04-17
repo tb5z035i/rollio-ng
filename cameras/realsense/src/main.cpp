@@ -357,6 +357,29 @@ auto print_validate_output(const ValidateCli& args) -> int {
     return 0;
 }
 
+// Only emit stream profiles that the realsense run command can actually
+// fulfill. librealsense2 advertises many redundant variants per resolution
+// (RGB8 + BGR8 + RGBA8 + YUYV for color, two infrared sensors, etc.), and
+// `pipeline.start` is strict about format/index — for example D4xx series
+// supports 1920x1080 *only* in YUYV, not RGB8. Without this filter the
+// controller picks `1920x1080 @ 30 rgb24` as the default color profile and
+// the run command then aborts with "Couldn't resolve requests".
+auto profile_matches_run_command(rs2_stream stream, rs2_format format, int stream_index) -> bool {
+    switch (stream) {
+        case RS2_STREAM_COLOR:
+            return format == RS2_FORMAT_RGB8;
+        case RS2_STREAM_DEPTH:
+            return format == RS2_FORMAT_Z16;
+        case RS2_STREAM_INFRARED:
+            // The run command defaults to infrared sensor 1 (the left IR on
+            // the D4xx stereo module). Filter out the right IR (index 2) so
+            // depth + infrared share the same sensor and resolution.
+            return format == RS2_FORMAT_Y8 && stream_index == 1;
+        default:
+            return false;
+    }
+}
+
 auto print_capabilities_output(const std::string& serial) -> int {
     rs2::context context;
     const auto device = find_device_by_serial(context, serial);
@@ -374,7 +397,8 @@ auto print_capabilities_output(const std::string& serial) -> int {
             }
 
             const auto stream_type = profile.stream_type();
-            if (stream_type != RS2_STREAM_COLOR && stream_type != RS2_STREAM_DEPTH && stream_type != RS2_STREAM_INFRARED) {
+            if (!profile_matches_run_command(
+                    stream_type, video_profile.format(), profile.stream_index())) {
                 continue;
             }
 
@@ -445,7 +469,8 @@ auto print_query_output(const QueryCli& args) -> int {
                 continue;
             }
             const auto stream_type = profile.stream_type();
-            if (stream_type != RS2_STREAM_COLOR && stream_type != RS2_STREAM_DEPTH && stream_type != RS2_STREAM_INFRARED) {
+            if (!profile_matches_run_command(
+                    stream_type, video_profile.format(), profile.stream_index())) {
                 continue;
             }
             const auto w = static_cast<uint32_t>(video_profile.width());

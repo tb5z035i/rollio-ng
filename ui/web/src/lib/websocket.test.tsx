@@ -58,7 +58,7 @@ describe("usePreviewSocket", () => {
     };
 
     const { result } = renderHook(() =>
-      usePreviewSocket("ws://127.0.0.1:9090", options),
+      usePreviewSocket("ws://127.0.0.1:19090", options),
     );
 
     expect(sockets).toHaveLength(1);

@@ -1,11 +1,77 @@
 project_name = "default"
-mode = "intervention"
-pairings = []
+mode = "teleop"
 
 [episode]
 format = "lerobot-v2.1"
 fps = 30
 chunk_size = 1000
+
+[[devices]]
+name = "realsense"
+executable = "rollio-camera-realsense"
+driver = "realsense"
+id = "332322071743"
+bus_root = "realsense"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+name = "realsense_rgb"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1920
+height = 1080
+fps = 30
+pixel_format = "rgb24"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices.channels]]
+channel_type = "depth"
+kind = "camera"
+enabled = true
+name = "realsense_depth"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1280
+height = 720
+fps = 30
+pixel_format = "depth16"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices.channels]]
+channel_type = "infrared"
+kind = "camera"
+enabled = true
+name = "realsense_ir"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1280
+height = 720
+fps = 30
+pixel_format = "gray8"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
 
 [[devices]]
 name = "camera"
@@ -24,9 +90,9 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 1280
-height = 960
-fps = 30
+width = 160
+height = 120
+fps = 5
 pixel_format = "rgb24"
 native_pixel_format = "MJPG"
 
@@ -47,7 +113,7 @@ bus_root = "camera_2"
 channel_type = "color"
 kind = "camera"
 enabled = true
-name = "camera"
+name = "camera_2"
 channel_label = "V4L2 Camera"
 publish_states = []
 recorded_states = []
@@ -69,7 +135,7 @@ parallel_mit_kd = []
 name = "airbot_play"
 executable = "rollio-device-airbot-play"
 driver = "airbot-play"
-id = "PZ60C02603000894"
+id = "PZ25C02402000244"
 bus_root = "airbot_play"
 end_effector = "e2"
 interface = "can0"
@@ -105,7 +171,7 @@ parallel_mit_kd = []
 channel_type = "e2"
 kind = "robot"
 enabled = true
-name = "airbot_e2_1"
+name = "airbot_e2"
 channel_label = "AIRBOT E2"
 mode = "free-drive"
 dof = 1
@@ -122,6 +188,100 @@ joint_mit_kp = []
 joint_mit_kd = []
 parallel_mit_kp = [0.0]
 parallel_mit_kd = [0.0]
+
+[[devices]]
+name = "airbot_play_2"
+executable = "rollio-device-airbot-play"
+driver = "airbot-play"
+id = "PZ31C02507000380"
+bus_root = "airbot_play_2"
+end_effector = "g2"
+interface = "can1"
+transport = "can"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+name = "airbot_play_arm"
+channel_label = "AIRBOT Play"
+mode = "command-following"
+dof = 6
+publish_states = [
+    "joint_position",
+    "joint_velocity",
+    "joint_effort",
+]
+recorded_states = [
+    "joint_position",
+    "joint_velocity",
+    "joint_effort",
+]
+control_frequency_hz = 250.0
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices.channels]]
+channel_type = "g2"
+kind = "robot"
+enabled = true
+name = "airbot_g2"
+channel_label = "AIRBOT G2"
+mode = "command-following"
+dof = 1
+publish_states = [
+    "parallel_position",
+    "parallel_velocity",
+    "parallel_effort",
+]
+recorded_states = ["parallel_position"]
+control_frequency_hz = 250.0
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = [10.0]
+parallel_mit_kd = [0.5]
+
+[[pairings]]
+leader_device = "airbot_play"
+leader_channel_type = "arm"
+follower_device = "airbot_play_2"
+follower_channel_type = "arm"
+mapping = "direct-joint"
+leader_state = "joint_position"
+follower_command = "joint_position"
+joint_index_map = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+]
+joint_scales = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[pairings]]
+leader_device = "airbot_play"
+leader_channel_type = "e2"
+follower_device = "airbot_play_2"
+follower_channel_type = "g2"
+mapping = "direct-joint"
+leader_state = "parallel_position"
+follower_command = "parallel_mit"
+joint_index_map = [0]
+joint_scales = [1.0]
 
 [encoder]
 video_codec = "h264"
@@ -150,14 +310,14 @@ shutdown_timeout_ms = 30000
 child_poll_interval_ms = 100
 
 [visualizer]
-port = 9090
+port = 19090
 max_preview_width = 320
 max_preview_height = 240
 jpeg_quality = 30
 preview_fps = 60
 
 [ui]
-http_host = "127.0.0.1"
+http_host = "0.0.0.0"
 http_port = 3000
 start_key = "s"
 stop_key = "e"

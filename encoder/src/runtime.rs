@@ -69,11 +69,23 @@ pub fn run(args: RunArgs) -> Result<()> {
         .create()
         .map_err(map_iceoryx_error)?;
 
+    // Every encoder is a publisher on `VIDEO_READY_SERVICE` (the assembler
+    // is the sole subscriber) and on `BACKPRESSURE_SERVICE` (the controller
+    // is the subscriber). iceoryx2's default `max_publishers` is 2, so when
+    // a project has more than two cameras the third encoder used to fail
+    // with `PublisherCreateError::ExceedsMaxSupportedPublishers`. Match
+    // `controller/src/collect.rs::ControllerIpc` (which sets the same caps
+    // for BACKPRESSURE_SERVICE) so whichever process creates the service
+    // first sets a quota large enough for every encoder + assembler in the
+    // pipeline.
     let ready_service_name: ServiceName =
         VIDEO_READY_SERVICE.try_into().map_err(map_iceoryx_error)?;
     let ready_service = node
         .service_builder(&ready_service_name)
         .publish_subscribe::<VideoReady>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
         .open_or_create()
         .map_err(map_iceoryx_error)?;
     let ready_publisher = ready_service
@@ -86,6 +98,9 @@ pub fn run(args: RunArgs) -> Result<()> {
     let backpressure_service = node
         .service_builder(&backpressure_service_name)
         .publish_subscribe::<BackpressureEvent>()
+        .max_publishers(16)
+        .max_subscribers(8)
+        .max_nodes(16)
         .open_or_create()
         .map_err(map_iceoryx_error)?;
     let backpressure_publisher = backpressure_service

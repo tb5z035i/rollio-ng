@@ -1852,7 +1852,7 @@ pub struct VisualizerRuntimeConfig {
 }
 
 fn default_visualizer_port() -> u16 {
-    9090
+    19090
 }
 
 fn default_max_preview_width() -> u32 {
@@ -3250,7 +3250,7 @@ impl ProjectConfig {
             // `VisualizerConfig` uses `#[derive(Default)]` with serde defaults only for
             // deserialization — explicit values keep draft templates valid before TOML parse.
             visualizer: VisualizerConfig {
-                port: 9090,
+                port: 19090,
                 max_preview_width: 320,
                 max_preview_height: 240,
                 jpeg_quality: 30,
