@@ -3,13 +3,13 @@ use crate::episode::EpisodeLifecycle;
 use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild, ShutdownTrigger,
 };
+use crate::runtime_paths::{current_executable_dir, workspace_root};
 #[cfg(test)]
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
-use crate::runtime_paths::{current_executable_dir, workspace_root};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE,
-    EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
+    EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
 use rollio_types::messages::{
@@ -59,7 +59,7 @@ fn run_with_config(
     signal_hook::flag::register(SIGTERM, Arc::clone(&shutdown_requested))?;
 
     let controller_ipc = ControllerIpc::new()?;
-    let specs = crate::runtime_plan::build_collect_specs(&config, &workspace_root, &current_exe_dir)?;
+    let specs = crate::runtime_plan::build_collect_specs(&config, workspace_root, current_exe_dir)?;
 
     let mut children = spawn_collect_children(
         &specs,

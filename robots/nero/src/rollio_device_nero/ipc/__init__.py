@@ -23,17 +23,17 @@ from .types import (
 )
 
 __all__ = [
-    "ControlEvent",
-    "DeviceChannelMode",
-    "JointVector15",
-    "JointMitCommand15",
-    "Pose7",
-    "ParallelVector2",
-    "ParallelMitCommand2",
     "CONTROL_EVENT_SHUTDOWN",
+    "DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING",
     "DEVICE_CHANNEL_MODE_DISABLED",
     "DEVICE_CHANNEL_MODE_ENABLED",
     "DEVICE_CHANNEL_MODE_FREE_DRIVE",
-    "DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING",
     "DEVICE_CHANNEL_MODE_IDENTIFYING",
+    "ControlEvent",
+    "DeviceChannelMode",
+    "JointMitCommand15",
+    "JointVector15",
+    "ParallelMitCommand2",
+    "ParallelVector2",
+    "Pose7",
 ]

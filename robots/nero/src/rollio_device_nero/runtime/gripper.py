@@ -114,7 +114,7 @@ def identify_target(elapsed_s: float, max_width_m: float = MAX_WIDTH_M) -> float
     half_period = IDENTIFY_PERIOD_S * 0.5
     if half_period <= 0.0:
         return 0.0
-    phase = (elapsed_s % IDENTIFY_PERIOD_S) / half_period   # 0..2
+    phase = (elapsed_s % IDENTIFY_PERIOD_S) / half_period  # 0..2
     if phase < 1.0:
         return max_width_m * phase
     return max_width_m * (2.0 - phase)
@@ -291,12 +291,12 @@ def _unix_ms() -> int:
 
 
 __all__ = [
-    "MAX_WIDTH_M",
-    "IDENTIFY_PERIOD_S",
     "GRIPPER_DOF",
+    "IDENTIFY_PERIOD_S",
+    "MAX_WIDTH_M",
     "GripperBackend",
-    "GripperIpc",
     "GripperController",
+    "GripperIpc",
     "GripperTickResult",
     "identify_target",
     "mode_value_for_config",

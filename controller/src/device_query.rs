@@ -63,8 +63,7 @@ pub(crate) fn refresh_value_limits_from_devices(
         {
             continue;
         }
-        let meta_by_channel =
-            refresh_device_value_limits(device, workspace_root, current_exe_dir)?;
+        let meta_by_channel = refresh_device_value_limits(device, workspace_root, current_exe_dir)?;
         for (channel_type, meta) in meta_by_channel {
             runtime_meta.insert((device.name.clone(), channel_type), meta);
         }
@@ -142,12 +141,13 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
         .filter_map(|channel| {
             let channel_type = value_as_string(channel.get("channel_type"))?;
             let value_limits = parse_query_value_limits(channel.get("value_limits"));
-            let mut supported_states = parse_query_supported_states(channel.get("supported_states"));
+            let mut supported_states =
+                parse_query_supported_states(channel.get("supported_states"));
             if supported_states.is_empty() {
-                supported_states =
-                    value_limits.iter().map(|entry| entry.state_kind).collect();
+                supported_states = value_limits.iter().map(|entry| entry.state_kind).collect();
             }
-            let supported_commands = parse_query_supported_commands(channel.get("supported_commands"));
+            let supported_commands =
+                parse_query_supported_commands(channel.get("supported_commands"));
             let direct_joint_compatibility =
                 parse_query_direct_joint_compatibility(channel.get("direct_joint_compatibility"));
             Some((

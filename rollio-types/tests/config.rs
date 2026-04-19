@@ -221,8 +221,7 @@ output_path = "./out"
 [visualizer]
 port = 19090
 "#;
-    let error = ProjectConfig::from_str(toml_text)
-        .expect_err("rvl + vaapi should fail validation");
+    let error = ProjectConfig::from_str(toml_text).expect_err("rvl + vaapi should fail validation");
     assert!(
         error.to_string().contains("rvl only supports cpu"),
         "unexpected error: {error}"
@@ -237,7 +236,10 @@ fn visualizer_runtime_config_v2_derives_sources_from_enabled_channels() {
     let visualizer = config.visualizer_runtime_config_v2();
     assert_eq!(visualizer.camera_sources.len(), 2);
     assert_eq!(visualizer.robot_sources.len(), 8);
-    assert_eq!(visualizer.camera_sources[0].frame_topic, "camera_top/color/frames");
+    assert_eq!(
+        visualizer.camera_sources[0].frame_topic,
+        "camera_top/color/frames"
+    );
 }
 
 /// Configuring more than three camera channels keeps the recording pipeline
@@ -333,7 +335,10 @@ port = 19090
         .iter()
         .map(|source| source.channel_id.as_str())
         .collect();
-    assert_eq!(preview_names, vec!["cam_a/color", "cam_b/color", "cam_c/color"]);
+    assert_eq!(
+        preview_names,
+        vec!["cam_a/color", "cam_b/color", "cam_c/color"]
+    );
 }
 
 #[test]

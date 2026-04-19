@@ -41,7 +41,13 @@ pub async fn run_server(
                 let outbound_rx = outbound_tx.subscribe();
                 let client_command_tx = command_tx.clone();
                 let client_latest = latest_snapshot.clone();
-                tokio::spawn(handle_client(stream, peer, outbound_rx, client_command_tx, client_latest));
+                tokio::spawn(handle_client(
+                    stream,
+                    peer,
+                    outbound_rx,
+                    client_command_tx,
+                    client_latest,
+                ));
             }
             Err(e) => {
                 log::warn!("control WebSocket accept error: {e}");

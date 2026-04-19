@@ -1,8 +1,8 @@
 #ifndef ROLLIO_DEVICE_CONFIG_HPP
 #define ROLLIO_DEVICE_CONFIG_HPP
 
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <fstream>
 #include <optional>
@@ -101,8 +101,8 @@ inline auto strip_comment(std::string value) -> std::string {
     return trim(std::move(value));
 }
 
-inline auto parse_u32(const std::unordered_map<std::string, std::string>& values, const std::string& key)
-    -> uint32_t {
+inline auto parse_u32(const std::unordered_map<std::string, std::string>& values,
+                      const std::string& key) -> uint32_t {
     const auto it = values.find(key);
     if (it == values.end()) {
         throw std::runtime_error("missing required key: " + key);
@@ -227,7 +227,8 @@ inline auto parse_inline_table_map(std::string_view inner)
     std::unordered_map<std::string, std::string> out;
     std::size_t pos = 0;
     while (pos < inner.size()) {
-        while (pos < inner.size() && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == ',')) {
+        while (pos < inner.size() &&
+               (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == ',')) {
             ++pos;
         }
         if (pos >= inner.size()) {
@@ -264,7 +265,8 @@ inline auto parse_inline_table_map(std::string_view inner)
             ++pos;
         } else {
             const auto start = pos;
-            while (pos < inner.size() && inner[pos] != ',' && inner[pos] != ' ' && inner[pos] != '\t') {
+            while (pos < inner.size() && inner[pos] != ',' && inner[pos] != ' ' &&
+                   inner[pos] != '\t') {
                 ++pos;
             }
             raw_value = trim(std::string(inner.substr(start, pos - start)));
@@ -344,9 +346,8 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
                 starts_with(trimmed, "[channels.") || starts_with(trimmed, "[devices.channels.");
             if (is_channel_subtable) {
                 if (device.channels.empty()) {
-                    throw std::runtime_error(
-                        "channel sub-table before first [[channels]] entry: " + trimmed
-                    );
+                    throw std::runtime_error("channel sub-table before first [[channels]] entry: " +
+                                             trimmed);
                 }
                 if (trimmed == "[channels.profile]" || trimmed == "[devices.channels.profile]") {
                     if (!device.channels.back().profile.has_value()) {
@@ -426,7 +427,8 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
         }
     }
 
-    if (device.name.empty() || device.driver.empty() || device.id.empty() || device.bus_root.empty()) {
+    if (device.name.empty() || device.driver.empty() || device.id.empty() ||
+        device.bus_root.empty()) {
         throw std::runtime_error("binary device config requires name, driver, id, and bus_root");
     }
     if (device.channels.empty()) {

@@ -96,7 +96,9 @@ fn legacy_runtime_config(args: &Args) -> VisualizerRuntimeConfigV2 {
     }
 }
 
-fn load_runtime_config(args: &Args) -> Result<VisualizerRuntimeConfigV2, Box<dyn std::error::Error>> {
+fn load_runtime_config(
+    args: &Args,
+) -> Result<VisualizerRuntimeConfigV2, Box<dyn std::error::Error>> {
     let mut config = if let Some(config_path) = &args.config {
         std::fs::read_to_string(config_path)?.parse::<VisualizerRuntimeConfigV2>()?
     } else if let Some(config_inline) = &args.config_inline {
@@ -430,4 +432,3 @@ state_topic = "leader_arm/arm/states/joint_velocity"
         assert_eq!(config.preview_fps, 15);
     }
 }
-

@@ -21,7 +21,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import DEVICE_LABEL, DRIVER_NAME
+from . import DEVICE_LABEL
 from .config import ConfigError, load_runtime_config
 from .probe import (
     DEFAULT_PROBE_TIMEOUT_MS,

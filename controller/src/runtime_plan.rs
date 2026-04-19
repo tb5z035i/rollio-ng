@@ -59,8 +59,7 @@ pub(crate) fn build_collect_specs(
 
     let mut ui_runtime_config = config.ui_runtime_config();
     if ui_runtime_config.control_websocket_url.is_none() {
-        ui_runtime_config.control_websocket_url =
-            Some(format!("ws://127.0.0.1:{control_port}"));
+        ui_runtime_config.control_websocket_url = Some(format!("ws://127.0.0.1:{control_port}"));
     }
     let web_bundle_dir = workspace_root.join("ui/web/dist");
     let web_index = web_bundle_dir.join("index.html");

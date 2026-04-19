@@ -20,11 +20,11 @@ from .config import DEFAULT_CONTROL_FREQUENCY_HZ, TAU_MAX
 # Nero firmware <= v110 t_ff range table.
 ARM_JOINT_POSITION_MIN: tuple[float, ...] = (
     -2.70526,  # joint1
-    -1.74,     # joint2
-    -2.75,     # joint3
-    -1.01,     # joint4
-    -2.75,     # joint5
-    -0.73,     # joint6
+    -1.74,  # joint2
+    -2.75,  # joint3
+    -1.01,  # joint4
+    -2.75,  # joint5
+    -0.73,  # joint6
     -math.pi / 2,  # joint7 = -1.5707963
 )
 ARM_JOINT_POSITION_MAX: tuple[float, ...] = (
@@ -36,7 +36,7 @@ ARM_JOINT_POSITION_MAX: tuple[float, ...] = (
     0.95,
     math.pi / 2,
 )
-ARM_JOINT_VELOCITY_BOUND: float = 5.0   # rad/s, URDF
+ARM_JOINT_VELOCITY_BOUND: float = 5.0  # rad/s, URDF
 ARM_JOINT_EFFORT_BOUND: tuple[float, ...] = TAU_MAX
 
 # End-effector pose envelope (a generous bounding box centred on the base).
@@ -48,7 +48,7 @@ ARM_EE_POSE_MAX: tuple[float, ...] = (0.8, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0)
 GRIPPER_POSITION_MIN: float = 0.0
 GRIPPER_POSITION_MAX: float = 0.07
 GRIPPER_VELOCITY_BOUND: float = 0.5  # m/s
-GRIPPER_EFFORT_BOUND: float = 10.0   # N
+GRIPPER_EFFORT_BOUND: float = 10.0  # N
 
 ARM_MODES: list[str] = ["free-drive", "command-following", "identifying", "disabled"]
 GRIPPER_MODES: list[str] = ["free-drive", "command-following", "identifying", "disabled"]
@@ -221,24 +221,24 @@ ARM_DOF_VALUE: int = ARM_DOF
 
 
 __all__ = [
-    "ARM_DOF_VALUE",
-    "ARM_JOINT_POSITION_MIN",
-    "ARM_JOINT_POSITION_MAX",
-    "ARM_JOINT_VELOCITY_BOUND",
-    "ARM_JOINT_EFFORT_BOUND",
-    "ARM_EE_POSE_MIN",
-    "ARM_EE_POSE_MAX",
-    "GRIPPER_POSITION_MIN",
-    "GRIPPER_POSITION_MAX",
-    "GRIPPER_VELOCITY_BOUND",
-    "GRIPPER_EFFORT_BOUND",
-    "ARM_MODES",
-    "GRIPPER_MODES",
-    "ARM_SUPPORTED_STATES",
-    "ARM_SUPPORTED_COMMANDS",
-    "GRIPPER_SUPPORTED_STATES",
-    "GRIPPER_SUPPORTED_COMMANDS",
     "ARM_DEFAULT_NAME",
+    "ARM_DOF_VALUE",
+    "ARM_EE_POSE_MAX",
+    "ARM_EE_POSE_MIN",
+    "ARM_JOINT_EFFORT_BOUND",
+    "ARM_JOINT_POSITION_MAX",
+    "ARM_JOINT_POSITION_MIN",
+    "ARM_JOINT_VELOCITY_BOUND",
+    "ARM_MODES",
+    "ARM_SUPPORTED_COMMANDS",
+    "ARM_SUPPORTED_STATES",
     "GRIPPER_DEFAULT_NAME",
+    "GRIPPER_EFFORT_BOUND",
+    "GRIPPER_MODES",
+    "GRIPPER_POSITION_MAX",
+    "GRIPPER_POSITION_MIN",
+    "GRIPPER_SUPPORTED_COMMANDS",
+    "GRIPPER_SUPPORTED_STATES",
+    "GRIPPER_VELOCITY_BOUND",
     "build_device_query_response",
 ]

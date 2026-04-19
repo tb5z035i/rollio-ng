@@ -78,7 +78,7 @@ struct RunArgs {
 }
 
 struct CameraRuntime {
-    channel_type: String,
+    _channel_type: String,
     width: u32,
     height: u32,
     fps: u32,
@@ -89,7 +89,7 @@ struct CameraRuntime {
 }
 
 struct RobotRuntime {
-    channel_type: String,
+    _channel_type: String,
     dof: usize,
     mode: RobotMode,
     frequency_hz: f64,
@@ -104,25 +104,15 @@ struct RobotRuntime {
 }
 
 enum StatePublisher {
-    JointPosition(
-        iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    ),
-    JointVelocity(
-        iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    ),
-    JointEffort(
-        iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    ),
+    JointPosition(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
+    JointVelocity(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
+    JointEffort(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
     EndEffectorPose(iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>),
 }
 
 enum CommandSubscriber {
-    JointPosition(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>,
-    ),
-    JointMit(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>,
-    ),
+    JointPosition(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
+    JointMit(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>),
 }
 
 type ShutdownSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
@@ -161,10 +151,12 @@ fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn Error>> {
 fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let valid = query_pseudo_device(&args.id).is_some_and(|device| {
         args.channel_types.is_empty()
-            || args
-                .channel_types
-                .iter()
-                .all(|channel_type| device.channels.iter().any(|channel| channel.channel_type == *channel_type))
+            || args.channel_types.iter().all(|channel_type| {
+                device
+                    .channels
+                    .iter()
+                    .any(|channel| channel.channel_type == *channel_type)
+            })
     });
     let report = json!({
         "valid": valid,
@@ -239,20 +231,31 @@ fn run_device(device: BinaryDeviceConfig) -> Result<(), Box<dyn Error>> {
 
     let mut handles = Vec::new();
 
-    for channel in device.channels.iter().filter(|channel| channel.enabled).cloned() {
+    for channel in device
+        .channels
+        .iter()
+        .filter(|channel| channel.enabled)
+        .cloned()
+    {
         let bus_root = device.bus_root.clone();
         let stop_flag = Arc::clone(&stop);
         let thread_name = format!("rollio-pseudo-{}", channel.channel_type);
-        let handle = std::thread::Builder::new().name(thread_name).spawn(move || {
-            let result = match channel.kind {
-                DeviceType::Camera => run_camera_channel(bus_root, channel, Arc::clone(&stop_flag)),
-                DeviceType::Robot => run_robot_channel(bus_root, channel, Arc::clone(&stop_flag)),
-            };
-            if result.is_err() {
-                stop_flag.store(true, Ordering::Relaxed);
-            }
-            result.map_err(|error| error.to_string())
-        })?;
+        let handle = std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let result = match channel.kind {
+                    DeviceType::Camera => {
+                        run_camera_channel(bus_root, channel, Arc::clone(&stop_flag))
+                    }
+                    DeviceType::Robot => {
+                        run_robot_channel(bus_root, channel, Arc::clone(&stop_flag))
+                    }
+                };
+                if result.is_err() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+                result.map_err(|error| error.to_string())
+            })?;
         handles.push(handle);
     }
 
@@ -316,10 +319,9 @@ fn run_camera_channel(
     let node = NodeBuilder::new()
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()?;
-    let service_name: ServiceName =
-        channel_frames_service_name(&bus_root, &channel.channel_type)
-            .as_str()
-            .try_into()?;
+    let service_name: ServiceName = channel_frames_service_name(&bus_root, &channel.channel_type)
+        .as_str()
+        .try_into()?;
     let payload_len =
         profile.width as usize * profile.height as usize * profile.pixel_format.bytes_per_pixel();
     let service = node
@@ -335,7 +337,7 @@ fn run_camera_channel(
     let shutdown_subscriber = open_shutdown_subscriber(&node)?;
     let mode_info_publisher = open_channel_mode_publisher(&node, &bus_root, &channel_type)?;
     let mut camera = CameraRuntime {
-        channel_type,
+        _channel_type: channel_type,
         width: profile.width,
         height: profile.height,
         fps: profile.fps,
@@ -370,7 +372,7 @@ fn publish_robot_states(robot: &mut RobotRuntime) -> Result<(), Box<dyn Error>> 
     }
 
     let timestamp_ms = unix_timestamp_ms();
-    let mut positions = robot.current_positions;
+    let positions = robot.current_positions;
     let mut velocities = [0.0f64; rollio_types::messages::MAX_DOF];
     let mut efforts = [0.0f64; rollio_types::messages::MAX_DOF];
     let elapsed_secs = robot.started_at.elapsed().as_secs_f64();
@@ -523,7 +525,7 @@ fn run_robot_channel(
     }
 
     let mut robot = RobotRuntime {
-        channel_type: channel.channel_type,
+        _channel_type: channel.channel_type,
         dof,
         mode,
         frequency_hz: channel.control_frequency_hz.unwrap_or(60.0),
@@ -617,7 +619,9 @@ fn drain_shutdown_events(subscriber: &ShutdownSubscriber) -> Result<bool, Box<dy
     }
 }
 
-fn open_shutdown_subscriber(node: &Node<ipc::Service>) -> Result<ShutdownSubscriber, Box<dyn Error>> {
+fn open_shutdown_subscriber(
+    node: &Node<ipc::Service>,
+) -> Result<ShutdownSubscriber, Box<dyn Error>> {
     let control_service_name: ServiceName = CONTROL_EVENTS_SERVICE.try_into()?;
     let control_service = node
         .service_builder(&control_service_name)
@@ -631,10 +635,9 @@ fn open_channel_mode_subscriber(
     bus_root: &str,
     channel_type: &str,
 ) -> Result<ChannelModeSubscriber, Box<dyn Error>> {
-    let mode_service_name: ServiceName =
-        channel_mode_control_service_name(bus_root, channel_type)
-            .as_str()
-            .try_into()?;
+    let mode_service_name: ServiceName = channel_mode_control_service_name(bus_root, channel_type)
+        .as_str()
+        .try_into()?;
     let mode_service = node
         .service_builder(&mode_service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -650,10 +653,9 @@ fn open_channel_mode_publisher(
     bus_root: &str,
     channel_type: &str,
 ) -> Result<ChannelModePublisher, Box<dyn Error>> {
-    let mode_service_name: ServiceName =
-        channel_mode_info_service_name(bus_root, channel_type)
-            .as_str()
-            .try_into()?;
+    let mode_service_name: ServiceName = channel_mode_info_service_name(bus_root, channel_type)
+        .as_str()
+        .try_into()?;
     let mode_service = node
         .service_builder(&mode_service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -704,6 +706,7 @@ fn pseudo_probe_ids(sim_cameras: u32, sim_arms: u32, dof: u32) -> Vec<String> {
     ids
 }
 
+#[allow(clippy::manual_map)]
 fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
     if id.starts_with("pseudo_camera_") {
         Some(DeviceQueryDevice {
@@ -751,8 +754,16 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
         Some(DeviceQueryDevice {
             id: id.into(),
             device_class: "pseudo-robot".into(),
-            device_label: if dof == 1 { "Pseudo End Effector".into() } else { "Pseudo Arm".into() },
-            default_device_name: Some(if dof == 1 { "pseudo_eef".into() } else { "pseudo_arm".into() }),
+            device_label: if dof == 1 {
+                "Pseudo End Effector".into()
+            } else {
+                "Pseudo Arm".into()
+            },
+            default_device_name: Some(if dof == 1 {
+                "pseudo_eef".into()
+            } else {
+                "pseudo_arm".into()
+            }),
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "arm".into(),

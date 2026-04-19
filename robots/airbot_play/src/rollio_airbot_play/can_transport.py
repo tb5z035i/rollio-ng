@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -10,12 +11,7 @@ AIRBOT_SERIAL_CMD = 0x04
 
 
 def is_python_can_available() -> bool:
-    try:
-        import can  # pylint: disable=import-outside-toplevel,unused-import
-    except ImportError:
-        return False
-
-    return True
+    return importlib.util.find_spec("can") is not None
 
 
 def scan_can_interfaces() -> list[str]:

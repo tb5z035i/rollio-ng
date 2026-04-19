@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
-
 from rollio_device_nero.runtime.rate_monitor import RateMonitor
 
 
-def _make_clock() -> tuple[list[float], "callable"]:
+def _make_clock() -> tuple[list[float], callable]:
     """Mutable [t] list + closure that reads it. Lets tests advance time."""
     t = [0.0]
 
@@ -28,8 +25,12 @@ def test_no_warning_when_achieved_rate_meets_target(
 ) -> None:
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="arm", clock=clock,
-        window_s=1.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="arm",
+        clock=clock,
+        window_s=1.0,
+        warn_throttle_s=10.0,
     )
     # Drive a full window with exactly 250 ticks across 1 s of virtual
     # time -- bang on the target.
@@ -44,8 +45,12 @@ def test_warns_when_achieved_rate_drops_below_threshold(
 ) -> None:
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="arm", clock=clock,
-        window_s=1.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="arm",
+        clock=clock,
+        window_s=1.0,
+        warn_throttle_s=10.0,
     )
     # 200 ticks in 1 s -> 200 Hz, well below 250 * 0.95 = 237.5 Hz.
     for _ in range(200):
@@ -62,8 +67,12 @@ def test_warning_is_throttled_to_one_per_throttle_window(
 ) -> None:
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="arm", clock=clock,
-        window_s=1.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="arm",
+        clock=clock,
+        window_s=1.0,
+        warn_throttle_s=10.0,
     )
     # Three back-to-back slow windows: only the first should warn,
     # the next two are inside the 10 s throttle window.
@@ -80,8 +89,12 @@ def test_warning_re_arms_after_throttle_window_elapses(
 ) -> None:
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="arm", clock=clock,
-        window_s=1.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="arm",
+        clock=clock,
+        window_s=1.0,
+        warn_throttle_s=10.0,
     )
     # Slow window 1 -> warn.
     for _ in range(200):
@@ -103,8 +116,12 @@ def test_label_appears_in_warning_text(
 ) -> None:
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="gripper", clock=clock,
-        window_s=1.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="gripper",
+        clock=clock,
+        window_s=1.0,
+        warn_throttle_s=10.0,
     )
     for _ in range(200):
         t[0] += 1.0 / 200.0
@@ -120,8 +137,12 @@ def test_does_not_warn_until_a_full_window_has_elapsed(
     we have enough samples to compute a meaningful achieved rate."""
     t, clock = _make_clock()
     mon = RateMonitor(
-        target_hz=250.0, min_ratio=0.95, label="arm", clock=clock,
-        window_s=5.0, warn_throttle_s=10.0,
+        target_hz=250.0,
+        min_ratio=0.95,
+        label="arm",
+        clock=clock,
+        window_s=5.0,
+        warn_throttle_s=10.0,
     )
     # Half a window of slow ticks -- not enough elapsed time yet.
     for _ in range(100):

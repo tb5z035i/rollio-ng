@@ -164,120 +164,95 @@ fn run() -> Result<(), Box<dyn Error>> {
         let receive_ns = now_ns();
 
         for tap in &camera_taps {
-            loop {
-                match tap.subscriber.receive()? {
-                    Some(sample) => {
-                        let header = *sample.user_header();
-                        update_camera_stats(
-                            camera_stats.entry(tap.name.clone()).or_default(),
-                            header,
-                            receive_ns,
-                        );
-                        println!(
-                            "{}",
-                            json!({
-                                "type": "camera_frame",
-                                "name": tap.name,
-                                "receive_timestamp_ns": receive_ns,
-                                "source_timestamp_ms": header.timestamp_ms,
-                                "frame_index": header.frame_index,
-                                "width": header.width,
-                                "height": header.height,
-                            })
-                        );
-                    }
-                    None => break,
-                }
+            while let Some(sample) = tap.subscriber.receive()? {
+                let header = *sample.user_header();
+                update_camera_stats(
+                    camera_stats.entry(tap.name.clone()).or_default(),
+                    header,
+                    receive_ns,
+                );
+                println!(
+                    "{}",
+                    json!({
+                        "type": "camera_frame",
+                        "name": tap.name,
+                        "receive_timestamp_ns": receive_ns,
+                        "source_timestamp_ms": header.timestamp_ms,
+                        "frame_index": header.frame_index,
+                        "width": header.width,
+                        "height": header.height,
+                    })
+                );
             }
         }
 
         for tap in &robot_state_taps {
-            loop {
-                match tap.subscriber.receive()? {
-                    Some(sample) => {
-                        let state = *sample.payload();
-                        let joint_count = state.num_joints.min(6) as usize;
-                        println!(
-                            "{}",
-                            json!({
-                                "type": "robot_state",
-                                "name": tap.name,
-                                "receive_timestamp_ns": receive_ns,
-                                "source_timestamp_ns": state.timestamp_ns,
-                                "num_joints": state.num_joints,
-                                "positions": &state.positions[..joint_count],
-                            })
-                        );
-                    }
-                    None => break,
-                }
+            while let Some(sample) = tap.subscriber.receive()? {
+                let state = *sample.payload();
+                let joint_count = state.num_joints.min(6) as usize;
+                println!(
+                    "{}",
+                    json!({
+                        "type": "robot_state",
+                        "name": tap.name,
+                        "receive_timestamp_ns": receive_ns,
+                        "source_timestamp_ns": state.timestamp_ns,
+                        "num_joints": state.num_joints,
+                        "positions": &state.positions[..joint_count],
+                    })
+                );
             }
         }
 
         if let Some(tap) = &follower_command_tap {
-            loop {
-                match tap.subscriber.receive()? {
-                    Some(sample) => {
-                        let command = *sample.payload();
-                        let latency_ms =
-                            (receive_ns.saturating_sub(command.timestamp_ns)) as f64 / 1_000_000.0;
-                        command_stats.latencies_ms.push(latency_ms);
-                        println!(
-                            "{}",
-                            json!({
-                                "type": "robot_command",
-                                "name": tap.name,
-                                "receive_timestamp_ns": receive_ns,
-                                "source_timestamp_ns": command.timestamp_ns,
-                                "mode": command_mode_name(command.mode),
-                                "num_joints": command.num_joints,
-                                "latency_ms": latency_ms,
-                                "joint_targets": &command.joint_targets[..(command.num_joints as usize).min(6)],
-                                "cartesian_target": command.cartesian_target,
-                            })
-                        );
-                    }
-                    None => break,
-                }
+            while let Some(sample) = tap.subscriber.receive()? {
+                let command = *sample.payload();
+                let latency_ms =
+                    (receive_ns.saturating_sub(command.timestamp_ns)) as f64 / 1_000_000.0;
+                command_stats.latencies_ms.push(latency_ms);
+                println!(
+                    "{}",
+                    json!({
+                        "type": "robot_command",
+                        "name": tap.name,
+                        "receive_timestamp_ns": receive_ns,
+                        "source_timestamp_ns": command.timestamp_ns,
+                        "mode": command_mode_name(command.mode),
+                        "num_joints": command.num_joints,
+                        "latency_ms": latency_ms,
+                        "joint_targets": &command.joint_targets[..(command.num_joints as usize).min(6)],
+                        "cartesian_target": command.cartesian_target,
+                    })
+                );
             }
         }
 
-        loop {
-            match control_subscriber.receive()? {
-                Some(sample) => {
-                    let event = *sample.payload();
-                    let (event_name, episode_index) = control_event_fields(event);
-                    println!(
-                        "{}",
-                        json!({
-                            "type": "control_event",
-                            "receive_timestamp_ns": receive_ns,
-                            "event": event_name,
-                            "episode_index": episode_index,
-                        })
-                    );
-                }
-                None => break,
-            }
+        while let Some(sample) = control_subscriber.receive()? {
+            let event = *sample.payload();
+            let (event_name, episode_index) = control_event_fields(event);
+            println!(
+                "{}",
+                json!({
+                    "type": "control_event",
+                    "receive_timestamp_ns": receive_ns,
+                    "event": event_name,
+                    "episode_index": episode_index,
+                })
+            );
         }
 
-        loop {
-            match episode_status_subscriber.receive()? {
-                Some(sample) => {
-                    let status = *sample.payload();
-                    println!(
-                        "{}",
-                        json!({
-                            "type": "episode_status",
-                            "receive_timestamp_ns": receive_ns,
-                            "state": status.state.as_str(),
-                            "episode_count": status.episode_count,
-                            "elapsed_ms": status.elapsed_ms,
-                        })
-                    );
-                }
-                None => break,
-            }
+        while let Some(sample) = episode_status_subscriber.receive()? {
+            let status = *sample.payload();
+            println!(
+                "{}",
+                json!({
+                    "type": "episode_status",
+                    "receive_timestamp_ns": receive_ns,
+                    "state": status.state.as_str(),
+                    "episode_count": status.episode_count,
+                    "elapsed_ms": status.elapsed_ms,
+                })
+            );
         }
 
         match node.wait(Duration::from_millis(1)) {

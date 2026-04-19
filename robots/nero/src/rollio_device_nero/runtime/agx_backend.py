@@ -16,7 +16,7 @@ from .. import ARM_DOF
 
 def _load_pyagxarm() -> Any:
     try:
-        import pyAgxArm  # noqa: PLC0415
+        import pyAgxArm
     except Exception as exc:  # pragma: no cover - host-dependent
         raise RuntimeError(
             "pyAgxArm is required for `rollio-device-nero run`; install the "
@@ -191,9 +191,9 @@ class AgxGripperBackend:
 
 
 __all__ = [
+    "AgxArmBackend",
+    "AgxGripperBackend",
     "create_robot",
     "enable_robot",
     "init_gripper",
-    "AgxArmBackend",
-    "AgxGripperBackend",
 ]

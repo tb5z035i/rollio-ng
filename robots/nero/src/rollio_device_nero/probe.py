@@ -57,9 +57,7 @@ def list_can_interfaces() -> list[str]:
             arphrd = int(type_file.read_text().strip())
         except (OSError, ValueError):
             arphrd = None
-        if arphrd == 280:
-            interfaces.append(name)
-        elif arphrd is None and name.startswith("can"):
+        if arphrd == 280 or (arphrd is None and name.startswith("can")):
             interfaces.append(name)
     return interfaces
 
@@ -144,8 +142,7 @@ def validate_device(
     """
     if not _looks_like_can_interface(device_id):
         raise RuntimeError(
-            f"unknown AGX Nero device id: {device_id!r} "
-            "(expected a CAN interface name like 'can0')"
+            f"unknown AGX Nero device id: {device_id!r} (expected a CAN interface name like 'can0')"
         )
 
     try:

@@ -60,7 +60,7 @@ _TAU_MAX_NP: np.ndarray = np.asarray(TAU_MAX, dtype=float)
 
 def _load_pinocchio() -> Any:
     try:
-        import pinocchio  # noqa: PLC0415
+        import pinocchio
     except Exception as exc:  # pragma: no cover - depends on host install
         raise RuntimeError(
             "pinocchio is required for AGX Nero gravity compensation; install "
@@ -177,9 +177,7 @@ def _attach_gripper_payload(pin: Any, model: Any) -> dict[str, Any]:
         weighted_com += mass * com_in_link7
     return {
         "total_mass": float(total_mass),
-        "com_in_link7": (
-            weighted_com / total_mass if total_mass > 0 else weighted_com
-        ),
+        "com_in_link7": (weighted_com / total_mass if total_mass > 0 else weighted_com),
     }
 
 
@@ -354,8 +352,8 @@ def _default_gripper_tcp_se3(pin: Any) -> Any:
 
 
 __all__ = [
-    "NeroModel",
-    "TOOL_FLANGE_TRANSLATION",
-    "TOOL_FLANGE_RPY",
     "GRIPPER_TCP_DEPTH_M",
+    "TOOL_FLANGE_RPY",
+    "TOOL_FLANGE_TRANSLATION",
+    "NeroModel",
 ]

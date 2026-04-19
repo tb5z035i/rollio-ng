@@ -13,19 +13,20 @@ inline auto camera_frames_service_name(const std::string& device_name) -> std::s
     return "camera/" + device_name + "/frames";
 }
 
-/// Hierarchical IPC name: `{bus_root}/{channel_type}/frames` (matches rollio_bus::channel_frames_service_name).
-inline auto channel_frames_service_name(const std::string& bus_root, const std::string& channel_type)
-    -> std::string {
+/// Hierarchical IPC name: `{bus_root}/{channel_type}/frames` (matches
+/// rollio_bus::channel_frames_service_name).
+inline auto channel_frames_service_name(const std::string& bus_root,
+                                        const std::string& channel_type) -> std::string {
     return bus_root + "/" + channel_type + "/frames";
 }
 
-inline auto channel_mode_info_service_name(const std::string& bus_root, const std::string& channel_type)
-    -> std::string {
+inline auto channel_mode_info_service_name(const std::string& bus_root,
+                                           const std::string& channel_type) -> std::string {
     return bus_root + "/" + channel_type + "/info/mode";
 }
 
-inline auto channel_mode_control_service_name(const std::string& bus_root, const std::string& channel_type)
-    -> std::string {
+inline auto channel_mode_control_service_name(const std::string& bus_root,
+                                              const std::string& channel_type) -> std::string {
     return bus_root + "/" + channel_type + "/control/mode";
 }
 

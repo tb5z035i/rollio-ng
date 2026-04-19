@@ -188,4 +188,4 @@ def _run_safe(target_run, stop: threading.Event) -> None:
         raise
 
 
-__all__ = ["run_device", "install_shutdown_handler", "mask_shutdown_signals"]
+__all__ = ["install_shutdown_handler", "mask_shutdown_signals", "run_device"]

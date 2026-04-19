@@ -41,16 +41,16 @@ def test_solve_converges_to_small_displacement() -> None:
     nero = NeroModel(with_gripper=False)
     pose0 = nero.end_effector_pose7(np.zeros(7))
     target = list(pose0)
-    target[0] += 0.05   # +5 cm in x
-    target[2] -= 0.03   # -3 cm in z
+    target[0] += 0.05  # +5 cm in x
+    target[2] -= 0.03  # -3 cm in z
 
     q, converged, err = solve(nero, target, q0=np.zeros(7))
 
     assert converged, f"IK did not converge, final err={err}"
     pose_final = nero.end_effector_pose7(q)
     trans_err, rot_err = _pose_distance(pin, target, pose_final)
-    assert trans_err < 1e-3   # < 1 mm
-    assert rot_err < 1e-3     # < 1 mrad
+    assert trans_err < 1e-3  # < 1 mm
+    assert rot_err < 1e-3  # < 1 mrad
 
 
 _ROUND_TRIP_CONFIGS: list[tuple[str, list[float]]] = [
@@ -70,7 +70,9 @@ _ROUND_TRIP_CONFIGS: list[tuple[str, list[float]]] = [
 
 
 @pytest.mark.parametrize("with_gripper", [False, True], ids=["bare_flange", "gripper_tcp"])
-@pytest.mark.parametrize("name,q_seed", _ROUND_TRIP_CONFIGS, ids=[c[0] for c in _ROUND_TRIP_CONFIGS])
+@pytest.mark.parametrize(
+    "name,q_seed", _ROUND_TRIP_CONFIGS, ids=[c[0] for c in _ROUND_TRIP_CONFIGS]
+)
 def test_fk_ik_round_trip_recovers_pose(name: str, q_seed: list[float], with_gripper: bool) -> None:
     """For any reachable q, IK(FK(q)) must yield some q' with FK(q') ≈ FK(q).
 
@@ -97,10 +99,10 @@ def test_fk_ik_round_trip_recovers_pose(name: str, q_seed: list[float], with_gri
     pose_solved = nero.end_effector_pose7(q_solved)
     trans_err, rot_err = _pose_distance(pin, target, pose_solved)
     assert trans_err < 1e-3, (
-        f"[{name}/{with_gripper=}] translation round-trip error {trans_err*1000:.3f} mm"
+        f"[{name}/{with_gripper=}] translation round-trip error {trans_err * 1000:.3f} mm"
     )
     assert rot_err < 1e-3, (
-        f"[{name}/{with_gripper=}] rotation round-trip error {rot_err*1000:.3f} mrad"
+        f"[{name}/{with_gripper=}] rotation round-trip error {rot_err * 1000:.3f} mrad"
     )
 
 
@@ -140,8 +142,8 @@ def test_fk_ik_round_trip_with_random_configurations(with_gripper: bool) -> None
         trans_err, rot_err = _pose_distance(pin, target, pose_solved)
         if trans_err >= 1e-3 or rot_err >= 1e-3:
             failures.append(
-                f"trial {trial}: trans_err={trans_err*1000:.3f}mm, "
-                f"rot_err={rot_err*1000:.3f}mrad"
+                f"trial {trial}: trans_err={trans_err * 1000:.3f}mm, "
+                f"rot_err={rot_err * 1000:.3f}mrad"
             )
 
     assert not failures, "FK/IK round-trip failed on:\n  " + "\n  ".join(failures)

@@ -1,4 +1,4 @@
-use crate::messages::{MAX_DOF, MAX_PARALLEL, PixelFormat};
+use crate::messages::{PixelFormat, MAX_DOF, MAX_PARALLEL};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -79,20 +79,15 @@ impl EpisodeConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EpisodeFormat {
     #[serde(rename = "lerobot-v2.1")]
+    #[default]
     LeRobotV2_1,
     #[serde(rename = "lerobot-v3.0")]
     LeRobotV3_0,
     Mcap,
-}
-
-impl Default for EpisodeFormat {
-    fn default() -> Self {
-        Self::LeRobotV2_1
-    }
 }
 
 // (Legacy `DeviceConfig` removed; use `BinaryDeviceConfig` instead.)
@@ -239,10 +234,11 @@ impl AssemblerConfig {
 // Encoder
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EncoderCodec {
     #[serde(alias = "libx264", alias = "h264_nvenc", alias = "h264_vaapi")]
+    #[default]
     H264,
     #[serde(alias = "libx265", alias = "hevc_nvenc", alias = "hevc_vaapi")]
     H265,
@@ -254,12 +250,6 @@ pub enum EncoderCodec {
     )]
     Av1,
     Rvl,
-}
-
-impl Default for EncoderCodec {
-    fn default() -> Self {
-        Self::H264
-    }
 }
 
 impl EncoderCodec {
@@ -630,17 +620,12 @@ impl StorageConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
+    #[default]
     Local,
     Http,
-}
-
-impl Default for StorageBackend {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1421,11 +1406,7 @@ pub struct CameraChannelProfile {
 }
 
 impl CameraChannelProfile {
-    fn validate(
-        &self,
-        device: &BinaryDeviceConfig,
-        channel_type: &str,
-    ) -> Result<(), ConfigError> {
+    fn validate(&self, device: &BinaryDeviceConfig, channel_type: &str) -> Result<(), ConfigError> {
         if self.width == 0 || self.height == 0 {
             return Err(ConfigError::Validation(format!(
                 "device \"{}\" channel \"{}\": camera profile requires non-zero width and height",
@@ -1835,8 +1816,7 @@ impl ChannelPairingConfig {
                 && peer.channel_type == follower_channel.channel_type
         });
         let follower_endorses = follower_meta.can_follow.iter().any(|peer| {
-            peer.driver == leader_device.driver
-                && peer.channel_type == leader_channel.channel_type
+            peer.driver == leader_device.driver && peer.channel_type == leader_channel.channel_type
         });
         if leader_endorses || follower_endorses {
             return;
@@ -2529,8 +2509,7 @@ impl ProjectConfig {
     pub fn ui_runtime_config(&self) -> UiRuntimeConfig {
         let mut config = self.ui.clone();
         if config.preview_websocket_url.is_none() {
-            config.preview_websocket_url =
-                Some(format!("ws://127.0.0.1:{}", self.visualizer.port));
+            config.preview_websocket_url = Some(format!("ws://127.0.0.1:{}", self.visualizer.port));
         }
         config
     }
@@ -2556,7 +2535,8 @@ impl ProjectConfig {
             .flat_map(|robot| {
                 let channel_id = robot.channel_id.clone();
                 let value_limits = robot.value_limits.clone();
-                robot.state_topics
+                robot
+                    .state_topics
                     .into_iter()
                     .map(move |(state_kind, state_topic)| {
                         let entry = value_limits
@@ -2597,7 +2577,10 @@ impl ProjectConfig {
                     process_id: encoder_process_id_v2(&camera.channel_id),
                     channel_id: camera.channel_id.clone(),
                     frame_topic: camera.frame_topic,
-                    output_dir: encoder_output_dir_v2(&self.assembler.staging_dir, &camera.channel_id),
+                    output_dir: encoder_output_dir_v2(
+                        &self.assembler.staging_dir,
+                        &camera.channel_id,
+                    ),
                     codec,
                     backend,
                     artifact_format: self.encoder.resolved_artifact_format_for(codec),
@@ -2634,15 +2617,18 @@ impl ProjectConfig {
             .into_iter()
             .flat_map(|robot| {
                 let recorded = robot.recorded_states.clone();
-                robot.state_topics
+                robot
+                    .state_topics
                     .into_iter()
                     .filter(move |(state_kind, _)| recorded.contains(state_kind))
-                    .map(move |(state_kind, state_topic)| AssemblerObservationRuntimeConfigV2 {
-                        channel_id: robot.channel_id.clone(),
-                        state_kind,
-                        state_topic,
-                        value_len: state_kind.value_len(robot.dof),
-                    })
+                    .map(
+                        move |(state_kind, state_topic)| AssemblerObservationRuntimeConfigV2 {
+                            channel_id: robot.channel_id.clone(),
+                            state_kind,
+                            state_topic,
+                            value_len: state_kind.value_len(robot.dof),
+                        },
+                    )
             })
             .collect();
         let actions = self
@@ -2655,7 +2641,10 @@ impl ProjectConfig {
                 let dof = follower.dof.unwrap_or_default();
                 let bus_root = &self.device_named(&pairing.follower_device)?.bus_root;
                 Some(AssemblerActionRuntimeConfigV2 {
-                    channel_id: device_channel_id(&pairing.follower_device, &pairing.follower_channel_type),
+                    channel_id: device_channel_id(
+                        &pairing.follower_device,
+                        &pairing.follower_channel_type,
+                    ),
                     command_kind: pairing.follower_command,
                     command_topic: robot_command_topic_v2(
                         bus_root,
@@ -2693,7 +2682,8 @@ impl ProjectConfig {
             .filter_map(|pairing| {
                 let leader_device = self.device_named(&pairing.leader_device)?;
                 let follower_device = self.device_named(&pairing.follower_device)?;
-                let follower_channel = follower_device.channel_named(&pairing.follower_channel_type)?;
+                let follower_channel =
+                    follower_device.channel_named(&pairing.follower_channel_type)?;
                 // Pick the follower state-kind that matches the command kind so
                 // the router can compute joint-space deltas during the initial
                 // sync phase (rate-limited steps until follower catches up).
@@ -2801,11 +2791,7 @@ fn robot_state_topic_v2(bus_root: &str, channel_type: &str, state: RobotStateKin
     )
 }
 
-fn robot_command_topic_v2(
-    bus_root: &str,
-    channel_type: &str,
-    command: RobotCommandKind,
-) -> String {
+fn robot_command_topic_v2(bus_root: &str, channel_type: &str, command: RobotCommandKind) -> String {
     format!(
         "{}/commands/{}",
         channel_prefix_v2(bus_root, channel_type),

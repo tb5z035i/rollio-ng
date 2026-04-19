@@ -28,14 +28,12 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from rollio_device_nero.airbot_aligned_pose import (
     Q_BASE_FIX_XYZW,
     Q_TCP_FIX_XYZW,
     apply_command_pose_fix,
     apply_publish_pose_fix,
 )
-
 
 # Each tuple is `(q_nero_xyzw, q_airbot_xyzw)` for the same physical
 # orientation. The rounded-to-3dp values come straight from the
@@ -74,8 +72,8 @@ def _quat_close_xyzw(
     tol: float = _TOL,
 ) -> bool:
     """`q` and `-q` represent the same rotation, so accept either sign."""
-    pos = sum((float(ai) - float(bi)) ** 2 for ai, bi in zip(a, b))
-    neg = sum((float(ai) + float(bi)) ** 2 for ai, bi in zip(a, b))
+    pos = sum((float(ai) - float(bi)) ** 2 for ai, bi in zip(a, b, strict=False))
+    neg = sum((float(ai) + float(bi)) ** 2 for ai, bi in zip(a, b, strict=False))
     return min(pos, neg) ** 0.5 < tol
 
 

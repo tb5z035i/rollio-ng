@@ -114,4 +114,3 @@ pub async fn run(config: ControlServerConfig) -> Result<(), Box<dyn std::error::
     }
     Ok(())
 }
-

@@ -4,8 +4,8 @@ mod device_query;
 mod discovery;
 mod episode;
 mod process;
-mod runtime_plan;
 mod runtime_paths;
+mod runtime_plan;
 mod setup;
 
 use clap::Parser;

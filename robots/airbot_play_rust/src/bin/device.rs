@@ -3,8 +3,8 @@ use airbot_play_rust::can::worker::{CanTxPriority, CanWorkerBackend};
 use airbot_play_rust::client::AirbotPlayClient;
 use airbot_play_rust::eef::SingleEefCommand;
 use airbot_play_rust::model::{ModelBackendKind, MountedEefType, Pose};
-use airbot_play_rust::protocol::board::gpio::PlayLedProtocol;
 use airbot_play_rust::probe::discover::probe_all;
+use airbot_play_rust::protocol::board::gpio::PlayLedProtocol;
 use clap::{Args, Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{
@@ -23,8 +23,8 @@ use rollio_types::messages::{
 use serde_json::json;
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DRIVER_NAME: &str = "airbot-play";
@@ -159,7 +159,7 @@ struct RunArgs {
 #[derive(Debug, Clone)]
 struct RuntimeConfig {
     bus_root: String,
-    id: String,
+    _id: String,
     interface: String,
     arm: Option<ArmChannelRuntime>,
     eef: Option<EefChannelRuntime>,
@@ -279,7 +279,8 @@ async fn run_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
             json,
         } => {
             let device = resolve_probe_device(&id, Duration::from_millis(timeout_ms)).await?;
-            let valid = channel_types.is_empty() || channel_types.iter().all(|value| value == "arm");
+            let valid =
+                channel_types.is_empty() || channel_types.iter().all(|value| value == "arm");
             let report = json!({
                 "valid": valid,
                 "id": device.id,
@@ -296,7 +297,11 @@ async fn run_cli(cli: Cli) -> Result<(), Box<dyn Error>> {
                 return Err("airbot-play validate failed".into());
             }
         }
-        Command::Query { id, timeout_ms, json } => {
+        Command::Query {
+            id,
+            timeout_ms,
+            json,
+        } => {
             let response = query_device(&id, Duration::from_millis(timeout_ms)).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
@@ -464,7 +469,9 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
         device
             .optional_info
             .insert("interface".into(), instance.interface.clone().into());
-        device.optional_info.insert("transport".into(), "can".into());
+        device
+            .optional_info
+            .insert("transport".into(), "can".into());
         if let Some(mounted) = mounted.as_ref() {
             if !matches!(mounted, MountedEefType::None) {
                 device
@@ -477,7 +484,10 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
     Ok(devices)
 }
 
-async fn resolve_probe_device(id: &str, timeout: Duration) -> Result<DeviceQueryDevice, Box<dyn Error>> {
+async fn resolve_probe_device(
+    id: &str,
+    timeout: Duration,
+) -> Result<DeviceQueryDevice, Box<dyn Error>> {
     let devices = probe_devices(timeout).await?;
     devices
         .into_iter()
@@ -519,12 +529,16 @@ fn load_runtime_config(args: &RunArgs) -> Result<RuntimeConfig, Box<dyn Error>> 
         .to_owned();
     Ok(RuntimeConfig {
         bus_root: device.bus_root,
-        id: device.id,
+        _id: device.id,
         interface,
         arm: device
             .channels
             .iter()
-            .find(|channel| channel.enabled && channel.kind == DeviceType::Robot && channel.channel_type == "arm")
+            .find(|channel| {
+                channel.enabled
+                    && channel.kind == DeviceType::Robot
+                    && channel.channel_type == "arm"
+            })
             .map(|channel| ArmChannelRuntime {
                 channel_type: channel.channel_type.clone(),
                 mode: channel.mode.unwrap_or(RobotMode::FreeDrive),
@@ -544,7 +558,11 @@ fn load_runtime_config(args: &RunArgs) -> Result<RuntimeConfig, Box<dyn Error>> 
         eef: device
             .channels
             .iter()
-            .find(|channel| channel.enabled && channel.kind == DeviceType::Robot && channel.channel_type != "arm")
+            .find(|channel| {
+                channel.enabled
+                    && channel.kind == DeviceType::Robot
+                    && channel.channel_type != "arm"
+            })
             .map(|channel| EefChannelRuntime {
                 channel_type: channel.channel_type.clone(),
                 mode: channel.mode.unwrap_or(RobotMode::FreeDrive),
@@ -763,7 +781,9 @@ fn run_arm_channel(
         .service_builder(&end_pose_command_topic)
         .publish_subscribe::<Pose7>()
         .open_or_create()?;
-    let joint_position_subscriber = joint_position_command_service.subscriber_builder().create()?;
+    let joint_position_subscriber = joint_position_command_service
+        .subscriber_builder()
+        .create()?;
     let joint_mit_subscriber = joint_mit_command_service.subscriber_builder().create()?;
     let end_pose_subscriber = end_pose_command_service.subscriber_builder().create()?;
     let shutdown_subscriber = open_shutdown_subscriber(&node)?;
@@ -787,7 +807,9 @@ fn run_arm_channel(
                 if current_mode == RobotMode::Identifying {
                     identify_led_gate.set_arm_identifying(&runtime, &client, false)?;
                 }
-                runtime.block_on(async { client.set_arm_state(arm_state_for_mode(next_mode)).await })?;
+                runtime.block_on(async {
+                    client.set_arm_state(arm_state_for_mode(next_mode)).await
+                })?;
                 if next_mode == RobotMode::Identifying {
                     identify_led_gate.set_arm_identifying(&runtime, &client, true)?;
                 }
@@ -884,7 +906,9 @@ fn run_eef_channel(
                     identify_led_gate.set_eef_identifying(&runtime, &client, false)?;
                     identify_started_at = None;
                 }
-                runtime.block_on(async { client.set_eef_state(eef_state_for_mode(next_mode)).await })?;
+                runtime.block_on(async {
+                    client.set_eef_state(eef_state_for_mode(next_mode)).await
+                })?;
                 if next_mode == RobotMode::Identifying {
                     identify_led_gate.set_eef_identifying(&runtime, &client, true)?;
                     identify_started_at = Some(std::time::Instant::now());
@@ -906,8 +930,10 @@ fn run_eef_channel(
             RobotMode::Identifying => {
                 let _ = drain_eef_command(&parallel_position_sub, &parallel_mit_sub, &config)?;
                 if config.mounted == MountedEefType::G2 {
-                    let command =
-                        identifying_g2_command(&config.command_defaults, identify_started_at.unwrap_or_else(std::time::Instant::now));
+                    let command = identifying_g2_command(
+                        &config.command_defaults,
+                        identify_started_at.unwrap_or_else(std::time::Instant::now),
+                    );
                     submit_eef_command(&runtime, &client, &config.mounted, &command)?;
                 }
             }
@@ -1008,8 +1034,16 @@ fn publish_states(
     config: &ArmChannelRuntime,
     feedback: &ArmJointFeedback,
     pose: Option<Pose>,
-    joint_position_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    joint_velocity_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
+    joint_position_publisher: &iceoryx2::port::publisher::Publisher<
+        ipc::Service,
+        JointVector15,
+        (),
+    >,
+    joint_velocity_publisher: &iceoryx2::port::publisher::Publisher<
+        ipc::Service,
+        JointVector15,
+        (),
+    >,
     joint_effort_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
     ee_pose_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>,
 ) -> Result<(), Box<dyn Error>> {
@@ -1017,13 +1051,19 @@ fn publish_states(
         return Ok(());
     }
     let timestamp_ms = unix_timestamp_ms();
-    if config.publish_states.contains(&RobotStateKind::JointPosition) {
+    if config
+        .publish_states
+        .contains(&RobotStateKind::JointPosition)
+    {
         joint_position_publisher.send_copy(JointVector15::from_slice(
             timestamp_ms,
             &feedback.positions[..config.dof.min(ARM_DOF)],
         ))?;
     }
-    if config.publish_states.contains(&RobotStateKind::JointVelocity) {
+    if config
+        .publish_states
+        .contains(&RobotStateKind::JointVelocity)
+    {
         joint_velocity_publisher.send_copy(JointVector15::from_slice(
             timestamp_ms,
             &feedback.velocities[..config.dof.min(ARM_DOF)],
@@ -1035,7 +1075,10 @@ fn publish_states(
             &feedback.torques[..config.dof.min(ARM_DOF)],
         ))?;
     }
-    if config.publish_states.contains(&RobotStateKind::EndEffectorPose) {
+    if config
+        .publish_states
+        .contains(&RobotStateKind::EndEffectorPose)
+    {
         if let Some(pose) = pose {
             let pose_values: [f64; 7] = pose
                 .as_vec()
@@ -1115,23 +1158,34 @@ fn publish_eef_state(
     let timestamp_ms = unix_timestamp_ms();
     if publish_states.contains(&RobotStateKind::ParallelPosition) {
         if let Some(publisher) = &publishers.position {
-            publisher.send_copy(ParallelVector2::from_slice(timestamp_ms, &[feedback.position]))?;
+            publisher.send_copy(ParallelVector2::from_slice(
+                timestamp_ms,
+                &[feedback.position],
+            ))?;
         }
     }
     if publish_states.contains(&RobotStateKind::ParallelVelocity) {
         if let Some(publisher) = &publishers.velocity {
-            publisher.send_copy(ParallelVector2::from_slice(timestamp_ms, &[feedback.velocity]))?;
+            publisher.send_copy(ParallelVector2::from_slice(
+                timestamp_ms,
+                &[feedback.velocity],
+            ))?;
         }
     }
     if publish_states.contains(&RobotStateKind::ParallelEffort) {
         if let Some(publisher) = &publishers.effort {
-            publisher.send_copy(ParallelVector2::from_slice(timestamp_ms, &[feedback.effort]))?;
+            publisher.send_copy(ParallelVector2::from_slice(
+                timestamp_ms,
+                &[feedback.effort],
+            ))?;
         }
     }
     Ok(())
 }
 
-fn open_shutdown_subscriber(node: &Node<ipc::Service>) -> Result<ShutdownSubscriber, Box<dyn Error>> {
+fn open_shutdown_subscriber(
+    node: &Node<ipc::Service>,
+) -> Result<ShutdownSubscriber, Box<dyn Error>> {
     let control_service_name: ServiceName = CONTROL_EVENTS_SERVICE.try_into()?;
     let control_service = node
         .service_builder(&control_service_name)
@@ -1145,10 +1199,9 @@ fn open_channel_mode_subscriber(
     bus_root: &str,
     channel_type: &str,
 ) -> Result<ChannelModeSubscriber, Box<dyn Error>> {
-    let mode_service_name: ServiceName =
-        channel_mode_control_service_name(bus_root, channel_type)
-            .as_str()
-            .try_into()?;
+    let mode_service_name: ServiceName = channel_mode_control_service_name(bus_root, channel_type)
+        .as_str()
+        .try_into()?;
     let mode_service = node
         .service_builder(&mode_service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -1164,10 +1217,9 @@ fn open_channel_mode_publisher(
     bus_root: &str,
     channel_type: &str,
 ) -> Result<ChannelModePublisher, Box<dyn Error>> {
-    let mode_service_name: ServiceName =
-        channel_mode_info_service_name(bus_root, channel_type)
-            .as_str()
-            .try_into()?;
+    let mode_service_name: ServiceName = channel_mode_info_service_name(bus_root, channel_type)
+        .as_str()
+        .try_into()?;
     let mode_service = node
         .service_builder(&mode_service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -1215,7 +1267,10 @@ fn open_eef_state_publishers(
     let mut position = None;
     let mut velocity = None;
     let mut effort = None;
-    if config.publish_states().contains(&RobotStateKind::ParallelPosition) {
+    if config
+        .publish_states()
+        .contains(&RobotStateKind::ParallelPosition)
+    {
         position = Some(open_parallel_publisher(
             node,
             bus_root,
@@ -1223,7 +1278,10 @@ fn open_eef_state_publishers(
             RobotStateKind::ParallelPosition,
         )?);
     }
-    if config.publish_states().contains(&RobotStateKind::ParallelVelocity) {
+    if config
+        .publish_states()
+        .contains(&RobotStateKind::ParallelVelocity)
+    {
         velocity = Some(open_parallel_publisher(
             node,
             bus_root,
@@ -1231,7 +1289,10 @@ fn open_eef_state_publishers(
             RobotStateKind::ParallelVelocity,
         )?);
     }
-    if config.publish_states().contains(&RobotStateKind::ParallelEffort) {
+    if config
+        .publish_states()
+        .contains(&RobotStateKind::ParallelEffort)
+    {
         effort = Some(open_parallel_publisher(
             node,
             bus_root,

@@ -108,25 +108,15 @@ struct RunArgs {
 }
 
 enum LeaderStateSubscriber {
-    JointVector15(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>,
-    ),
-    ParallelVector2(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>,
-    ),
+    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
+    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
     Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
 }
 
 enum FollowerCommandPublisher {
-    JointVector15(
-        iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    ),
-    JointMitCommand15(
-        iceoryx2::port::publisher::Publisher<ipc::Service, JointMitCommand15, ()>,
-    ),
-    ParallelVector2(
-        iceoryx2::port::publisher::Publisher<ipc::Service, ParallelVector2, ()>,
-    ),
+    JointVector15(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
+    JointMitCommand15(iceoryx2::port::publisher::Publisher<ipc::Service, JointMitCommand15, ()>),
+    ParallelVector2(iceoryx2::port::publisher::Publisher<ipc::Service, ParallelVector2, ()>),
     ParallelMitCommand2(
         iceoryx2::port::publisher::Publisher<ipc::Service, ParallelMitCommand2, ()>,
     ),
@@ -134,10 +124,7 @@ enum FollowerCommandPublisher {
 }
 
 enum LeaderState {
-    Vector {
-        timestamp_ms: u64,
-        values: Vec<f64>,
-    },
+    Vector { timestamp_ms: u64, values: Vec<f64> },
     Pose(Pose7),
 }
 
@@ -247,7 +234,11 @@ impl SyncState {
         if !has_follower_topic {
             return SyncState::Disabled;
         }
-        match (config.mapping, config.follower_state_kind, config.follower_command_kind) {
+        match (
+            config.mapping,
+            config.follower_state_kind,
+            config.follower_command_kind,
+        ) {
             (
                 MappingStrategy::Cartesian,
                 Some(RobotStateKind::EndEffectorPose),
@@ -407,8 +398,8 @@ impl CartesianSyncState {
         // target in the rate-limited branch -- see anchor docstring).
         let trans_gap = vec3_distance(&leader_p, &follower_p);
         let rot_gap = quat_angle_between(&leader_q, &follower_q);
-        let within_thresholds = trans_gap <= self.complete_threshold_m
-            && rot_gap <= self.complete_threshold_rot_rad;
+        let within_thresholds =
+            trans_gap <= self.complete_threshold_m && rot_gap <= self.complete_threshold_rot_rad;
 
         if within_thresholds {
             // Pass-through branch: publish the leader's pose directly,
@@ -900,6 +891,7 @@ fn state_timestamp_ms(state: &LeaderState) -> u64 {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ForwardedCommand {
     JointPosition(JointVector15),
     JointMit(JointMitCommand15),
@@ -927,11 +919,12 @@ fn map_leader_state(
             else {
                 return Err(TeleopRouterError::InvalidCartesianRoute);
             };
-            let mapped = apply_joint_mapping(values, &config.joint_index_map, &config.joint_scales)?;
+            let mapped =
+                apply_joint_mapping(values, &config.joint_index_map, &config.joint_scales)?;
             Ok(Some(match config.follower_command_kind {
-                RobotCommandKind::JointPosition => {
-                    ForwardedCommand::JointPosition(JointVector15::from_slice(*timestamp_ms, &mapped))
-                }
+                RobotCommandKind::JointPosition => ForwardedCommand::JointPosition(
+                    JointVector15::from_slice(*timestamp_ms, &mapped),
+                ),
                 RobotCommandKind::JointMit => ForwardedCommand::JointMit(joint_mit_command(
                     *timestamp_ms,
                     &mapped,
@@ -941,12 +934,14 @@ fn map_leader_state(
                 RobotCommandKind::ParallelPosition => ForwardedCommand::ParallelPosition(
                     ParallelVector2::from_slice(*timestamp_ms, &mapped),
                 ),
-                RobotCommandKind::ParallelMit => ForwardedCommand::ParallelMit(parallel_mit_command(
-                    *timestamp_ms,
-                    &mapped,
-                    &config.command_defaults.parallel_mit_kp,
-                    &config.command_defaults.parallel_mit_kd,
-                )),
+                RobotCommandKind::ParallelMit => {
+                    ForwardedCommand::ParallelMit(parallel_mit_command(
+                        *timestamp_ms,
+                        &mapped,
+                        &config.command_defaults.parallel_mit_kp,
+                        &config.command_defaults.parallel_mit_kd,
+                    ))
+                }
                 RobotCommandKind::EndPose => return Err(TeleopRouterError::InvalidCartesianRoute),
             }))
         }
@@ -1028,22 +1023,37 @@ fn publish_command(
     command: ForwardedCommand,
 ) -> Result<(), Box<dyn Error>> {
     match (publisher, command) {
-        (FollowerCommandPublisher::JointVector15(publisher), ForwardedCommand::JointPosition(command)) => {
+        (
+            FollowerCommandPublisher::JointVector15(publisher),
+            ForwardedCommand::JointPosition(command),
+        ) => {
             publisher.send_copy(command)?;
         }
-        (FollowerCommandPublisher::JointMitCommand15(publisher), ForwardedCommand::JointMit(command)) => {
+        (
+            FollowerCommandPublisher::JointMitCommand15(publisher),
+            ForwardedCommand::JointMit(command),
+        ) => {
             publisher.send_copy(command)?;
         }
-        (FollowerCommandPublisher::ParallelVector2(publisher), ForwardedCommand::ParallelPosition(command)) => {
+        (
+            FollowerCommandPublisher::ParallelVector2(publisher),
+            ForwardedCommand::ParallelPosition(command),
+        ) => {
             publisher.send_copy(command)?;
         }
-        (FollowerCommandPublisher::ParallelMitCommand2(publisher), ForwardedCommand::ParallelMit(command)) => {
+        (
+            FollowerCommandPublisher::ParallelMitCommand2(publisher),
+            ForwardedCommand::ParallelMit(command),
+        ) => {
             publisher.send_copy(command)?;
         }
         (FollowerCommandPublisher::Pose7(publisher), ForwardedCommand::EndPose(command)) => {
             publisher.send_copy(command)?;
         }
-        _ => return Err("teleop router produced a command type that does not match the configured publisher".into()),
+        _ => return Err(
+            "teleop router produced a command type that does not match the configured publisher"
+                .into(),
+        ),
     }
     Ok(())
 }
@@ -1151,7 +1161,8 @@ mod tests {
             timestamp_ms: 123,
             values: [0.3, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0],
         };
-        let command = map_leader_state(&config, &LeaderState::Pose(pose)).expect("mapping should work");
+        let command =
+            map_leader_state(&config, &LeaderState::Pose(pose)).expect("mapping should work");
         let Some(ForwardedCommand::EndPose(command)) = command else {
             panic!("expected pose command");
         };
@@ -1390,11 +1401,7 @@ mod tests {
             panic!("expected cartesian sync state");
         };
         let mut command = ForwardedCommand::EndPose(leader);
-        let outcome = cart.apply_with_clock(
-            &mut command,
-            Some(&LeaderState::Pose(follower)),
-            now,
-        );
+        let outcome = cart.apply_with_clock(&mut command, Some(&LeaderState::Pose(follower)), now);
         assert_eq!(outcome, SyncOutcome::Publish);
         let ForwardedCommand::EndPose(payload) = command else {
             panic!("expected pose command");
@@ -1456,7 +1463,10 @@ mod tests {
 
         // First close tick starts the streak; sync remains active.
         cart_apply(&mut sync_state, leader, follower, t0);
-        assert!(sync_state.enabled(), "single close tick must not complete sync");
+        assert!(
+            sync_state.enabled(),
+            "single close tick must not complete sync"
+        );
 
         // Halfway through the window: still not complete.
         cart_apply(
@@ -1465,7 +1475,10 @@ mod tests {
             follower,
             t0 + SYNC_HOLD_DURATION / 2,
         );
-        assert!(sync_state.enabled(), "halfway through hold window: not complete");
+        assert!(
+            sync_state.enabled(),
+            "halfway through hold window: not complete"
+        );
 
         // Past the full SYNC_HOLD_DURATION: sync completes.
         cart_apply(&mut sync_state, leader, follower, t0 + SYNC_HOLD_DURATION);
@@ -1484,7 +1497,15 @@ mod tests {
         let mut sync_state = SyncState::new(&config);
         let close_leader = Pose7 {
             timestamp_ms: 123,
-            values: [SYNC_COMPLETE_THRESHOLD_M * 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            values: [
+                SYNC_COMPLETE_THRESHOLD_M * 0.5,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
         };
         let far_leader = Pose7 {
             timestamp_ms: 124,
@@ -1626,7 +1647,11 @@ mod tests {
         let aligned = quat_align_shortest(&raw_target, &identity);
         // After alignment the target represents the equivalent -90 deg
         // rotation, so qz should be negative.
-        assert!(aligned[2] < 0.0, "expected aligned qz < 0, got {:?}", aligned);
+        assert!(
+            aligned[2] < 0.0,
+            "expected aligned qz < 0, got {:?}",
+            aligned
+        );
         // Slerping halfway should land on -45 deg around +Z, i.e.
         // qz = sin(-22.5 deg).
         let halfway = quat_slerp(&identity, &aligned, 0.5);

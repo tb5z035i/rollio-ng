@@ -71,20 +71,15 @@ enum RoleIo {
             iceoryx2::port::publisher::Publisher<ipc::Service, SetupCommandMessage, ()>,
     },
     Collect {
-        status_subscriber:
-            iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStatus, ()>,
+        status_subscriber: iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStatus, ()>,
         backpressure_subscriber:
             iceoryx2::port::subscriber::Subscriber<ipc::Service, BackpressureEvent, ()>,
-        command_publisher:
-            iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeCommand, ()>,
+        command_publisher: iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeCommand, ()>,
     },
 }
 
 impl RoleIo {
-    fn new(
-        node: &Node<ipc::Service>,
-        role: ControlServerRole,
-    ) -> Result<Self, Box<dyn Error>> {
+    fn new(node: &Node<ipc::Service>, role: ControlServerRole) -> Result<Self, Box<dyn Error>> {
         match role {
             ControlServerRole::Setup => {
                 let state_service_name: ServiceName = SETUP_STATE_SERVICE.try_into()?;
@@ -119,8 +114,7 @@ impl RoleIo {
                     .service_builder(&backpressure_service_name)
                     .publish_subscribe::<BackpressureEvent>()
                     .open_or_create()?;
-                let backpressure_subscriber =
-                    backpressure_service.subscriber_builder().create()?;
+                let backpressure_subscriber = backpressure_service.subscriber_builder().create()?;
 
                 let command_service_name: ServiceName = EPISODE_COMMAND_SERVICE.try_into()?;
                 let command_service = node
@@ -140,11 +134,21 @@ impl RoleIo {
 
     fn publish_command(&self, command: UiCommand) -> Result<(), Box<dyn Error>> {
         match (self, command) {
-            (Self::Setup { command_publisher, .. }, UiCommand::Setup(payload)) => {
+            (
+                Self::Setup {
+                    command_publisher, ..
+                },
+                UiCommand::Setup(payload),
+            ) => {
                 command_publisher.send_copy(SetupCommandMessage::new(&payload))?;
                 Ok(())
             }
-            (Self::Collect { command_publisher, .. }, UiCommand::Episode(cmd)) => {
+            (
+                Self::Collect {
+                    command_publisher, ..
+                },
+                UiCommand::Episode(cmd),
+            ) => {
                 command_publisher.send_copy(cmd)?;
                 Ok(())
             }
@@ -165,7 +169,9 @@ impl RoleIo {
         latest_snapshot: &Arc<std::sync::Mutex<Option<String>>>,
     ) -> Result<(), Box<dyn Error>> {
         match self {
-            Self::Setup { state_subscriber, .. } => {
+            Self::Setup {
+                state_subscriber, ..
+            } => {
                 let mut latest: Option<String> = None;
                 while let Some(sample) = state_subscriber.receive()? {
                     latest = Some(sample.payload().as_str().to_owned());

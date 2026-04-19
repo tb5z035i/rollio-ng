@@ -50,8 +50,7 @@ import time
 import tty
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
+from typing import Any, ClassVar
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ICEORYX2_PYTHON_DIR = (
@@ -98,7 +97,7 @@ class DeviceChannelMode(ctypes.c_int):
 
 
 class JointVector15(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar = [
         ("timestamp_ms", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * 15),
@@ -110,7 +109,7 @@ class JointVector15(ctypes.Structure):
 
 
 class ParallelVector2(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar = [
         ("timestamp_ms", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * 2),
@@ -122,7 +121,7 @@ class ParallelVector2(ctypes.Structure):
 
 
 class Pose7(ctypes.Structure):
-    _fields_ = [
+    _fields_: ClassVar = [
         ("timestamp_ms", ctypes.c_uint64),
         ("values", ctypes.c_double * 7),
     ]
@@ -197,7 +196,7 @@ class ChannelView:
 
 
 class RawTerminal:
-    def __enter__(self) -> "RawTerminal":
+    def __enter__(self) -> RawTerminal:
         if not sys.stdin.isatty():
             raise SystemExit("This script requires an interactive TTY.")
         self._fd = sys.stdin.fileno()
@@ -234,12 +233,16 @@ def parse_args() -> argparse.Namespace:
 
 def open_channel_view(iox2: Any, node: Any, bus_root: str, channel_type: str) -> ChannelView:
     mode_service = (
-        node.service_builder(iox2.ServiceName.new(channel_mode_control_service_name(bus_root, channel_type)))
+        node.service_builder(
+            iox2.ServiceName.new(channel_mode_control_service_name(bus_root, channel_type))
+        )
         .publish_subscribe(DeviceChannelMode)
         .open()
     )
     info_service = (
-        node.service_builder(iox2.ServiceName.new(channel_mode_info_service_name(bus_root, channel_type)))
+        node.service_builder(
+            iox2.ServiceName.new(channel_mode_info_service_name(bus_root, channel_type))
+        )
         .publish_subscribe(DeviceChannelMode)
         .open()
     )
@@ -247,7 +250,9 @@ def open_channel_view(iox2: Any, node: Any, bus_root: str, channel_type: str) ->
     state_subscribers: dict[str, Any] = {}
     for state_kind, payload_type in state_kinds:
         service = (
-            node.service_builder(iox2.ServiceName.new(channel_state_service_name(bus_root, channel_type, state_kind)))
+            node.service_builder(
+                iox2.ServiceName.new(channel_state_service_name(bus_root, channel_type, state_kind))
+            )
             .publish_subscribe(payload_type)
             .open()
         )
@@ -348,7 +353,11 @@ def render(bus_root: str, channels: list[ChannelView], selected_index: int) -> N
             f"status={channel.status_message}"
         )
         for state_kind, snapshot in channel.states.items():
-            age = "never" if snapshot.updated_at == 0.0 else f"{time.monotonic() - snapshot.updated_at:.2f}s ago"
+            age = (
+                "never"
+                if snapshot.updated_at == 0.0
+                else f"{time.monotonic() - snapshot.updated_at:.2f}s ago"
+            )
             print(f"    {state_kind:<18} ({age})")
             if snapshot.lines:
                 for line in snapshot.lines:

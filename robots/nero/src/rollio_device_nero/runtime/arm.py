@@ -51,7 +51,6 @@ from ..config import (
     ArmChannelConfig,
 )
 from ..gravity import NeroModel
-from .rate_monitor import RateMonitor
 from ..ipc.types import (
     DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING,
     DEVICE_CHANNEL_MODE_DISABLED,
@@ -61,6 +60,7 @@ from ..ipc.types import (
     JointVector15,
     Pose7,
 )
+from .rate_monitor import RateMonitor
 
 # Smooth-ramp constants for the `Disabled` mode entry. The arm is driven
 # from its current pose to `DISABLED_HOLD_Q` over RAMP_DURATION_S seconds
@@ -304,9 +304,7 @@ class ArmController:
         # disabled-mode tick. Avoids crashing if the controller starts in
         # Disabled before we ever observed q_meas.
         if self._mode_value == DEVICE_CHANNEL_MODE_DISABLED and self._disabled_ramp is None:
-            self._disabled_ramp = _DisabledRamp(
-                q_start=q_meas.copy(), started_at=self._clock()
-            )
+            self._disabled_ramp = _DisabledRamp(q_start=q_meas.copy(), started_at=self._clock())
 
         ff = self._model.gravity_torques_clipped(q_meas)
 
@@ -398,10 +396,7 @@ class ArmController:
         # Wait briefly for fresh joint feedback so the ramp begins from the
         # arm's actual pose, not the (potentially-stale) zero default.
         deadline = self._clock() + HOMING_FEEDBACK_WAIT_S
-        while (
-            self._backend.get_joint_angles_array() is None
-            and self._clock() < deadline
-        ):
+        while self._backend.get_joint_angles_array() is None and self._clock() < deadline:
             time.sleep(0.01)
 
         # Force-enter Disabled. _on_mode_change clears any prior state and
@@ -522,9 +517,7 @@ class ArmController:
             # frame (see `airbot_aligned_pose`). Convert position +
             # orientation back to Nero's native base/TCP frame before IK
             # so the solver and the published reports stay in sync.
-            target7 = apply_command_pose_fix(
-                [float(end_pose.values[i]) for i in range(7)]
-            )
+            target7 = apply_command_pose_fix([float(end_pose.values[i]) for i in range(7)])
             # Seed CLIK from the *previous CLIK output*, falling back
             # to live feedback only on the first IK call (no previous
             # CLIK output yet). Nero is 7-DOF (one redundant joint) so
@@ -547,11 +540,7 @@ class ArmController:
             # command. `_on_mode_change` clears `_latest_ik_target`
             # on entry so the fallback engages cleanly across mode
             # transitions.
-            ik_seed = (
-                self._latest_ik_target
-                if self._latest_ik_target is not None
-                else q_meas
-            )
+            ik_seed = self._latest_ik_target if self._latest_ik_target is not None else q_meas
             # Pass `q_meas` as the null-space anchor: with Nero's 7-DOF
             # arm, the bare damped pseudo-inverse warm-started from the
             # previous IK output drifts along the null space tick-to-tick
@@ -560,9 +549,7 @@ class ArmController:
             # null-space freedom onto a single stable configuration so
             # `q_target` walks smoothly with the cartesian target instead
             # of wandering through redundant configurations.
-            q_target, _conv, _err = self._ik(
-                self._model, target7, q0=ik_seed, q_anchor=q_meas
-            )
+            q_target, _conv, _err = self._ik(self._model, target7, q0=ik_seed, q_anchor=q_meas)
             self._latest_ik_target = q_target
             self._latest_joint_target = q_target
             return q_target, np.zeros(ARM_DOF), kp, kd
@@ -571,14 +558,14 @@ class ArmController:
         if mit is not None:
             n = min(int(mit.len), ARM_DOF)
             p_des = np.array(
-                [float(mit.position[i]) for i in range(ARM_DOF)] if n == ARM_DOF
-                else (
-                    [float(mit.position[i]) for i in range(n)] + list(q_meas[n:])
-                ),
+                [float(mit.position[i]) for i in range(ARM_DOF)]
+                if n == ARM_DOF
+                else ([float(mit.position[i]) for i in range(n)] + list(q_meas[n:])),
                 dtype=float,
             )
             v_des = np.array(
-                [float(mit.velocity[i]) for i in range(ARM_DOF)] if n == ARM_DOF
+                [float(mit.velocity[i]) for i in range(ARM_DOF)]
+                if n == ARM_DOF
                 else [float(mit.velocity[i]) for i in range(n)] + [0.0] * (ARM_DOF - n),
                 dtype=float,
             )
@@ -597,8 +584,7 @@ class ArmController:
         if joint_pos is not None:
             n = min(int(joint_pos.len), ARM_DOF)
             p_des = np.array(
-                [float(joint_pos.values[i]) for i in range(n)]
-                + list(q_meas[n:]),
+                [float(joint_pos.values[i]) for i in range(n)] + list(q_meas[n:]),
                 dtype=float,
             )
             self._latest_joint_target = p_des
@@ -607,9 +593,7 @@ class ArmController:
         # No fresh command this tick: reuse the last joint target if we had
         # one, else hold at the current measured pose.
         p_des = (
-            self._latest_joint_target
-            if self._latest_joint_target is not None
-            else q_meas.copy()
+            self._latest_joint_target if self._latest_joint_target is not None else q_meas.copy()
         )
         return p_des, np.zeros(ARM_DOF), kp, kd
 
@@ -624,9 +608,7 @@ class ArmController:
         ]
 
         if "joint_position" in publish_states:
-            self._ipc.publish_joint_position(
-                JointVector15.from_values(timestamp_ms, list(q_meas))
-            )
+            self._ipc.publish_joint_position(JointVector15.from_values(timestamp_ms, list(q_meas)))
             published.append("joint_position")
 
         if "joint_velocity" in publish_states:
@@ -667,9 +649,7 @@ def _unix_ms() -> int:
     return int(time.time() * 1000.0) & 0xFFFFFFFFFFFFFFFF
 
 
-def _clamp_p_des_to_max_joint_delta(
-    p_des: np.ndarray, q_meas: np.ndarray
-) -> np.ndarray:
+def _clamp_p_des_to_max_joint_delta(p_des: np.ndarray, q_meas: np.ndarray) -> np.ndarray:
     """Clamp each `p_des[i]` to within `MAX_COMMAND_JOINT_DELTA_RAD` of `q_meas[i]`.
 
     Returns a fresh ndarray so the controller's `_latest_joint_target`
@@ -686,16 +666,16 @@ def _clamp_p_des_to_max_joint_delta(
 
 
 __all__ = [
-    "RAMP_DURATION_S",
-    "RAMP_KP",
-    "RAMP_KD",
-    "HOMING_SETTLE_S",
-    "HOMING_FEEDBACK_WAIT_S",
-    "MAX_COMMAND_JOINT_DELTA_RAD",
     "DISABLED_HOLD_Q",
+    "HOMING_FEEDBACK_WAIT_S",
+    "HOMING_SETTLE_S",
+    "MAX_COMMAND_JOINT_DELTA_RAD",
+    "RAMP_DURATION_S",
+    "RAMP_KD",
+    "RAMP_KP",
     "ArmBackend",
-    "ArmIpc",
     "ArmController",
+    "ArmIpc",
     "ArmTickResult",
     "mode_value_for_config",
 ]

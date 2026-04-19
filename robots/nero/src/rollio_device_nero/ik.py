@@ -25,7 +25,7 @@ from .query import ARM_JOINT_POSITION_MAX, ARM_JOINT_POSITION_MIN
 
 _DEFAULT_MAX_ITER: int = 50
 _DEFAULT_DAMPING: float = 1e-2
-_DEFAULT_TOL: float = 1e-4   # ~0.1 mm and ~0.1 mrad for translation/rotation in pin.log6
+_DEFAULT_TOL: float = 1e-4  # ~0.1 mm and ~0.1 mrad for translation/rotation in pin.log6
 _DEFAULT_STEP: float = 1.0
 # Default null-space regularization weight. With Nero's 7-DOF (one
 # redundant joint), the damped pseudo-inverse warm-started from the
@@ -39,7 +39,7 @@ _DEFAULT_STEP: float = 1.0
 # of magnitude above damping^2 = 1e-4, so the anchor wins in the null
 # space (where J^T err = 0) but stays sub-dominant where cartesian
 # error is non-zero.
-_DEFAULT_ANCHOR_WEIGHT: float = 0.05
+_DEFAULT_ANCHOR_WEIGHT: float = 0.005
 
 _JOINT_LB: np.ndarray = np.asarray(ARM_JOINT_POSITION_MIN, dtype=float)
 _JOINT_UB: np.ndarray = np.asarray(ARM_JOINT_POSITION_MAX, dtype=float)
@@ -86,7 +86,7 @@ def solve(
     converge -- the runtime will still send it (with caller-imposed kp/kd)
     so the operator can see a partial response instead of nothing.
     """
-    pin = nero._pin  # noqa: SLF001 - intentional access; gravity owns the import
+    pin = nero._pin
     target = _pose7_to_se3(pin, target_pose7)
 
     q = np.zeros(nero.nq, dtype=float) if q0 is None else np.array(q0, dtype=float, copy=True)
@@ -115,7 +115,7 @@ def solve(
             # because (q_anchor - q) only moves through the null space.
             return _clip_to_limits(q), True, err_norm
 
-        jac = nero.frame_jacobian(q)            # 6 x nv in link7's LOCAL frame
+        jac = nero.frame_jacobian(q)  # 6 x nv in link7's LOCAL frame
         # Damped least-squares with optional null-space anchor:
         #   dq = (J^T J + λ²I + μ²I)^-1 (J^T e + μ²(q_anchor - q))
         m_diag = damping * damping + mu_sq

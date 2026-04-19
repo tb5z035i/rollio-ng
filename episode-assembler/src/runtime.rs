@@ -11,8 +11,8 @@ use rollio_types::config::{
     EncodedHandoffMode, EpisodeFormat, RobotCommandKind, RobotStateKind,
 };
 use rollio_types::messages::{
-    ControlEvent, EpisodeReady, FixedString256, JointMitCommand15, JointVector15, ParallelMitCommand2,
-    ParallelVector2, Pose7, VideoReady,
+    ControlEvent, EpisodeReady, FixedString256, JointMitCommand15, JointVector15,
+    ParallelMitCommand2, ParallelVector2, Pose7, VideoReady,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -45,9 +45,7 @@ struct ActionSubscriber {
 
 enum ActionSubscriberKind {
     JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    JointMitCommand15(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>,
-    ),
+    JointMitCommand15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>),
     ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
     ParallelMitCommand2(
         iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelMitCommand2, ()>,
@@ -105,12 +103,7 @@ impl EpisodeManager {
         let camera_by_process_id = config
             .cameras
             .iter()
-            .map(|camera| {
-                (
-                    camera.encoder_process_id.clone(),
-                    camera.channel_id.clone(),
-                )
-            })
+            .map(|camera| (camera.encoder_process_id.clone(), camera.channel_id.clone()))
             .collect();
         Self {
             config,
@@ -421,9 +414,7 @@ fn create_observation_subscribers(
                         .service_builder(&service_name)
                         .publish_subscribe::<JointVector15>()
                         .open_or_create()?;
-                    ObservationSubscriberKind::JointVector15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ObservationSubscriberKind::JointVector15(service.subscriber_builder().create()?)
                 }
             };
             Ok(ObservationSubscriber {
@@ -456,9 +447,7 @@ fn create_action_subscribers(
                         .service_builder(&service_name)
                         .publish_subscribe::<JointMitCommand15>()
                         .open_or_create()?;
-                    ActionSubscriberKind::JointMitCommand15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ActionSubscriberKind::JointMitCommand15(service.subscriber_builder().create()?)
                 }
                 RobotCommandKind::ParallelPosition => {
                     let service = node

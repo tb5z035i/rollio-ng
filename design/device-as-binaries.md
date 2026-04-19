@@ -274,5 +274,3 @@ Suggested payload families:
 Changing the non-device control plane is intentionally avoided in the first
 migration phase, but it is not forbidden if later implementation work reveals a
 clear simplification or correctness benefit.
-
-

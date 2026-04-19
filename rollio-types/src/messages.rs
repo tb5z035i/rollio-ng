@@ -158,7 +158,7 @@ impl Default for FixedString262144 {
 }
 
 /// JSON-encoded setup command sent from the terminal UI to the controller.
-#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
 #[type_name("SetupCommandMessage")]
 #[repr(C)]
 pub struct SetupCommandMessage {
@@ -177,16 +177,8 @@ impl SetupCommandMessage {
     }
 }
 
-impl Default for SetupCommandMessage {
-    fn default() -> Self {
-        Self {
-            payload: FixedString4096::default(),
-        }
-    }
-}
-
 /// JSON-encoded setup state snapshot sent from the controller to the UI.
-#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
 #[type_name("SetupStateMessage")]
 #[repr(C)]
 pub struct SetupStateMessage {
@@ -204,14 +196,6 @@ impl SetupStateMessage {
 
     pub fn as_str(&self) -> &str {
         self.payload.as_str()
-    }
-}
-
-impl Default for SetupStateMessage {
-    fn default() -> Self {
-        Self {
-            payload: FixedString262144::default(),
-        }
     }
 }
 
@@ -265,38 +249,28 @@ impl PixelFormat {
 // Hierarchical device payloads
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[type_name("DeviceStatus")]
 #[repr(C)]
 pub enum DeviceStatus {
+    #[default]
     Okay = 0,
     Degraded = 1,
     Error = 2,
 }
 
-impl Default for DeviceStatus {
-    fn default() -> Self {
-        Self::Okay
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[type_name("DeviceChannelMode")]
 #[repr(C)]
 pub enum DeviceChannelMode {
+    #[default]
     Disabled = 0,
     Enabled = 1,
     FreeDrive = 2,
     CommandFollowing = 3,
     Identifying = 4,
-}
-
-impl Default for DeviceChannelMode {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 impl DeviceChannelMode {
@@ -484,20 +458,15 @@ impl CameraFrameHeader {
 // RobotState
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[type_name("EndEffectorStatus")]
 #[repr(C)]
 pub enum EndEffectorStatus {
+    #[default]
     Unknown = 0,
     Disabled = 1,
     Enabled = 2,
-}
-
-impl Default for EndEffectorStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl EndEffectorStatus {

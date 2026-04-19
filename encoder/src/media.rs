@@ -706,17 +706,11 @@ fn codec_by_name(name: &str, encoder: bool) -> bool {
 }
 
 fn scaled_pixel_format(
-    codec: EncoderCodec,
+    _codec: EncoderCodec,
     backend: EncoderBackend,
 ) -> Result<ffmpeg::util::format::pixel::Pixel> {
     let pixel = match backend {
-        EncoderBackend::Cpu | EncoderBackend::Auto => {
-            if codec == EncoderCodec::Av1 {
-                ffmpeg::util::format::pixel::Pixel::YUV420P
-            } else {
-                ffmpeg::util::format::pixel::Pixel::YUV420P
-            }
-        }
+        EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV420P,
         EncoderBackend::Nvidia | EncoderBackend::Vaapi => ffmpeg::util::format::pixel::Pixel::NV12,
     };
     Ok(pixel)
@@ -890,7 +884,7 @@ fn copy_frame_payload(
 }
 
 fn depth16_payload_to_vec(payload: &[u8]) -> Result<Vec<u16>> {
-    if payload.len() % 2 != 0 {
+    if !payload.len().is_multiple_of(2) {
         return Err(EncoderError::message(format!(
             "depth16 payload must have even length, got {}",
             payload.len()

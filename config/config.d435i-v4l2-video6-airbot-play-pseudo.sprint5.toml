@@ -115,4 +115,3 @@ gt = 80.0
 [monitor.thresholds."encoder.camera_side".queue_depth]
 explanation = "Encoder queue for side pseudo camera is nearly full (Sprint 5 backpressure path)"
 gt = 80.0
-

@@ -15,7 +15,6 @@ from __future__ import annotations
 import ctypes
 
 import pytest
-
 from rollio_device_nero.ipc import types as t
 
 # Captured 2026-04-19 from rollio-types HEAD via:

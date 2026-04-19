@@ -147,9 +147,7 @@ def parse_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
         channel_type = _required_string(raw, "channel_type")
         kind = raw.get("kind", "robot")
         if kind != "robot":
-            raise ConfigError(
-                f'channel "{channel_type}": kind must be "robot", got "{kind}"'
-            )
+            raise ConfigError(f'channel "{channel_type}": kind must be "robot", got "{kind}"')
         enabled = bool(raw.get("enabled", True))
         if not enabled:
             continue
@@ -164,9 +162,7 @@ def parse_runtime_config(data: dict[str, Any]) -> RuntimeConfig:
             continue
 
     if arm is None and gripper is None:
-        raise ConfigError(
-            'no enabled "arm" or "gripper" channel; nothing to run'
-        )
+        raise ConfigError('no enabled "arm" or "gripper" channel; nothing to run')
 
     return RuntimeConfig(
         bus_root=bus_root,
@@ -183,7 +179,7 @@ def _parse_arm(raw: dict[str, Any]) -> ArmChannelConfig:
     if dof != 7:
         # Nero is fixed 7-DOF; reject misconfigured DOFs early so we don't
         # silently send commands the URDF / firmware can't fulfil.
-        raise ConfigError(f'arm channel: dof must be 7 for AGX Nero (got {dof})')
+        raise ConfigError(f"arm channel: dof must be 7 for AGX Nero (got {dof})")
     publish_states = _string_list(raw.get("publish_states", []))
     # Note: `control_frequency_hz` from the controller TOML is intentionally
     # ignored -- the runtime locks to `CONTROL_FREQUENCY_HZ` (250 Hz) so the
@@ -230,10 +226,7 @@ def _normalize_mode(value: Any) -> str:
     if not isinstance(value, str):
         raise ConfigError(f"mode must be a string, got {type(value).__name__}")
     if value not in _VALID_MODES:
-        raise ConfigError(
-            f'unsupported mode "{value}" (must be one of '
-            f'{sorted(_VALID_MODES)!r})'
-        )
+        raise ConfigError(f'unsupported mode "{value}" (must be one of {sorted(_VALID_MODES)!r})')
     return value
 
 
@@ -259,17 +252,17 @@ def _string_list(value: Any) -> list[str]:
 
 __all__ = [
     "ARM_CHANNEL_TYPE",
-    "GRIPPER_CHANNEL_TYPE",
     "CONTROL_FREQUENCY_HZ",
     "DEFAULT_CONTROL_FREQUENCY_HZ",
-    "MIN_ACHIEVED_FREQUENCY_RATIO",
-    "DEFAULT_TRACKING_KP",
-    "DEFAULT_TRACKING_KD",
     "DEFAULT_FREE_DRIVE_KD",
     "DEFAULT_IDENTIFYING_KD",
+    "DEFAULT_TRACKING_KD",
+    "DEFAULT_TRACKING_KP",
+    "GRIPPER_CHANNEL_TYPE",
+    "MIN_ACHIEVED_FREQUENCY_RATIO",
     "TAU_MAX",
-    "ConfigError",
     "ArmChannelConfig",
+    "ConfigError",
     "GripperChannelConfig",
     "RuntimeConfig",
     "load_runtime_config",

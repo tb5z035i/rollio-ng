@@ -21,7 +21,6 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 
-
 _DEFAULT_WINDOW_S: float = 5.0
 _DEFAULT_WARN_THROTTLE_S: float = 30.0
 
@@ -30,15 +29,15 @@ class RateMonitor:
     """Track a control-loop's achieved rate and warn when it lags."""
 
     __slots__ = (
+        "_clock",
+        "_label",
+        "_last_warn_at",
         "_target_hz",
         "_warn_threshold_hz",
-        "_label",
-        "_clock",
-        "_window_s",
         "_warn_throttle_s",
+        "_window_s",
         "_window_start",
         "_window_ticks",
-        "_last_warn_at",
     )
 
     def __init__(
@@ -54,9 +53,7 @@ class RateMonitor:
         if target_hz <= 0.0:
             raise ValueError(f"target_hz must be positive, got {target_hz}")
         if not (0.0 < min_ratio <= 1.0):
-            raise ValueError(
-                f"min_ratio must be in (0.0, 1.0], got {min_ratio}"
-            )
+            raise ValueError(f"min_ratio must be in (0.0, 1.0], got {min_ratio}")
         self._target_hz = target_hz
         self._warn_threshold_hz = target_hz * min_ratio
         self._label = label

@@ -196,6 +196,6 @@ def apply_command_pose_fix(pose7: Sequence[float]) -> list[float]:
 __all__ = [
     "Q_BASE_FIX_XYZW",
     "Q_TCP_FIX_XYZW",
-    "apply_publish_pose_fix",
     "apply_command_pose_fix",
+    "apply_publish_pose_fix",
 ]

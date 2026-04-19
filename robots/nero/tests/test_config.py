@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
-
 from rollio_device_nero.config import (
     ARM_CHANNEL_TYPE,
     CONTROL_FREQUENCY_HZ,
-    ConfigError,
     GRIPPER_CHANNEL_TYPE,
+    ConfigError,
     parse_runtime_config,
 )
 

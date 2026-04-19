@@ -52,12 +52,8 @@ struct RobotSubscriber {
 }
 
 enum RobotStateSubscriber {
-    JointVector15(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>,
-    ),
-    ParallelVector2(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>,
-    ),
+    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
+    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
     Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
 }
 
@@ -212,7 +208,8 @@ impl IpcPoller {
                             break;
                         }
                     },
-                    RobotStateSubscriber::ParallelVector2(subscriber) => match subscriber.receive() {
+                    RobotStateSubscriber::ParallelVector2(subscriber) => match subscriber.receive()
+                    {
                         Ok(Some(sample)) => {
                             let payload = *sample.payload();
                             latest = Some(IpcMessage::RobotStateMsg {
@@ -283,7 +280,3 @@ impl IpcPoller {
         &self.node
     }
 }
-
-
-
-

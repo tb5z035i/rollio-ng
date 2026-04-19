@@ -81,9 +81,8 @@ fn router_cartesian_initial_sync_ramps_pose() {
     publish_pose(&ports.leader_state_publisher, leader_pose)
         .expect("leader state publish should work");
 
-    let first_command =
-        wait_for_pose_command(&ports.command_subscriber, Duration::from_secs(2))
-            .expect("first cartesian command should arrive");
+    let first_command = wait_for_pose_command(&ports.command_subscriber, Duration::from_secs(2))
+        .expect("first cartesian command should arrive");
     let dx = first_command.values[0] - follower_pose.values[0];
     let dy = first_command.values[1] - follower_pose.values[1];
     let dz = first_command.values[2] - follower_pose.values[2];
@@ -177,9 +176,8 @@ fn router_cartesian_initial_sync_ramps_pose() {
     };
     publish_pose(&ports.leader_state_publisher, jump_leader)
         .expect("leader jump publish should work");
-    let jump_command =
-        wait_for_pose_command(&ports.command_subscriber, Duration::from_secs(2))
-            .expect("jump command should arrive");
+    let jump_command = wait_for_pose_command(&ports.command_subscriber, Duration::from_secs(2))
+        .expect("jump command should arrive");
     assert_eq!(jump_command.values, jump_leader.values);
 
     send_shutdown(&ports.control_publisher);

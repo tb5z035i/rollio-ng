@@ -52,11 +52,7 @@ pub fn channel_frames_service_name(bus_root: &str, channel_type: &str) -> String
     format!("{bus_root}/{channel_type}/frames")
 }
 
-pub fn channel_state_service_name(
-    bus_root: &str,
-    channel_type: &str,
-    state_kind: &str,
-) -> String {
+pub fn channel_state_service_name(bus_root: &str, channel_type: &str, state_kind: &str) -> String {
     format!("{bus_root}/{channel_type}/states/{state_kind}")
 }
 

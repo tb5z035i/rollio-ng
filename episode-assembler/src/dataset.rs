@@ -41,7 +41,6 @@ pub(crate) struct EpisodeAssemblyInput {
 pub(crate) struct StagedEpisode {
     pub episode_index: u32,
     pub staging_dir: PathBuf,
-    pub frame_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -136,7 +135,6 @@ pub(crate) fn stage_episode(
     Ok(StagedEpisode {
         episode_index: episode.episode_index,
         staging_dir,
-        frame_count: rows.timestamps_s.len(),
     })
 }
 
@@ -354,7 +352,7 @@ fn parquet_schema(config: &AssemblerRuntimeConfigV2) -> Schema {
     ];
     for observation in &config.observations {
         fields.push(Field::new(
-            &observation_feature_key(observation),
+            observation_feature_key(observation),
             feature_list_data_type(),
             false,
         ));
@@ -451,11 +449,22 @@ fn build_dataset_info(
 
 fn build_feature_map(config: &AssemblerRuntimeConfigV2) -> BTreeMap<String, FeatureSpec> {
     let mut features = BTreeMap::new();
-    for name in ["timestamp", "frame_index", "episode_index", "global_index", "task_index"] {
+    for name in [
+        "timestamp",
+        "frame_index",
+        "episode_index",
+        "global_index",
+        "task_index",
+    ] {
         features.insert(
             name.into(),
             FeatureSpec {
-                dtype: if name == "timestamp" { "float64" } else { "int64" }.into(),
+                dtype: if name == "timestamp" {
+                    "float64"
+                } else {
+                    "int64"
+                }
+                .into(),
                 shape: vec![],
                 names: None,
                 video_info: None,
@@ -497,7 +506,10 @@ fn build_feature_map(config: &AssemblerRuntimeConfigV2) -> BTreeMap<String, Feat
 
     for camera in &config.cameras {
         features.insert(
-            format!("observation.images.{}", sanitize_component(&camera.channel_id)),
+            format!(
+                "observation.images.{}",
+                sanitize_component(&camera.channel_id)
+            ),
             FeatureSpec {
                 dtype: "video".into(),
                 shape: vec![
@@ -508,7 +520,7 @@ fn build_feature_map(config: &AssemblerRuntimeConfigV2) -> BTreeMap<String, Feat
                 names: None,
                 video_info: Some(VideoInfo {
                     codec: camera.codec.as_str().into(),
-                        artifact_format: camera.artifact_format.extension().into(),
+                    artifact_format: camera.artifact_format.extension().into(),
                     width: camera.width,
                     height: camera.height,
                     fps: camera.fps,

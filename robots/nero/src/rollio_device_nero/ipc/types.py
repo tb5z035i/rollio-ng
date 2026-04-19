@@ -66,7 +66,7 @@ class JointVector15(ctypes.Structure):
         return "JointVector15"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> "JointVector15":
+    def from_values(cls, timestamp_ms: int, values: list[float]) -> JointVector15:
         msg = cls()
         msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
         n = min(len(values), MAX_DOF)
@@ -115,7 +115,7 @@ class Pose7(ctypes.Structure):
         return "Pose7"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> "Pose7":
+    def from_values(cls, timestamp_ms: int, values: list[float]) -> Pose7:
         msg = cls()
         msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
         for i in range(min(len(values), MAX_POSE)):
@@ -141,7 +141,7 @@ class ParallelVector2(ctypes.Structure):
         return "ParallelVector2"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> "ParallelVector2":
+    def from_values(cls, timestamp_ms: int, values: list[float]) -> ParallelVector2:
         msg = cls()
         msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
         n = min(len(values), MAX_PARALLEL)
@@ -196,7 +196,7 @@ class DeviceChannelMode(ctypes.Structure):
         return "DeviceChannelMode"
 
     @classmethod
-    def of(cls, discriminant: int) -> "DeviceChannelMode":
+    def of(cls, discriminant: int) -> DeviceChannelMode:
         msg = cls()
         msg.value = int(discriminant)
         return msg
@@ -231,25 +231,25 @@ class ControlEvent(ctypes.Structure):
 
 
 __all__ = [
-    "MAX_DOF",
-    "MAX_PARALLEL",
-    "MAX_POSE",
+    "CONTROL_EVENT_EPISODE_DISCARD",
+    "CONTROL_EVENT_EPISODE_KEEP",
+    "CONTROL_EVENT_MODE_SWITCH",
+    "CONTROL_EVENT_RECORDING_START",
+    "CONTROL_EVENT_RECORDING_STOP",
+    "CONTROL_EVENT_SHUTDOWN",
+    "DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING",
     "DEVICE_CHANNEL_MODE_DISABLED",
     "DEVICE_CHANNEL_MODE_ENABLED",
     "DEVICE_CHANNEL_MODE_FREE_DRIVE",
-    "DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING",
     "DEVICE_CHANNEL_MODE_IDENTIFYING",
-    "CONTROL_EVENT_RECORDING_START",
-    "CONTROL_EVENT_RECORDING_STOP",
-    "CONTROL_EVENT_EPISODE_KEEP",
-    "CONTROL_EVENT_EPISODE_DISCARD",
-    "CONTROL_EVENT_SHUTDOWN",
-    "CONTROL_EVENT_MODE_SWITCH",
-    "JointVector15",
-    "JointMitCommand15",
-    "Pose7",
-    "ParallelVector2",
-    "ParallelMitCommand2",
-    "DeviceChannelMode",
+    "MAX_DOF",
+    "MAX_PARALLEL",
+    "MAX_POSE",
     "ControlEvent",
+    "DeviceChannelMode",
+    "JointMitCommand15",
+    "JointVector15",
+    "ParallelMitCommand2",
+    "ParallelVector2",
+    "Pose7",
 ]

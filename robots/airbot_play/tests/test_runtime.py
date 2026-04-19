@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -200,7 +201,7 @@ def test_local_pinocchio_model_locks_non_arm_joints(monkeypatch: pytest.MonkeyPa
 
     class FakeFullModel:
         njoints = 9
-        names = [
+        names: ClassVar[list[str]] = [
             "universe",
             "joint1",
             "joint2",
@@ -215,13 +216,13 @@ def test_local_pinocchio_model_locks_non_arm_joints(monkeypatch: pytest.MonkeyPa
     class FakeReducedModel:
         nq = 6
 
-        def createData(self) -> object:
+        def createData(self) -> object:  # noqa: N802
             return object()
 
     class FakeFullModelWithData(FakeFullModel):
         nq = 8
 
-        def createData(self) -> object:
+        def createData(self) -> object:  # noqa: N802
             return object()
 
     class FakePin:
@@ -229,14 +230,14 @@ def test_local_pinocchio_model_locks_non_arm_joints(monkeypatch: pytest.MonkeyPa
             self.locked_joint_ids: list[int] | None = None
             self.urdf_path: str | None = None
 
-        def buildModelFromUrdf(self, urdf_path: str) -> FakeFullModelWithData:
+        def buildModelFromUrdf(self, urdf_path: str) -> FakeFullModelWithData:  # noqa: N802
             self.urdf_path = urdf_path
             return FakeFullModelWithData()
 
         def neutral(self, full_model: FakeFullModelWithData) -> str:
             return "neutral"
 
-        def buildReducedModel(
+        def buildReducedModel(  # noqa: N802
             self,
             full_model: FakeFullModelWithData,
             locked_joint_ids: list[int],

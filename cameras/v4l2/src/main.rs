@@ -381,7 +381,10 @@ fn run_cli() -> Result<(), DynError> {
         Command::Probe { json } => {
             let devices = probe_devices()?;
             if json {
-                let ids = devices.iter().map(|device| device.id.clone()).collect::<Vec<_>>();
+                let ids = devices
+                    .iter()
+                    .map(|device| device.id.clone())
+                    .collect::<Vec<_>>();
                 println!("{}", serde_json::to_string_pretty(&ids)?);
             } else if devices.is_empty() {
                 println!("no v4l2 devices discovered");
@@ -477,7 +480,10 @@ fn probe_devices() -> Result<Vec<ProbeDevice>, DynError> {
 
 fn validate_device(path: &str, channel_types: &[String]) -> Result<ValidateOutput, DynError> {
     let (_device, caps) = open_capture_device(path)?;
-    if channel_types.iter().any(|channel_type| channel_type != "color") {
+    if channel_types
+        .iter()
+        .any(|channel_type| channel_type != "color")
+    {
         return Ok(ValidateOutput {
             valid: false,
             id: path.to_string(),
@@ -654,7 +660,10 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
 
     loop {
         if drain_control_events(&control_subscriber)? {
-            eprintln!("rollio-device-v4l2: shutdown received for {}", config.bus_root);
+            eprintln!(
+                "rollio-device-v4l2: shutdown received for {}",
+                config.bus_root
+            );
             return Ok(());
         }
 

@@ -51,9 +51,17 @@ pub(crate) struct ProbeEntry {
 
 #[derive(Debug)]
 pub(crate) enum DriverCommandError {
-    NotFound { program: String },
-    Io { program: String, source: std::io::Error },
-    Timeout { program: String, args: String },
+    NotFound {
+        program: String,
+    },
+    Io {
+        program: String,
+        source: std::io::Error,
+    },
+    Timeout {
+        program: String,
+        args: String,
+    },
     Failed {
         program: String,
         args: String,
@@ -170,9 +178,7 @@ fn is_executable_entry(entry: &std::fs::DirEntry) -> bool {
     use std::os::unix::fs::PermissionsExt;
     entry
         .metadata()
-        .map(|metadata| {
-            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-        })
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 
@@ -183,10 +189,7 @@ fn is_executable_entry(entry: &std::fs::DirEntry) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase());
-    matches!(
-        extension.as_deref(),
-        Some("exe" | "cmd" | "bat" | "com")
-    )
+    matches!(extension.as_deref(), Some("exe" | "cmd" | "bat" | "com"))
 }
 
 pub(crate) fn discover_probe_entries(
@@ -322,15 +325,15 @@ fn extend_probe_entries(
     let mut probe_args = vec![OsString::from("probe"), OsString::from("--json")];
     probe_args.extend(extra_probe_args.iter().cloned());
 
-    let probe_output = match run_driver_json(&program, &probe_args, workspace_root, discovery_timeout)
-    {
-        Ok(value) => value,
-        Err(DriverCommandError::NotFound { .. }) => return,
-        Err(error) => {
-            probe_errors.push(format!("{}: {error}", executable));
-            return;
-        }
-    };
+    let probe_output =
+        match run_driver_json(&program, &probe_args, workspace_root, discovery_timeout) {
+            Ok(value) => value,
+            Err(DriverCommandError::NotFound { .. }) => return,
+            Err(error) => {
+                probe_errors.push(format!("{}: {error}", executable));
+                return;
+            }
+        };
 
     let Some(probe_entries) = probe_output.as_array() else {
         probe_errors.push(format!(

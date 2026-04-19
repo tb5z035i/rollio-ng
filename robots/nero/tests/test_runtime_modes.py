@@ -8,27 +8,24 @@ import pytest
 pin = pytest.importorskip("pinocchio")  # NeroModel needs pinocchio
 
 from rollio_device_nero import ARM_DOF  # noqa: E402
-from rollio_device_nero.config import (  # noqa: E402
+from rollio_device_nero.config import (  # noqa: E402  # noqa: E402
+    DEFAULT_FREE_DRIVE_KD,
+    DEFAULT_IDENTIFYING_KD,
+    DEFAULT_TRACKING_KD,
+    DEFAULT_TRACKING_KP,
     ArmChannelConfig,
     GripperChannelConfig,
 )
 from rollio_device_nero.gravity import NeroModel  # noqa: E402
 from rollio_device_nero.ipc.types import (  # noqa: E402
-    DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING,
     DEVICE_CHANNEL_MODE_DISABLED,
     DEVICE_CHANNEL_MODE_FREE_DRIVE,
     DEVICE_CHANNEL_MODE_IDENTIFYING,
     JointMitCommand15,
     JointVector15,
-    Pose7,
     ParallelMitCommand2,
     ParallelVector2,
-)
-from rollio_device_nero.config import (  # noqa: E402
-    DEFAULT_FREE_DRIVE_KD,
-    DEFAULT_IDENTIFYING_KD,
-    DEFAULT_TRACKING_KD,
-    DEFAULT_TRACKING_KP,
+    Pose7,
 )
 from rollio_device_nero.runtime.arm import (  # noqa: E402
     HOMING_SETTLE_S,
@@ -43,7 +40,6 @@ from rollio_device_nero.runtime.gripper import (  # noqa: E402
     GripperController,
     identify_target,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -66,7 +62,7 @@ class FakeArmBackend:
     def get_joint_efforts_array(self) -> np.ndarray | None:
         return self.tau.copy()
 
-    def move_mit(self, joint_index, p_des, v_des, kp, kd, t_ff):  # noqa: D401
+    def move_mit(self, joint_index, p_des, v_des, kp, kd, t_ff):
         self.move_mit_calls.append((joint_index, p_des, v_des, kp, kd, t_ff))
 
 
@@ -189,7 +185,9 @@ def nero_model() -> NeroModel:
 # ---------------------------------------------------------------------------
 
 
-def _arm_controller(model: NeroModel, mode: str, q0: np.ndarray, **kwargs) -> tuple[ArmController, FakeArmBackend, FakeArmIpc]:
+def _arm_controller(
+    model: NeroModel, mode: str, q0: np.ndarray, **kwargs
+) -> tuple[ArmController, FakeArmBackend, FakeArmIpc]:
     backend = FakeArmBackend(q0)
     ipc = FakeArmIpc()
     cfg = ArmChannelConfig(mode=mode)
@@ -270,9 +268,7 @@ def test_arm_disabled_ramps_then_holds_at_disabled_hold_q(nero_model: NeroModel)
         RAMP_DURATION_S * 0.5,  # tick 2, halfway through ramp
         RAMP_DURATION_S * 1.5,  # tick 3, well after ramp ends -> hold at q_target
     ]
-    ctrl, backend, _ipc = _arm_controller(
-        nero_model, "disabled", q0, clock_sequence=clock_sequence
-    )
+    ctrl, backend, _ipc = _arm_controller(nero_model, "disabled", q0, clock_sequence=clock_sequence)
     # tick 1: at t=0 we should command exactly q_start
     ctrl.step()
     p_des_t1 = [c[1] for c in backend.move_mit_calls[-ARM_DOF:]]
@@ -582,6 +578,7 @@ def test_arm_run_homes_to_disabled_hold_on_shutdown(nero_model: NeroModel) -> No
     # _home_to_disabled_hold so the homing loop advances the virtual
     # clock instead of really sleeping.
     import rollio_device_nero.runtime.arm as arm_mod
+
     real_sleep = arm_mod.time.sleep
 
     def fake_sleep(seconds: float) -> None:
@@ -660,6 +657,7 @@ def test_arm_homing_ignores_late_mode_changes(nero_model: NeroModel) -> None:
     ipc.next_mode = DEVICE_CHANNEL_MODE_FREE_DRIVE
 
     import rollio_device_nero.runtime.arm as arm_mod
+
     real_sleep = arm_mod.time.sleep
 
     def fake_sleep(seconds: float) -> None:
@@ -694,7 +692,9 @@ def test_arm_mode_transition_into_disabled_snapshots_q_start(nero_model: NeroMod
 # ---------------------------------------------------------------------------
 
 
-def _gripper_controller(mode: str, **kwargs) -> tuple[GripperController, FakeGripperBackend, FakeGripperIpc]:
+def _gripper_controller(
+    mode: str, **kwargs
+) -> tuple[GripperController, FakeGripperBackend, FakeGripperIpc]:
     backend = FakeGripperBackend()
     ipc = FakeGripperIpc()
     cfg = GripperChannelConfig(mode=mode, default_force_n=2.5)
@@ -726,10 +726,10 @@ def test_gripper_identifying_emits_triangle_open_close() -> None:
     quarter = IDENTIFY_PERIOD_S * 0.25
     half = IDENTIFY_PERIOD_S * 0.5
     clock_sequence = [
-        0.0,    # __init__ snapshot of identify_started_at
-        0.0,    # tick 1
+        0.0,  # __init__ snapshot of identify_started_at
+        0.0,  # tick 1
         quarter,  # tick 2
-        half,   # tick 3 (peak open)
+        half,  # tick 3 (peak open)
     ]
     ctrl, backend, _ipc = _gripper_controller("identifying", clock_sequence=clock_sequence)
     ctrl.step()

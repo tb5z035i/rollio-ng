@@ -100,7 +100,7 @@ def test_gripper_tcp_is_offset_from_bare_flange_by_constant_depth() -> None:
     # default TCP only translates along the flange's z, no rotation.
     pose_bare_quat = nero_bare.end_effector_pose7(np.zeros(7))[3:]
     pose_grip_quat = nero_grip.end_effector_pose7(np.zeros(7))[3:]
-    for a, b in zip(pose_bare_quat, pose_grip_quat):
+    for a, b in zip(pose_bare_quat, pose_grip_quat, strict=False):
         assert abs(a - b) < 1e-6
 
 
@@ -135,4 +135,4 @@ def test_end_effector_translation_changes_when_only_joint7_rotates() -> None:
     # along x sweeps to ∓ in base coords).
     delta_pos = translation_pos - translation_zero
     delta_neg = translation_neg - translation_zero
-    assert delta_pos @ delta_neg < 0   # vectors point opposite ways
+    assert delta_pos @ delta_neg < 0  # vectors point opposite ways

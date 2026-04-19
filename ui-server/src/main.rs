@@ -123,8 +123,14 @@ fn build_app_state(config: &UiRuntimeConfig) -> Result<AppState, Box<dyn Error>>
 fn build_app(state: AppState, asset_dir: PathBuf, index_file: PathBuf) -> Router {
     Router::new()
         .route("/api/runtime-config", get(runtime_config_handler))
-        .route(BROWSER_CONTROL_WEBSOCKET_PATH, get(control_websocket_handler))
-        .route(BROWSER_PREVIEW_WEBSOCKET_PATH, get(preview_websocket_handler))
+        .route(
+            BROWSER_CONTROL_WEBSOCKET_PATH,
+            get(control_websocket_handler),
+        )
+        .route(
+            BROWSER_PREVIEW_WEBSOCKET_PATH,
+            get(preview_websocket_handler),
+        )
         .fallback_service(ServeDir::new(asset_dir).not_found_service(ServeFile::new(index_file)))
         .with_state(state)
 }
@@ -363,7 +369,9 @@ http_port = 3000
             if let Ok((stream, _)) = listener.accept().await {
                 if let Ok(mut ws) = accept_async(stream).await {
                     let _ = ws
-                        .send(TungsteniteMessage::Text(format!("hello-from-{label}").into()))
+                        .send(TungsteniteMessage::Text(
+                            format!("hello-from-{label}").into(),
+                        ))
                         .await;
                     while let Some(Ok(msg)) = ws.next().await {
                         if matches!(msg, TungsteniteMessage::Close(_)) {
@@ -371,9 +379,7 @@ http_port = 3000
                         }
                         if let TungsteniteMessage::Text(t) = msg {
                             let _ = ws
-                                .send(TungsteniteMessage::Text(
-                                    format!("{label}-echo:{t}").into(),
-                                ))
+                                .send(TungsteniteMessage::Text(format!("{label}-echo:{t}").into()))
                                 .await;
                         }
                     }

@@ -1,23 +1,24 @@
+#![allow(dead_code)]
+
 use crate::cli::SetupArgs;
 use crate::discovery::{discover_probe_entries, run_driver_json, DiscoveryOptions};
 use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild,
 };
-use crate::runtime_plan::{build_control_server_spec, build_preview_specs};
 use crate::runtime_paths::{
     current_executable_dir, default_device_executable_name, resolve_registered_program,
     workspace_root,
 };
+use crate::runtime_plan::{build_control_server_spec, build_preview_specs};
 use iceoryx2::prelude::*;
 use rollio_bus::{
     channel_mode_control_service_name, CONTROL_EVENTS_SERVICE, SETUP_COMMAND_SERVICE,
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, ChannelPairingConfig,
-    CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
-    EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind,
-    StorageBackend,
+    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, CollectionMode,
+    DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec, EpisodeFormat,
+    MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -59,7 +60,6 @@ const SETUP_DEV_RUNTIME_PACKAGES: &[&str] = &[
     "rollio-device-airbot-play",
     "rollio-device-pseudo",
 ];
-
 
 fn dev_build_profile(workspace_root: &Path, current_exe_dir: &Path) -> Option<&'static str> {
     let target_root = workspace_root.join("target");
@@ -649,8 +649,7 @@ impl SetupSession {
         // Mirror the rename into both the persisted project config and the
         // matching available_device row's snapshot. We do NOT touch
         // BinaryDeviceConfig.name / bus_root or pairings.
-        self.config.devices[selected_index].channels[channel_index].name =
-            Some(trimmed.to_owned());
+        self.config.devices[selected_index].channels[channel_index].name = Some(trimmed.to_owned());
         if let Some(available) = self.available_device_mut(name) {
             if let Some(channel) = available.current.channels.first_mut() {
                 channel.name = Some(trimmed.to_owned());
@@ -708,8 +707,7 @@ impl SetupSession {
                             && p.fps == profile.fps
                             && p.pixel_format == profile.pixel_format
                             && p.native_pixel_format == profile.native_pixel_format
-                    }) && camera_channel_type_for_profile(profile)
-                        == ch.channel_type
+                    }) && camera_channel_type_for_profile(profile) == ch.channel_type
                 })
                 .unwrap_or(0);
             let next_index = rotate_index(current_profile, available.camera_profiles.len(), delta);
@@ -918,10 +916,12 @@ impl SetupSession {
         device_index: usize,
         channel_index: usize,
     ) {
-        let publish_states =
-            self.config.devices[device_index].channels[channel_index].publish_states.clone();
-        let recorded_states =
-            self.config.devices[device_index].channels[channel_index].recorded_states.clone();
+        let publish_states = self.config.devices[device_index].channels[channel_index]
+            .publish_states
+            .clone();
+        let recorded_states = self.config.devices[device_index].channels[channel_index]
+            .recorded_states
+            .clone();
         let Some(available) = self.available_device_mut(name) else {
             return;
         };
@@ -1277,7 +1277,8 @@ impl SetupSession {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
                 };
-                if self.identify_device_name.as_deref() != Some(name) && !self.is_device_selected(name)
+                if self.identify_device_name.as_deref() != Some(name)
+                    && !self.is_device_selected(name)
                 {
                     return Ok(SessionMutation::default());
                 }
@@ -1315,8 +1316,7 @@ impl SetupSession {
                 ))
             }
             "setup_toggle_publish_state" => {
-                let (Some(name), Some(value)) =
-                    (command.name.as_deref(), command.value.as_deref())
+                let (Some(name), Some(value)) = (command.name.as_deref(), command.value.as_deref())
                 else {
                     return Ok(SessionMutation::default());
                 };
@@ -1328,8 +1328,7 @@ impl SetupSession {
                 ))
             }
             "setup_toggle_recorded_state" => {
-                let (Some(name), Some(value)) =
-                    (command.name.as_deref(), command.value.as_deref())
+                let (Some(name), Some(value)) = (command.name.as_deref(), command.value.as_deref())
                 else {
                     return Ok(SessionMutation::default());
                 };
@@ -1506,7 +1505,9 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
 
     let (config, available_devices, mut warnings, resume_mode) =
         if let Some(mut existing_config) = args.load_project_config()? {
-            existing_config.validate().map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
+            existing_config
+                .validate()
+                .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
             validate_existing_project(&existing_config, &workspace_root, &current_exe_dir)?;
             // Persisted configs no longer carry value_limits: re-query each
             // device executable to refresh them in-memory before the wizard
@@ -1518,8 +1519,7 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
                 &workspace_root,
                 &current_exe_dir,
             )?;
-            let available_devices =
-                available_devices_from_project(&existing_config, &runtime_meta);
+            let available_devices = available_devices_from_project(&existing_config, &runtime_meta);
             (existing_config, available_devices, Vec::new(), true)
         } else {
             eprintln!("rollio: discovering devices...");
@@ -1670,12 +1670,12 @@ fn run_interactive_setup(
             }
 
             let should_preview = should_run_preview_runtime(&session);
-            let desired_preview_target = if should_preview && session.current_step == SetupStep::Devices
-            {
-                session.identify_device_name.clone()
-            } else {
-                None
-            };
+            let desired_preview_target =
+                if should_preview && session.current_step == SetupStep::Devices {
+                    session.identify_device_name.clone()
+                } else {
+                    None
+                };
             let mut preview_runtime_restarted = false;
 
             if preview_runtime.as_ref().is_some_and(|runtime| {
@@ -2143,10 +2143,8 @@ fn build_channel_config_from_meta(
         }
         DeviceType::Robot => {
             let mode = Some(select_supported_mode(&meta.modes, preferred_mode));
-            let publish_states = default_publish_states_for_meta(
-                meta,
-                &robot_publish_states_fallback(channel_type),
-            );
+            let publish_states =
+                default_publish_states_for_meta(meta, &robot_publish_states_fallback(channel_type));
             let recorded_states = publish_states.clone();
             DeviceChannelConfigV2 {
                 channel_type: channel_type.to_owned(),
@@ -2237,8 +2235,11 @@ fn default_publish_states_for_meta(
     if !meta.supported_states.is_empty() {
         return dedup_in_order(&meta.supported_states);
     }
-    let from_limits: Vec<RobotStateKind> =
-        meta.value_limits.iter().map(|entry| entry.state_kind).collect();
+    let from_limits: Vec<RobotStateKind> = meta
+        .value_limits
+        .iter()
+        .map(|entry| entry.state_kind)
+        .collect();
     if !from_limits.is_empty() {
         return dedup_in_order(&from_limits);
     }
@@ -2287,7 +2288,10 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
     let mut pairings = Vec::new();
     let arms = primary_robot_channels(devices, false);
     let eefs = primary_robot_channels(devices, true);
-    for pairs in [pair_robot_channels_by_order(&arms), pair_robot_channels_by_order(&eefs)] {
+    for pairs in [
+        pair_robot_channels_by_order(&arms),
+        pair_robot_channels_by_order(&eefs),
+    ] {
         let Some((leader_dev, leader_ch, follower_dev, follower_ch)) = pairs else {
             continue;
         };
@@ -2298,8 +2302,8 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
         }
         if leader_dof == follower_dof {
             let dof = follower_dof;
-            let parallel_pair =
-                channel_uses_parallel_teleop(leader_ch) && channel_uses_parallel_teleop(follower_ch);
+            let parallel_pair = channel_uses_parallel_teleop(leader_ch)
+                && channel_uses_parallel_teleop(follower_ch);
             let (leader_state, follower_command, map_len) = if parallel_pair {
                 (
                     RobotStateKind::ParallelPosition,
@@ -2307,7 +2311,11 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
                     dof.min(MAX_PARALLEL as u32),
                 )
             } else {
-                (RobotStateKind::JointPosition, RobotCommandKind::JointPosition, dof)
+                (
+                    RobotStateKind::JointPosition,
+                    RobotCommandKind::JointPosition,
+                    dof,
+                )
             };
             pairings.push(ChannelPairingConfig {
                 leader_device: leader_dev.name.clone(),
@@ -2344,13 +2352,11 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
 }
 
 fn channel_supports_cartesian_leader(ch: &DeviceChannelConfigV2) -> bool {
-    ch.publish_states
-        .contains(&RobotStateKind::EndEffectorPose)
+    ch.publish_states.contains(&RobotStateKind::EndEffectorPose)
 }
 
 fn channel_supports_cartesian_follower(ch: &DeviceChannelConfigV2) -> bool {
-    ch.supported_commands
-        .contains(&RobotCommandKind::EndPose)
+    ch.supported_commands.contains(&RobotCommandKind::EndPose)
 }
 
 fn primary_robot_channels(
@@ -2430,10 +2436,7 @@ struct SetupIpc {
         iceoryx2::port::publisher::Publisher<ipc::Service, SetupStateMessage, ()>,
     control_publisher: iceoryx2::port::publisher::Publisher<ipc::Service, ControlEvent, ()>,
     channel_mode_publishers: RefCell<
-        BTreeMap<
-            String,
-            iceoryx2::port::publisher::Publisher<ipc::Service, DeviceChannelMode, ()>,
-        >,
+        BTreeMap<String, iceoryx2::port::publisher::Publisher<ipc::Service, DeviceChannelMode, ()>>,
     >,
 }
 
@@ -2847,7 +2850,11 @@ fn build_discovered_device(
     // stripping the well-known `rollio-device-` prefix off the executable
     // name only if the response didn't include one (e.g. older drivers).
     let driver = value_as_string(query.get("driver"))
-        .or_else(|| executable.strip_prefix("rollio-device-").map(ToOwned::to_owned))
+        .or_else(|| {
+            executable
+                .strip_prefix("rollio-device-")
+                .map(ToOwned::to_owned)
+        })
         .unwrap_or_else(|| executable.to_owned());
 
     let channel_meta_by_channel = parse_query_channel_meta(query_device);
@@ -2918,12 +2925,7 @@ fn validate_binary_device_hardware(
         args.push(OsString::from(&channel.channel_type));
     }
     args.push(OsString::from("--json"));
-    let report = run_driver_json(
-        &program,
-        &args,
-        workspace_root,
-        VALIDATION_TIMEOUT,
-    )?;
+    let report = run_driver_json(&program, &args, workspace_root, VALIDATION_TIMEOUT)?;
     if report
         .get("valid")
         .and_then(Value::as_bool)
@@ -2938,7 +2940,9 @@ fn validate_binary_device_hardware(
     Ok(())
 }
 
-fn build_discovery_config(discoveries: &[DiscoveredDevice]) -> Result<ProjectConfig, Box<dyn Error>> {
+fn build_discovery_config(
+    discoveries: &[DiscoveredDevice],
+) -> Result<ProjectConfig, Box<dyn Error>> {
     let mut config = ProjectConfig::draft_setup_template();
     let mut default_name_counts = BTreeMap::new();
     let mut arm_index = 0usize;
@@ -3111,13 +3115,11 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
             // drivers that only populate value_limits still expose a
             // supported-state list to the wizard.
             if supported_states.is_empty() {
-                supported_states = value_limits
-                    .iter()
-                    .map(|entry| entry.state_kind)
-                    .collect();
+                supported_states = value_limits.iter().map(|entry| entry.state_kind).collect();
             }
-            let supported_commands =
-                crate::device_query::parse_query_supported_commands(channel.get("supported_commands"));
+            let supported_commands = crate::device_query::parse_query_supported_commands(
+                channel.get("supported_commands"),
+            );
             let direct_joint_compatibility =
                 crate::device_query::parse_query_direct_joint_compatibility(
                     channel.get("direct_joint_compatibility"),
@@ -3153,9 +3155,8 @@ fn parse_channel_camera_profiles(channel: &Value) -> Vec<CameraProfile> {
         .filter_map(|profile| {
             let width = value_as_u32(profile.get("width"))?;
             let height = value_as_u32(profile.get("height"))?;
-            let fps = value_as_u32(profile.get("fps")).or_else(|| {
-                value_as_f64(profile.get("fps")).map(|fps| fps.round() as u32)
-            })?;
+            let fps = value_as_u32(profile.get("fps"))
+                .or_else(|| value_as_f64(profile.get("fps")).map(|fps| fps.round() as u32))?;
             let pixel_format = value_as_string(profile.get("pixel_format"))
                 .and_then(|value| parse_pixel_format_name(&value))
                 .unwrap_or(PixelFormat::Rgb24);
@@ -3172,7 +3173,9 @@ fn parse_channel_camera_profiles(channel: &Value) -> Vec<CameraProfile> {
         .collect()
 }
 
-fn parse_query_command_defaults(value: Option<&Value>) -> rollio_types::config::ChannelCommandDefaults {
+fn parse_query_command_defaults(
+    value: Option<&Value>,
+) -> rollio_types::config::ChannelCommandDefaults {
     let parse_array = |key: &str| -> Vec<f64> {
         value
             .and_then(|v| v.get(key))
@@ -3402,7 +3405,10 @@ fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> String {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
     };
-    format!("{kind}|{}|{}|{}|-", device.driver, device.id, ch.channel_type)
+    format!(
+        "{kind}|{}|{}|{}|-",
+        device.driver, device.id, ch.channel_type
+    )
 }
 
 fn next_default_device_name(base: String, counts: &mut BTreeMap<String, usize>) -> String {
@@ -3671,8 +3677,8 @@ mod tests {
     #[test]
     fn available_devices_from_discoveries_merges_airbot_interface_into_existing_config() {
         let discovery = airbot_play_discovery(Some("e2"));
-        let mut config = build_discovery_config(std::slice::from_ref(&discovery))
-            .expect("config should build");
+        let mut config =
+            build_discovery_config(std::slice::from_ref(&discovery)).expect("config should build");
         config.devices[0].extra.clear();
 
         let available = available_devices_from_discoveries(&[discovery], &config)
@@ -3747,8 +3753,8 @@ mod tests {
     #[test]
     fn available_devices_from_discoveries_splits_airbot_channels_into_rows() {
         let discovery = airbot_play_discovery(Some("e2"));
-        let config = build_discovery_config(std::slice::from_ref(&discovery))
-            .expect("config should build");
+        let config =
+            build_discovery_config(std::slice::from_ref(&discovery)).expect("config should build");
 
         let available = available_devices_from_discoveries(&[discovery], &config)
             .expect("available devices should build");
@@ -3795,8 +3801,12 @@ mod tests {
             .iter()
             .find(|device| device.driver == "airbot-play")
             .expect("physical airbot device should remain configured");
-        assert!(device.channel_named("arm").is_some_and(|channel| channel.enabled));
-        assert!(device.channel_named("e2").is_some_and(|channel| !channel.enabled));
+        assert!(device
+            .channel_named("arm")
+            .is_some_and(|channel| channel.enabled));
+        assert!(device
+            .channel_named("e2")
+            .is_some_and(|channel| !channel.enabled));
     }
 
     /// `airbot_play_discovery` plus an explicit `EndEffectorPose` in
@@ -3843,7 +3853,9 @@ mod tests {
         let arm = device
             .channel_named("arm")
             .expect("arm channel should exist");
-        assert!(arm.publish_states.contains(&RobotStateKind::EndEffectorPose));
+        assert!(arm
+            .publish_states
+            .contains(&RobotStateKind::EndEffectorPose));
         assert_eq!(arm.publish_states, arm.recorded_states);
     }
 
@@ -4011,10 +4023,7 @@ mod tests {
         let outcome = session
             .toggle_recorded_state(&arm_name, RobotStateKind::JointEffort)
             .expect("call should not error");
-        assert!(
-            !outcome,
-            "recording a non-published kind must be rejected",
-        );
+        assert!(!outcome, "recording a non-published kind must be rejected",);
         let arm = session
             .config
             .device_named("airbot_play")
@@ -4103,13 +4112,14 @@ mod tests {
         assert!(session.is_device_selected(&device_name));
         session.message = Some(format!("{IDENTIFY_ACTIVE_MESSAGE_PREFIX}{device_name}"));
         assert!(session.set_identify_device(Some(&device_name)));
-        assert_eq!(session.identify_device_name.as_deref(), Some(device_name.as_str()));
-
-        assert!(
-            session
-                .toggle_device_selection(&device_name)
-                .expect("deselect should succeed")
+        assert_eq!(
+            session.identify_device_name.as_deref(),
+            Some(device_name.as_str())
         );
+
+        assert!(session
+            .toggle_device_selection(&device_name)
+            .expect("deselect should succeed"));
         assert!(!session.is_device_selected(&device_name));
         assert!(session.identify_device_name.is_none());
         assert!(session.message.is_none());
@@ -4153,7 +4163,10 @@ mod tests {
 
     #[test]
     fn known_device_executables_skip_pseudo_and_standalone_eef_by_default() {
-        let executables = known_device_executables().iter().copied().collect::<Vec<_>>();
+        let executables = known_device_executables()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
 
         assert_eq!(
             executables,
@@ -4316,11 +4329,9 @@ mod tests {
     /// the wizard.
     #[test]
     fn build_discovery_config_dedupes_channel_name_for_two_v4l2_cameras() {
-        let config = build_discovery_config(&[
-            v4l2_discovery("/dev/video0"),
-            v4l2_discovery("/dev/video2"),
-        ])
-        .expect("config should build");
+        let config =
+            build_discovery_config(&[v4l2_discovery("/dev/video0"), v4l2_discovery("/dev/video2")])
+                .expect("config should build");
 
         assert_eq!(
             project_camera_device_names(&config),
@@ -4352,7 +4363,11 @@ mod tests {
         assert_eq!(device.bus_root, "realsense");
         assert_eq!(
             camera_channel_types(device),
-            vec!["color".to_string(), "depth".to_string(), "infrared".to_string()]
+            vec![
+                "color".to_string(),
+                "depth".to_string(),
+                "infrared".to_string()
+            ]
         );
         assert_eq!(
             camera_channel_names(device),
@@ -4478,8 +4493,8 @@ mod tests {
             product_variant: None,
             end_effector: None,
         };
-        let config = build_discovery_config(std::slice::from_ref(&discovery))
-            .expect("config should build");
+        let config =
+            build_discovery_config(std::slice::from_ref(&discovery)).expect("config should build");
 
         assert_eq!(config.devices.len(), 1);
         let device = &config.devices[0];
@@ -4512,8 +4527,8 @@ mod tests {
         // The pseudo-style discovery in tests carries no value_limits because
         // its `DiscoveredChannelMeta` is empty by default. This mirrors the
         // case where a real driver has not been updated to report limits yet.
-        let config = build_discovery_config(&[robot_discovery("robot0", 6)])
-            .expect("config should build");
+        let config =
+            build_discovery_config(&[robot_discovery("robot0", 6)]).expect("config should build");
 
         let warnings = missing_value_limit_warnings(&config);
         // Three publish_states (joint position/velocity/effort) → three
@@ -4534,8 +4549,8 @@ mod tests {
 
     #[test]
     fn missing_value_limit_warnings_silent_when_driver_supplied_limits() {
-        let mut config = build_discovery_config(&[robot_discovery("robot0", 6)])
-            .expect("config should build");
+        let mut config =
+            build_discovery_config(&[robot_discovery("robot0", 6)]).expect("config should build");
         // Simulate the post-`enrich_current_device_from_discovery` state by
         // populating value_limits on every published kind.
         for device in &mut config.devices {
@@ -4543,11 +4558,13 @@ mod tests {
                 channel.value_limits = channel
                     .publish_states
                     .iter()
-                    .map(|kind| rollio_types::config::StateValueLimitsEntry::symmetric(
-                        *kind,
-                        std::f64::consts::PI,
-                        channel.dof.unwrap_or(1) as usize,
-                    ))
+                    .map(|kind| {
+                        rollio_types::config::StateValueLimitsEntry::symmetric(
+                            *kind,
+                            std::f64::consts::PI,
+                            channel.dof.unwrap_or(1) as usize,
+                        )
+                    })
                     .collect();
             }
         }

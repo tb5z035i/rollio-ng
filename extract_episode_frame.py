@@ -55,17 +55,12 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-
 # ---------------------------------------------------------------------------
 # Dataset metadata
 
 
-DEFAULT_DATA_TPL = (
-    "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet"
-)
-DEFAULT_VIDEO_TPL = (
-    "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4"
-)
+DEFAULT_DATA_TPL = "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet"
+DEFAULT_VIDEO_TPL = "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 
 
 def _ensure_templated(tpl: str, default: str, required: tuple[str, ...]) -> str:
@@ -93,7 +88,7 @@ class DatasetInfo:
     video_path_overridden: bool = False
 
     @classmethod
-    def load(cls, root: Path) -> "DatasetInfo":
+    def load(cls, root: Path) -> DatasetInfo:
         info_path = root / "meta" / "info.json"
         if not info_path.is_file():
             raise FileNotFoundError(f"meta/info.json not found under {root}")
@@ -101,12 +96,8 @@ class DatasetInfo:
 
         raw_data = info.get("data_path", DEFAULT_DATA_TPL)
         raw_video = info.get("video_path", DEFAULT_VIDEO_TPL)
-        data_tpl = _ensure_templated(
-            raw_data, DEFAULT_DATA_TPL, ("episode_index",)
-        )
-        video_tpl = _ensure_templated(
-            raw_video, DEFAULT_VIDEO_TPL, ("episode_index", "video_key")
-        )
+        data_tpl = _ensure_templated(raw_data, DEFAULT_DATA_TPL, ("episode_index",))
+        video_tpl = _ensure_templated(raw_video, DEFAULT_VIDEO_TPL, ("episode_index", "video_key"))
         return cls(
             root=root,
             fps=int(info.get("fps", 30)),
@@ -141,7 +132,7 @@ class DatasetInfo:
         candidates: list[str] = [video_key]
         for prefix in ("observation.images.", "observation.image.", "observation."):
             if video_key.startswith(prefix):
-                candidates.append(video_key[len(prefix):])
+                candidates.append(video_key[len(prefix) :])
         seen: set[str] = set()
         canonical: Path | None = None
         for cand in candidates:
@@ -162,11 +153,7 @@ class DatasetInfo:
         return canonical
 
     def video_keys(self) -> list[str]:
-        return [
-            name
-            for name, spec in self.features.items()
-            if spec.get("dtype") == "video"
-        ]
+        return [name for name, spec in self.features.items() if spec.get("dtype") == "video"]
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +172,7 @@ def select_row(
     selectors = [timestamp, rel_time, frame_index, global_index]
     if sum(s is not None for s in selectors) != 1:
         raise ValueError(
-            "Exactly one of --timestamp / --time / --frame-index / --index "
-            "must be provided."
+            "Exactly one of --timestamp / --time / --frame-index / --index must be provided."
         )
 
     if frame_index is not None:
@@ -202,9 +188,7 @@ def select_row(
     if global_index is not None:
         idx_col = "index" if "index" in df.columns else "global_index"
         if idx_col not in df.columns:
-            raise LookupError(
-                "Neither 'index' nor 'global_index' column present in parquet."
-            )
+            raise LookupError("Neither 'index' nor 'global_index' column present in parquet.")
         mask = df[idx_col].to_numpy() == global_index
         hits = np.flatnonzero(mask)
         if hits.size == 0:
@@ -219,7 +203,7 @@ def select_row(
     pos = int(np.argmin(np.abs(ts - target)))
     label = "timestamp" if timestamp is not None else "time"
     val = timestamp if timestamp is not None else rel_time
-    return pos, f"{label}={val} -> closest ts={ts[pos]:.6f} (Δ={ts[pos]-target:+.6f}s)"
+    return pos, f"{label}={val} -> closest ts={ts[pos]:.6f} (Δ={ts[pos] - target:+.6f}s)"
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +215,8 @@ def row_to_jsonable(row: pd.Series) -> dict[str, Any]:
     for key, val in row.items():
         if isinstance(val, np.ndarray):
             out[key] = val.tolist()
-        elif isinstance(val, (list, tuple)):
-            out[key] = [
-                v.item() if isinstance(v, np.generic) else v for v in val
-            ]
+        elif isinstance(val, list | tuple):
+            out[key] = [v.item() if isinstance(v, np.generic) else v for v in val]
         elif isinstance(val, np.generic):
             out[key] = val.item()
         elif isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
@@ -248,7 +230,7 @@ def row_to_jsonable(row: pd.Series) -> dict[str, Any]:
 # Video frame extraction
 
 
-def extract_video_frame(video_path: Path, seek_seconds: float) -> "np.ndarray":
+def extract_video_frame(video_path: Path, seek_seconds: float) -> np.ndarray:
     """Decode the frame at (or just after) ``seek_seconds`` and return RGB ndarray."""
     import av
 
@@ -298,25 +280,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-e", "--episode", type=int, default=0, help="Episode index.")
 
     sel = p.add_argument_group("frame selector (choose exactly one)")
-    sel.add_argument("-t", "--timestamp", type=float, default=None,
-                     help="Match by parquet 'timestamp' column (absolute).")
-    sel.add_argument("-T", "--time", type=float, default=None,
-                     help="Seconds since episode start.")
-    sel.add_argument("-f", "--frame-index", type=int, default=None,
-                     help="Per-episode frame_index value.")
-    sel.add_argument("-i", "--index", type=int, default=None,
-                     help="Dataset-global index / global_index value.")
+    sel.add_argument(
+        "-t",
+        "--timestamp",
+        type=float,
+        default=None,
+        help="Match by parquet 'timestamp' column (absolute).",
+    )
+    sel.add_argument("-T", "--time", type=float, default=None, help="Seconds since episode start.")
+    sel.add_argument(
+        "-f", "--frame-index", type=int, default=None, help="Per-episode frame_index value."
+    )
+    sel.add_argument(
+        "-i", "--index", type=int, default=None, help="Dataset-global index / global_index value."
+    )
 
-    p.add_argument("-o", "--out", type=Path, default=None,
-                   help="Output directory (created if missing). "
-                        "Default: ./extracted_ep<EE>_f<FFFFFF>")
-    p.add_argument("--video-key", action="append", default=None,
-                   help="Restrict to specific video feature(s); repeatable. "
-                        "Default: all video features in info.json.")
-    p.add_argument("--no-video", action="store_true",
-                   help="Skip video frame extraction.")
-    p.add_argument("--print-row", action="store_true",
-                   help="Also pretty-print the JSON row to stdout.")
+    p.add_argument(
+        "-o",
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (created if missing). Default: ./extracted_ep<EE>_f<FFFFFF>",
+    )
+    p.add_argument(
+        "--video-key",
+        action="append",
+        default=None,
+        help="Restrict to specific video feature(s); repeatable. "
+        "Default: all video features in info.json.",
+    )
+    p.add_argument("--no-video", action="store_true", help="Skip video frame extraction.")
+    p.add_argument(
+        "--print-row", action="store_true", help="Also pretty-print the JSON row to stdout."
+    )
     return p.parse_args()
 
 
@@ -383,8 +379,7 @@ def main() -> int:
     data_path.write_text(json.dumps(row_json, indent=2, default=str))
 
     print(f"selected: {sel_desc}")
-    print(f"  episode_index={args.episode} frame_index={frame_idx} "
-          f"row={row_pos}/{len(df)-1}")
+    print(f"  episode_index={args.episode} frame_index={frame_idx} row={row_pos}/{len(df) - 1}")
     print(f"  timestamp(abs)={ts_abs:.6f}  rel={ts_rel:.6f}s")
     print(f"wrote {data_path}")
 
@@ -409,7 +404,7 @@ def main() -> int:
             continue
         try:
             arr = extract_video_frame(vp, ts_rel)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  [error] {key}: {exc}")
             continue
         safe_key = key.replace("/", "_").replace(".", "_")
