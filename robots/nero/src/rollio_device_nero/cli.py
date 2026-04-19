@@ -45,7 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run":
             return _run_device(args)
     except (ConfigError, RuntimeError, FileNotFoundError) as exc:
-        print(f"rollio-device-nero: {exc}", file=sys.stderr)
+        print(f"rollio-device-agx-nero: {exc}", file=sys.stderr)
         return 1
 
     parser.error(f"unknown command: {args.command}")
@@ -54,7 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="rollio-device-nero",
+        prog="rollio-device-agx-nero",
         description=f"{DEVICE_LABEL} device driver on the Rollio Sprint Extra A contract",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

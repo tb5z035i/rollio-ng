@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use rollio_types::config::{Config, ProjectConfig};
+use rollio_types::config::ProjectConfig;
 use std::error::Error;
 use std::path::PathBuf;
 
@@ -31,17 +31,6 @@ pub struct CollectArgs {
 }
 
 impl CollectArgs {
-    pub fn load_config(&self) -> Result<Config, Box<dyn Error>> {
-        if let Some(config_path) = &self.config {
-            return Ok(Config::from_file(config_path)?);
-        }
-        if let Some(config_inline) = &self.config_inline {
-            return Ok(config_inline.parse::<Config>()?);
-        }
-
-        Err("collect requires either --config or --config-inline".into())
-    }
-
     pub fn load_project_config(&self) -> Result<ProjectConfig, Box<dyn Error>> {
         if let Some(config_path) = &self.config {
             return Ok(ProjectConfig::from_file(config_path)?);
@@ -69,23 +58,15 @@ pub struct SetupArgs {
     pub output: Option<PathBuf>,
     #[arg(long)]
     pub accept_defaults: bool,
-    #[arg(long = "sim-cameras", default_value_t = 0)]
-    pub sim_cameras: usize,
-    #[arg(long = "sim-arms", default_value_t = 0)]
-    pub sim_arms: usize,
+    /// Inject simulated `rollio-device-pseudo` devices during discovery.
+    /// Replaces the legacy `--sim-cameras` / `--sim-arms` split: the pseudo
+    /// driver itself decides what mix of camera/robot channels to emit
+    /// based on its `--count` arg.
+    #[arg(long = "sim-pseudo", default_value_t = 0)]
+    pub sim_pseudo: usize,
 }
 
 impl SetupArgs {
-    pub fn load_config(&self) -> Result<Option<Config>, Box<dyn Error>> {
-        if let Some(config_path) = &self.config {
-            return Ok(Some(Config::from_file(config_path)?));
-        }
-        if let Some(config_inline) = &self.config_inline {
-            return Ok(Some(config_inline.parse::<Config>()?));
-        }
-        Ok(None)
-    }
-
     pub fn load_project_config(&self) -> Result<Option<ProjectConfig>, Box<dyn Error>> {
         if let Some(config_path) = &self.config {
             return Ok(Some(ProjectConfig::from_file(config_path)?));

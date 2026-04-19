@@ -91,26 +91,36 @@ def open_or_create_pubsub(
     service_name: str,
     payload_type: type,
     *,
-    max_publishers: int = 8,
-    max_subscribers: int = 8,
-    max_nodes: int = 16,
+    max_publishers: int | None = None,
+    max_subscribers: int | None = None,
+    max_nodes: int | None = None,
 ) -> Any:
-    """Open or create a publish_subscribe service with given fan-in/out limits.
+    """Open or create a publish_subscribe service with optional fan-in/out limits.
 
-    The Rust airbot device opens its mode services with `max_publishers(16)
-    .max_subscribers(16) .max_nodes(16)` to allow the controller, visualizer,
-    teleop router and CLI tools to coexist on the same channel; we use the
-    same generous defaults here so the Python device is a drop-in peer.
+    iceoryx2 enforces that every process opening the same service must agree
+    on the publisher/subscriber/node caps. By default we pass nothing here so
+    iceoryx2 picks its built-in defaults (max_publishers=2, max_subscribers=8,
+    max_nodes=20 in the bundled config) -- matching every other consumer
+    (visualizer, teleop router, episode assembler, the airbot driver's
+    state/command services) so a single-publisher state/command service can
+    be opened by anyone first.
+
+    Mode services need multiple writers (controller, visualizer, CLI scripts
+    for keyboard testing), so callers that open mode services explicitly
+    pass `max_publishers=16, max_subscribers=16, max_nodes=16` -- the same
+    convention the airbot device uses.
     """
     iox2 = _iox2()
-    return (
-        node.service_builder(iox2.ServiceName.new(service_name))
-        .publish_subscribe(payload_type)
-        .max_publishers(max_publishers)
-        .max_subscribers(max_subscribers)
-        .max_nodes(max_nodes)
-        .open_or_create()
+    builder = node.service_builder(iox2.ServiceName.new(service_name)).publish_subscribe(
+        payload_type
     )
+    if max_publishers is not None:
+        builder = builder.max_publishers(max_publishers)
+    if max_subscribers is not None:
+        builder = builder.max_subscribers(max_subscribers)
+    if max_nodes is not None:
+        builder = builder.max_nodes(max_nodes)
+    return builder.open_or_create()
 
 
 def make_publisher(service: Any) -> Any:

@@ -38,19 +38,21 @@ const SYNC_COMPLETE_THRESHOLD_RAD: f64 = 0.25;
 /// Maximum per-cycle translational step (metres) while the cartesian ramp
 /// is active. The follower's published EE position is moved at most this
 /// far toward the leader each tick. Originally 0.001 m/tick; bumped 5x
-/// to 0.005 m/tick so the IK-projected joint deltas are large enough
+/// to 0.005 m/tick so the IK-projected joint deltas were large enough
 /// for the position loop (`KP * step`) to overcome the airbot-play's
-/// 40% un-compensated gravity term on joints 1-3. At a 250 Hz router
-/// loop this caps startup translational speed at ~1.25 m/s.
-const SYNC_MAX_STEP_M: f64 = 0.005;
+/// 40% un-compensated gravity term on joints 1-3. Then halved back to
+/// 0.0025 m/tick to soften startup motion now that gravity tracking is
+/// reliable enough at the lower step. At a 250 Hz router loop this
+/// caps startup translational speed at ~0.625 m/s.
+const SYNC_MAX_STEP_M: f64 = 0.0025;
 /// Maximum per-cycle rotational step (rad) while the cartesian ramp is
 /// active. The follower's published EE orientation is slerped toward the
-/// leader by at most this angle per tick. At a 250 Hz router loop this
-/// caps startup angular speed at ~2.5 rad/s (~143 deg/s) — chosen so the
-/// follower can keep up with normal operator hand rotation; lower values
-/// caused the ramp to permanently trail the leader by tens of degrees
-/// because the operator naturally rotates faster than the cap.
-const SYNC_MAX_STEP_ROT_RAD: f64 = 0.01;
+/// leader by at most this angle per tick. Halved from 0.01 to 0.005
+/// rad/tick to match the slower translational cap; at a 250 Hz router
+/// loop this caps startup angular speed at ~1.25 rad/s (~71 deg/s),
+/// which is still fast enough to keep up with normal operator hand
+/// rotation but noticeably gentler at engagement.
+const SYNC_MAX_STEP_ROT_RAD: f64 = 0.005;
 /// Translational error (metres) under which the cartesian ramp is
 /// considered complete (in conjunction with the rotational threshold).
 /// Sized at ~5x the per-tick step so the ramp has comfortable headroom
@@ -63,6 +65,16 @@ const SYNC_COMPLETE_THRESHOLD_M: f64 = 0.025;
 /// approximately aligned (~5.7 deg) without requiring the operator to
 /// hold the leader within a fraction of a degree of the follower.
 const SYNC_COMPLETE_THRESHOLD_ROT_RAD: f64 = 0.1;
+/// Wall-clock window of *uninterrupted* leader/follower closeness
+/// required before the cartesian ramp declares sync complete and the
+/// router drops into pure pass-through. Strict reset: any single tick
+/// where the live (leader, follower) gap exceeds either completion
+/// threshold zeroes the counter again. Wall-clock instead of tick
+/// count keeps this robust to leader publish-rate variation. 1 s is
+/// long enough to ride through a transient near-miss but short enough
+/// that an operator who held still for "a beat" sees teleop engage
+/// promptly.
+const SYNC_HOLD_DURATION: Duration = Duration::from_secs(1);
 
 type ControlSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
 
@@ -184,18 +196,36 @@ struct CartesianSyncState {
     synced: bool,
     max_step_m: f64,
     max_step_rot_rad: f64,
+    /// Single threshold reused for both the per-tick step/pass-through
+    /// gate AND the sync-complete exit condition. When the live
+    /// (leader, follower) gap is within (`complete_threshold_m`,
+    /// `complete_threshold_rot_rad`) we publish the leader directly
+    /// (no per-tick clamp); otherwise the published target is the
+    /// rate-limited ramp anchor.
     complete_threshold_m: f64,
     complete_threshold_rot_rad: f64,
     /// Internal monotonic ramp anchor. Initialized once from the
     /// follower's first reported EE pose, then advanced toward the
-    /// leader by at most (`max_step_m`, `max_step_rot_rad`) per tick.
-    /// The published target is this state, NOT a function of the live
-    /// follower pose, so FK/IK noise on the follower side cannot leak
-    /// back into the published command and create a closed-loop
-    /// oscillation. (Joint mapping uses live follower as anchor without
-    /// problems because joint->joint mapping has no FK/IK in the loop
-    /// to amplify noise; cartesian does, hence the asymmetry.)
+    /// leader by at most (`max_step_m`, `max_step_rot_rad`) per tick
+    /// when the leader/follower gap is wider than the completion
+    /// thresholds. When the gap closes inside the thresholds the
+    /// anchor snaps to the leader and the published target is the raw
+    /// leader pose (still hemisphere-aligned).
+    ///
+    /// In the rate-limited branch the published target is the
+    /// anchor, NOT a function of the live follower pose, so FK/IK
+    /// noise on the follower side cannot leak back into the published
+    /// command and create a closed-loop oscillation. (Joint mapping
+    /// uses live follower as anchor without problems because
+    /// joint->joint mapping has no FK/IK in the loop to amplify
+    /// noise; cartesian does, hence the asymmetry.)
     ramp_pose: Option<Pose7>,
+    /// Monotonic timestamp at which the (leader, follower) gap first
+    /// fell within the completion thresholds during the *current*
+    /// streak of closeness. Reset to `None` on any tick the gap
+    /// exceeds either threshold (strict). Sync completes once the
+    /// streak has lasted at least [`SYNC_HOLD_DURATION`].
+    closeness_started_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +259,7 @@ impl SyncState {
                 complete_threshold_m: SYNC_COMPLETE_THRESHOLD_M,
                 complete_threshold_rot_rad: SYNC_COMPLETE_THRESHOLD_ROT_RAD,
                 ramp_pose: None,
+                closeness_started_at: None,
             }),
             (
                 MappingStrategy::DirectJoint,
@@ -325,69 +356,115 @@ impl CartesianSyncState {
         command: &mut ForwardedCommand,
         follower: Option<&LeaderState>,
     ) -> SyncOutcome {
+        self.apply_with_clock(command, follower, std::time::Instant::now())
+    }
+
+    /// Internal entry point that takes the "now" instant explicitly so
+    /// unit tests can drive the sustained-closeness window deterministically.
+    fn apply_with_clock(
+        &mut self,
+        command: &mut ForwardedCommand,
+        follower: Option<&LeaderState>,
+        now: std::time::Instant,
+    ) -> SyncOutcome {
         let Some(target) = command_pose_mut(command) else {
             return SyncOutcome::Publish;
         };
         let leader_p = pose_position(target);
         let leader_q_raw = pose_quat(target);
 
-        // Initialize the internal ramp anchor exactly once, from the
-        // first follower-state sample we see. After that we never read
-        // the live follower pose again — the ramp advances purely from
-        // its previous internal state, decoupling the published
-        // command from FK noise on the follower side. (Without this,
-        // follower jitter -> published target jitter -> IK jitter ->
-        // joint command jitter -> more follower jitter, a closed-loop
-        // oscillation that joint-mapping doesn't suffer because it
-        // bypasses FK/IK.)
+        // We need a fresh follower sample to make any decision: the
+        // step branch needs the live (leader, follower) gap to size
+        // the step direction, and the pass-through branch's
+        // sustained-closeness exit condition is also follower-based.
+        // Holding (skipping publication) is safer than publishing the
+        // raw leader, which could be a large jump from the follower.
+        let Some(follower_pose) = follower_pose(follower) else {
+            return SyncOutcome::Hold;
+        };
+        let follower_p = pose_position(&follower_pose);
+        let follower_q_raw = pose_quat(&follower_pose);
+
+        // Initialize the internal ramp anchor on the first follower
+        // sample we see, so the rate-limited branch always has a
+        // sensible starting pose near where the follower actually is.
         if self.ramp_pose.is_none() {
-            let Some(follower_pose) = follower_pose(follower) else {
-                // Hold publishing until we've seen a follower sample,
-                // so the ramp anchor starts at a sane place near the
-                // arm's current EE pose.
-                return SyncOutcome::Hold;
-            };
             self.ramp_pose = Some(follower_pose);
         }
         let ramp = self.ramp_pose.as_mut().expect("ramp_pose set above");
-        let mut anchor_p = pose_position(ramp);
-        let mut anchor_q = pose_quat(ramp);
+        let anchor_p = pose_position(ramp);
+        let anchor_q = pose_quat(ramp);
 
-        // Hemisphere-align the leader's quat against the ramp anchor
-        // (NOT against the live follower) so subsequent slerp/error
-        // computations are consistent with the ramp's progression.
+        // Hemisphere-align the leader's and follower's quats against
+        // the ramp anchor so all subsequent slerp / angle computations
+        // pick the short path consistent with the ramp's progression.
         let leader_q = quat_align_shortest(&leader_q_raw, &anchor_q);
+        let follower_q = quat_align_shortest(&follower_q_raw, &anchor_q);
 
-        // Step the ramp anchor toward the leader by at most max_step.
-        // `clamp_*` mutates `next_*` in place so it lands at most
-        // max_step away from anchor; the return value is the original
-        // gap (used for completion).
-        let mut next_p = leader_p;
-        let translational_error = clamp_translation(&mut next_p, &anchor_p, self.max_step_m);
-        let mut next_q = leader_q;
-        let rotational_error =
+        // Single completion gate: the gap between the LIVE leader and
+        // LIVE follower. This is the only place the live follower
+        // pose feeds the decision (it is *not* used for the published
+        // target in the rate-limited branch -- see anchor docstring).
+        let trans_gap = vec3_distance(&leader_p, &follower_p);
+        let rot_gap = quat_angle_between(&leader_q, &follower_q);
+        let within_thresholds = trans_gap <= self.complete_threshold_m
+            && rot_gap <= self.complete_threshold_rot_rad;
+
+        if within_thresholds {
+            // Pass-through branch: publish the leader's pose directly,
+            // bypassing the per-tick clamp. The bounded translational
+            // / rotational gap (<= completion thresholds) caps the
+            // worst-case single-tick jump at the threshold size, so
+            // there is no need to slew. Snap the anchor to the leader
+            // so a future drop back into the rate-limited branch
+            // resumes from the right place.
+            write_pose(ramp, &leader_p, &leader_q);
+            write_pose(target, &leader_p, &leader_q);
+
+            // Sustained-closeness counter: starts on the first close
+            // tick of a streak; declares sync complete once the
+            // streak has been uninterrupted for SYNC_HOLD_DURATION.
+            let started_at = self.closeness_started_at.get_or_insert(now);
+            if now.duration_since(*started_at) >= SYNC_HOLD_DURATION {
+                self.synced = true;
+                eprintln!(
+                    "rollio-teleop-router: initial sync complete (cartesian \
+                     leader/follower gap {:.4} m, {:.4} rad held within \
+                     thresholds {:.4} m, {:.4} rad for {} ms)",
+                    trans_gap,
+                    rot_gap,
+                    self.complete_threshold_m,
+                    self.complete_threshold_rot_rad,
+                    SYNC_HOLD_DURATION.as_millis(),
+                );
+            }
+        } else {
+            // Strict reset: any single tick where the gap exceeds
+            // either threshold restarts the closeness counter.
+            self.closeness_started_at = None;
+
+            // Rate-limited branch: advance the anchor toward the
+            // leader by at most (max_step_m, max_step_rot_rad) and
+            // publish that. Anchor stays decoupled from the live
+            // follower so FK/IK noise cannot leak into the published
+            // command.
+            let mut next_p = leader_p;
+            clamp_translation(&mut next_p, &anchor_p, self.max_step_m);
+            let mut next_q = leader_q;
             clamp_rotation(&mut next_q, &anchor_q, self.max_step_rot_rad);
-
-        anchor_p = next_p;
-        anchor_q = next_q;
-        write_pose(ramp, &anchor_p, &anchor_q);
-        write_pose(target, &anchor_p, &anchor_q);
-
-        if translational_error <= self.complete_threshold_m
-            && rotational_error <= self.complete_threshold_rot_rad
-        {
-            self.synced = true;
-            eprintln!(
-                "rollio-teleop-router: initial sync complete (cartesian \
-                 translation {:.4} m <= {:.4} m, rotation {:.4} rad <= {:.4} rad)",
-                translational_error,
-                self.complete_threshold_m,
-                rotational_error,
-                self.complete_threshold_rot_rad,
-            );
+            write_pose(ramp, &next_p, &next_q);
+            write_pose(target, &next_p, &next_q);
         }
+
         SyncOutcome::Publish
     }
+}
+
+fn vec3_distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 fn follower_position_slice(state: Option<&LeaderState>) -> Option<&[f64]> {
@@ -1301,15 +1378,40 @@ mod tests {
         assert!(sync_state.enabled());
     }
 
+    /// Helper: drive `apply_with_clock` directly so we can step the
+    /// virtual wall clock past `SYNC_HOLD_DURATION` without sleeping.
+    fn cart_apply(
+        sync_state: &mut SyncState,
+        leader: Pose7,
+        follower: Pose7,
+        now: std::time::Instant,
+    ) -> Pose7 {
+        let SyncState::Cartesian(cart) = sync_state else {
+            panic!("expected cartesian sync state");
+        };
+        let mut command = ForwardedCommand::EndPose(leader);
+        let outcome = cart.apply_with_clock(
+            &mut command,
+            Some(&LeaderState::Pose(follower)),
+            now,
+        );
+        assert_eq!(outcome, SyncOutcome::Publish);
+        let ForwardedCommand::EndPose(payload) = command else {
+            panic!("expected pose command");
+        };
+        payload
+    }
+
     #[test]
-    fn cartesian_sync_completes_once_within_thresholds() {
+    fn cartesian_sync_publishes_leader_directly_when_within_thresholds() {
+        // Within-threshold ticks should bypass the per-tick clamp and
+        // forward the leader pose verbatim (the bounded gap caps the
+        // worst-case single-tick jump at the threshold size).
         let config = cartesian_sync_config();
         let mut sync_state = SyncState::new(&config);
-        // Pick errors strictly under both completion thresholds so a
-        // single apply marks the ramp complete.
         let small_translation = SYNC_COMPLETE_THRESHOLD_M * 0.5;
         let small_half_angle = SYNC_COMPLETE_THRESHOLD_ROT_RAD * 0.25;
-        let mut command = ForwardedCommand::EndPose(Pose7 {
+        let leader = Pose7 {
             timestamp_ms: 123,
             values: [
                 small_translation,
@@ -1320,14 +1422,154 @@ mod tests {
                 small_half_angle.sin(),
                 small_half_angle.cos(),
             ],
-        });
-        let follower = LeaderState::Pose(Pose7 {
+        };
+        let follower = Pose7 {
             timestamp_ms: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        });
-        let outcome = sync_state.apply(&mut command, Some(&follower));
-        assert_eq!(outcome, SyncOutcome::Publish);
-        assert!(!sync_state.enabled());
+        };
+        let now = std::time::Instant::now();
+        let published = cart_apply(&mut sync_state, leader, follower, now);
+        assert_eq!(
+            published.values, leader.values,
+            "within-threshold publish should equal the leader exactly"
+        );
+        // Single tick of closeness is not enough to declare sync
+        // complete -- the SYNC_HOLD_DURATION (1 s) window has only
+        // just started.
+        assert!(sync_state.enabled());
+    }
+
+    #[test]
+    fn cartesian_sync_completes_only_after_sustained_closeness_window() {
+        let config = cartesian_sync_config();
+        let mut sync_state = SyncState::new(&config);
+        let small_translation = SYNC_COMPLETE_THRESHOLD_M * 0.5;
+        let leader = Pose7 {
+            timestamp_ms: 123,
+            values: [small_translation, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let follower = Pose7 {
+            timestamp_ms: 100,
+            values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let t0 = std::time::Instant::now();
+
+        // First close tick starts the streak; sync remains active.
+        cart_apply(&mut sync_state, leader, follower, t0);
+        assert!(sync_state.enabled(), "single close tick must not complete sync");
+
+        // Halfway through the window: still not complete.
+        cart_apply(
+            &mut sync_state,
+            leader,
+            follower,
+            t0 + SYNC_HOLD_DURATION / 2,
+        );
+        assert!(sync_state.enabled(), "halfway through hold window: not complete");
+
+        // Past the full SYNC_HOLD_DURATION: sync completes.
+        cart_apply(&mut sync_state, leader, follower, t0 + SYNC_HOLD_DURATION);
+        assert!(
+            !sync_state.enabled(),
+            "after SYNC_HOLD_DURATION of uninterrupted closeness, sync must complete"
+        );
+    }
+
+    #[test]
+    fn cartesian_sync_strict_reset_on_transient_breach() {
+        // A single tick where the live (leader, follower) gap exceeds
+        // either threshold must zero the closeness counter, even if
+        // the very next tick is back in range.
+        let config = cartesian_sync_config();
+        let mut sync_state = SyncState::new(&config);
+        let close_leader = Pose7 {
+            timestamp_ms: 123,
+            values: [SYNC_COMPLETE_THRESHOLD_M * 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let far_leader = Pose7 {
+            timestamp_ms: 124,
+            values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let follower = Pose7 {
+            timestamp_ms: 100,
+            values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let t0 = std::time::Instant::now();
+
+        // Close for almost the full window...
+        cart_apply(&mut sync_state, close_leader, follower, t0);
+        cart_apply(
+            &mut sync_state,
+            close_leader,
+            follower,
+            t0 + SYNC_HOLD_DURATION - Duration::from_millis(1),
+        );
+        // ...then a single far tick resets.
+        cart_apply(
+            &mut sync_state,
+            far_leader,
+            follower,
+            t0 + SYNC_HOLD_DURATION,
+        );
+        // ...so even at t0 + 2 * SYNC_HOLD_DURATION sync is NOT complete
+        // unless the close streak has restarted and run for the full
+        // window again. Right after the breach the counter is zero, so
+        // a single close tick at t0 + 2 * SYNC_HOLD_DURATION is the
+        // start of a new streak.
+        cart_apply(
+            &mut sync_state,
+            close_leader,
+            follower,
+            t0 + SYNC_HOLD_DURATION + Duration::from_millis(1),
+        );
+        assert!(
+            sync_state.enabled(),
+            "transient breach must reset the closeness counter"
+        );
+    }
+
+    #[test]
+    fn cartesian_sync_never_completes_when_follower_is_wedged() {
+        // The whole point of the redesign: if the follower can't track
+        // (e.g. IK keeps failing, motor stalled), the leader-anchor
+        // gap may close but the leader-FOLLOWER gap never does, so
+        // sync must NEVER engage and pass-through never enables. The
+        // router keeps publishing rate-limited targets forever.
+        let config = cartesian_sync_config();
+        let mut sync_state = SyncState::new(&config);
+        let leader = Pose7 {
+            timestamp_ms: 123,
+            values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let stuck_follower = Pose7 {
+            timestamp_ms: 100,
+            values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        let t0 = std::time::Instant::now();
+
+        // Run for many SYNC_HOLD_DURATIONs without the follower
+        // ever moving. The published target ramps toward the leader
+        // (tested elsewhere); the live gap never drops below the
+        // threshold so sync stays active throughout.
+        for ms in (0..5_000).step_by(50) {
+            let published = cart_apply(
+                &mut sync_state,
+                leader,
+                stuck_follower,
+                t0 + Duration::from_millis(ms as u64),
+            );
+            // Step branch: the published target must stay within
+            // SYNC_MAX_STEP_M of the previous anchor, so it cannot
+            // jump to the leader's 1.0 m position.
+            assert!(
+                published.values[0] < 1.0,
+                "wedged-follower must keep the published target rate-limited"
+            );
+        }
+        assert!(
+            sync_state.enabled(),
+            "sync must NEVER complete while follower is wedged at the start position"
+        );
     }
 
     #[test]

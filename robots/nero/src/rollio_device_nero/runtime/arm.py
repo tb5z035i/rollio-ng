@@ -4,7 +4,7 @@ The loop is structured around two protocols (`ArmBackend` and `ArmIpc`) so
 the four mode behaviours can be unit-tested with in-memory fakes (no
 `pyAgxArm`, no `iceoryx2`). The "real" wiring is in `runtime/device.py`.
 
-Per-tick contract (executes at `config.control_frequency_hz`):
+Per-tick contract (executes at `CONTROL_FREQUENCY_HZ`, currently 250 Hz):
 
   1. Drain the `control/mode` subscriber; on a transition, run any
      mode-entry book-keeping (e.g. `Disabled` snapshots `q_start`).
@@ -13,7 +13,10 @@ Per-tick contract (executes at `config.control_frequency_hz`):
      unavailable yet (CAN reader still warming up).
   4. Compute `g(q_meas)` via Pinocchio RNEA (clipped to per-joint TAU_MAX).
   5. Compute `(p_des, v_des, kp, kd)` per mode:
-        * Disabled: linear ramp `q_start -> 0` over RAMP_DURATION_S, then hold.
+        * Disabled: linear ramp `q_start -> DISABLED_HOLD_Q` over
+          RAMP_DURATION_S, then hold there. `DISABLED_HOLD_Q` parks the
+          arm in a safe, kinematically clear "stand-up" pose
+          ([0, 0, 0, pi/2, 0, 0, 0]) rather than fully stretched.
         * Identifying / FreeDrive: `0, 0, 0, FREE_DRIVE_KD`.
         * CommandFollowing: from latest joint_position / joint_mit / end_pose
           command (with IK for end_pose); fall back to `q_meas`-tracking if
@@ -25,22 +28,30 @@ Per-tick contract (executes at `config.control_frequency_hz`):
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
 
 from .. import ARM_DOF
+from ..airbot_aligned_pose import (
+    apply_command_pose_fix,
+    apply_publish_pose_fix,
+)
 from ..config import (
+    CONTROL_FREQUENCY_HZ,
     DEFAULT_FREE_DRIVE_KD,
     DEFAULT_IDENTIFYING_KD,
     DEFAULT_TRACKING_KD,
     DEFAULT_TRACKING_KP,
+    MIN_ACHIEVED_FREQUENCY_RATIO,
     ArmChannelConfig,
 )
 from ..gravity import NeroModel
+from .rate_monitor import RateMonitor
 from ..ipc.types import (
     DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING,
     DEVICE_CHANNEL_MODE_DISABLED,
@@ -52,13 +63,26 @@ from ..ipc.types import (
 )
 
 # Smooth-ramp constants for the `Disabled` mode entry. The arm is driven
-# from its current pose down to q=0 over RAMP_DURATION_S seconds with PD
-# tracking + gravity feed-forward, then held at zero indefinitely. Lifted
-# directly from `home_on_exit_mit` in
-# `external/reference/nero-demo/gravity_compensation.py`.
+# from its current pose to `DISABLED_HOLD_Q` over RAMP_DURATION_S seconds
+# with PD tracking + gravity feed-forward, then held at that target
+# indefinitely. Lifted directly from `home_on_exit_mit` in
+# `external/reference/nero-demo/gravity_compensation.py`, with the hold
+# target generalised so we can park the arm in a kinematically clear
+# pose rather than fully stretched.
 RAMP_DURATION_S: float = 3.0
 RAMP_KP: float = DEFAULT_TRACKING_KP
 RAMP_KD: float = DEFAULT_TRACKING_KD
+
+# Joint vector that the `Disabled` mode rolls to and holds at. Per the
+# operator spec this is `[0, 0, 0, pi/2, 0, 0, 0]` -- joint 4 is bent
+# 90 deg so the elbow is up and the forearm is folded over the shoulder,
+# keeping the wrist + gripper away from the workspace and out of any
+# kinematic singularity. All other joints sit at zero. The motors stay
+# energised at this hold; the arm does NOT power down.
+DISABLED_HOLD_Q: np.ndarray = np.array(
+    [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, math.pi / 2.0],
+    dtype=float,
+)
 
 # Default settle time held *after* the ramp completes during the
 # `home_on_exit` shutdown phase. With the ramp duration above we wait
@@ -67,6 +91,17 @@ RAMP_KD: float = DEFAULT_TRACKING_KD
 # `external/reference/nero-demo/gravity_compensation.py`.
 HOMING_SETTLE_S: float = 1.0
 HOMING_FEEDBACK_WAIT_S: float = 0.5
+
+# Hard per-tick safety bound on the per-joint delta between the commanded
+# target and the current feedback position while in `CommandFollowing`.
+# Mirrors the AIRBOT Play `MAX_COMMAND_JOINT_DELTA_RAD` (see
+# `third_party/airbot-play-rust/src/arm/play.rs`): any oversized request
+# is clipped to within this many radians of the present joint angle so an
+# upstream glitch (a stale teleop snapshot, a corrupted IK seed, etc.)
+# cannot snap the arm. 5 deg is loose enough that intentional teleop
+# motion is never clipped at 100 Hz control (~8.7 rad/s slew cap) but
+# tight enough to catch obvious outliers.
+MAX_COMMAND_JOINT_DELTA_RAD: float = math.pi / 12.0
 
 
 # ---------------------------------------------------------------------------
@@ -141,20 +176,26 @@ def mode_value_for_config(config: ArmChannelConfig) -> int:
 
 @dataclass(slots=True)
 class _DisabledRamp:
-    """State for the `Disabled` mode's smooth ramp + hold transition."""
+    """State for the `Disabled` mode's smooth ramp + hold transition.
+
+    Linearly interpolates each joint from `q_start` to `q_end` over
+    `duration_s` seconds, then holds at `q_end`. `q_end` defaults to
+    [`DISABLED_HOLD_Q`] (the operator-spec parking pose).
+    """
 
     q_start: np.ndarray
     started_at: float
     duration_s: float = RAMP_DURATION_S
+    q_end: np.ndarray = field(default_factory=lambda: DISABLED_HOLD_Q.copy())
 
     def desired(self, now: float) -> tuple[np.ndarray, np.ndarray]:
-        """Return (p_des, v_des) at `now` along a linear `q_start -> 0` ramp."""
+        """Return (p_des, v_des) at `now` along the `q_start -> q_end` ramp."""
         elapsed = max(0.0, now - self.started_at)
         if self.duration_s <= 0.0 or elapsed >= self.duration_s:
-            return np.zeros_like(self.q_start), np.zeros_like(self.q_start)
+            return self.q_end.copy(), np.zeros_like(self.q_end)
         alpha = elapsed / self.duration_s
-        p_des = self.q_start * (1.0 - alpha)
-        v_des = -self.q_start / self.duration_s
+        p_des = self.q_start + (self.q_end - self.q_start) * alpha
+        v_des = (self.q_end - self.q_start) / self.duration_s
         return p_des, v_des
 
 
@@ -194,6 +235,23 @@ class ArmController:
         self._mode_value: int = mode_value_for_config(config)
         self._disabled_ramp: _DisabledRamp | None = None
         self._latest_joint_target: np.ndarray | None = None
+        # Last clamped `p_des` actually sent to the motors. Used by the
+        # safety clamp (`_clamp_p_des_to_max_joint_delta`) as the
+        # reference point so a stale host-side `q_meas` cannot leak its
+        # ~60 Hz update quantisation into the 250 Hz `p_des` stream. See
+        # `_clamp_p_des_to_max_joint_delta` for the full rationale.
+        # Initialised to `None`; the clamp falls back to `q_meas` on the
+        # very first tick after entering `CommandFollowing` so the arm
+        # never receives a `p_des` step larger than the clamp from
+        # whatever pose it happens to be in at mode entry.
+        self._last_sent_p_des: np.ndarray | None = None
+        # Most recent CLIK output, used as the IK seed for the next
+        # cartesian command. Distinct from `_latest_joint_target` (which
+        # is also set by joint_position / joint_mit commands) so the
+        # "first IK call after entering CommandFollowing" path
+        # deterministically falls back to live feedback even if the
+        # operator was previously commanding raw joints.
+        self._latest_ik_target: np.ndarray | None = None
 
         if ik_solver is None:
             from ..ik import solve as default_ik
@@ -293,35 +351,45 @@ class ArmController:
 
         When `home_on_exit=True` (the default), the shutdown sequence forces
         the controller into Disabled mode (which snapshots `q_start = q_meas`
-        and starts the linear ramp toward zero) and keeps ticking for
-        `RAMP_DURATION_S + homing_settle_s` so the ramp can complete and a
-        small settle period is held at zero. The motors are NEVER disabled
-        -- they keep holding zero with kp=10, kd=0.5 until the orchestrator
-        disconnects the CAN socket.
+        and starts the linear ramp toward `DISABLED_HOLD_Q`) and keeps
+        ticking for `RAMP_DURATION_S + homing_settle_s` so the ramp can
+        complete and a small settle period is held at the target. The
+        motors are NEVER disabled -- they keep holding the parking pose
+        with kp=10, kd=0.5 until the orchestrator disconnects the CAN
+        socket.
         """
-        period = 1.0 / max(self._config.control_frequency_hz, 1.0)
+        period = 1.0 / CONTROL_FREQUENCY_HZ
         next_tick = self._clock()
+        rate_monitor = RateMonitor(
+            target_hz=CONTROL_FREQUENCY_HZ,
+            min_ratio=MIN_ACHIEVED_FREQUENCY_RATIO,
+            label="arm",
+            clock=self._clock,
+        )
         while not stop_check() and not self._ipc.shutdown_requested():
             self.step()
+            rate_monitor.record_tick()
             next_tick += period
             sleep_s = next_tick - self._clock()
             if sleep_s > 0:
                 time.sleep(sleep_s)
             else:
                 # We're behind. Realign so we don't spin trying to catch up.
+                # The RateMonitor will surface a warning if this happens
+                # consistently over a 5 s window.
                 next_tick = self._clock()
 
         if home_on_exit:
-            self._home_to_zero(settle_s=homing_settle_s)
+            self._home_to_disabled_hold(settle_s=homing_settle_s)
 
-    def _home_to_zero(self, *, settle_s: float = HOMING_SETTLE_S) -> None:
-        """Drive the arm to all-zero positions before returning from `run`.
+    def _home_to_disabled_hold(self, *, settle_s: float = HOMING_SETTLE_S) -> None:
+        """Drive the arm to `DISABLED_HOLD_Q` before returning from `run`.
 
         Force the controller into Disabled mode (so `_DisabledRamp` snapshots
-        `q_start = q_meas` and starts a linear ramp to zero), then keep
-        emitting MIT commands for `RAMP_DURATION_S + settle_s` seconds.
-        Mode-change polling is disabled during this phase so a stray late
-        mode-switch from the controller cannot abort the homing.
+        `q_start = q_meas` and starts a linear ramp to `DISABLED_HOLD_Q`),
+        then keep emitting MIT commands for `RAMP_DURATION_S + settle_s`
+        seconds. Mode-change polling is disabled during this phase so a
+        stray late mode-switch from the controller cannot abort the homing.
 
         If `q_meas` is unavailable when this method is called (e.g. the CAN
         reader hasn't produced a frame yet), poll briefly before snapshotting
@@ -346,7 +414,7 @@ class ArmController:
             # pose, not whatever q_start was captured on entry.
             self._disabled_ramp = None
 
-        period = 1.0 / max(self._config.control_frequency_hz, 1.0)
+        period = 1.0 / CONTROL_FREQUENCY_HZ
         homing_deadline = self._clock() + RAMP_DURATION_S + max(0.0, settle_s)
         next_tick = self._clock()
         while self._clock() < homing_deadline:
@@ -378,9 +446,16 @@ class ArmController:
         # Entering CommandFollowing without a fresh command would otherwise
         # send a stale joint target (or zero) on the first tick; clear so
         # the fallback path ("track q_meas") engages until a real command
-        # arrives.
+        # arrives. The CLIK seed cache is cleared with the same logic so
+        # the very first cartesian command after enabling seeds from
+        # live feedback rather than from a stale CLIK output.
         if next_mode == DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING:
             self._latest_joint_target = None
+            self._latest_ik_target = None
+            # First clamp after re-entering CF should anchor at q_meas
+            # (we don't know where the arm is until that first tick),
+            # not at whatever stale p_des was sent before leaving CF.
+            self._last_sent_p_des = None
 
         self._mode_value = next_mode
 
@@ -412,14 +487,83 @@ class ArmController:
             )
 
         # CommandFollowing
+        p_des, v_des, kp, kd = self._desired_command_following(q_meas)
+        # Hard per-tick safety bound -- any inbound command (joint
+        # position / joint MIT / cartesian-via-IK) and the held last
+        # target are clipped to within `MAX_COMMAND_JOINT_DELTA_RAD`
+        # per tick. The reference point for the clamp is the previously
+        # *sent* p_des rather than the live q_meas: NERO's host-side
+        # CAN feedback only updates at ~60 Hz, so anchoring the clamp
+        # to q_meas aliases that quantisation into the 250 Hz p_des
+        # stream (we measured up to 26 mrad p_des steps in CF, vs
+        # 2.7 mrad uniform steps in Disabled mode -- the only
+        # difference being Disabled's p_des is a pure ramp independent
+        # of q_meas). Clamping against the prior p_des still bounds
+        # the worst-case per-tick joint velocity at the same value
+        # (~22 rad/s slew cap), preserving the original safety
+        # invariant. We keep `_latest_joint_target` as the *unclamped*
+        # IK output so the held-target fallback keeps walking toward
+        # the original goal one tick at a time.
+        ref = self._last_sent_p_des if self._last_sent_p_des is not None else q_meas
+        p_des = _clamp_p_des_to_max_joint_delta(p_des, ref)
+        self._last_sent_p_des = p_des
+        return p_des, v_des, kp, kd
+
+    def _desired_command_following(
+        self, q_meas: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, float, float]:
         kp = DEFAULT_TRACKING_KP
         kd = DEFAULT_TRACKING_KD
 
         # Try sources in priority order: end_pose (cartesian) > joint_mit > joint_position.
         end_pose = self._ipc.poll_end_pose_command()
         if end_pose is not None:
-            target7 = [float(end_pose.values[i]) for i in range(7)]
-            q_target, _conv, _err = self._ik(self._model, target7, q0=q_meas)
+            # Cartesian commands arrive in the AIRBOT-aligned reporting
+            # frame (see `airbot_aligned_pose`). Convert position +
+            # orientation back to Nero's native base/TCP frame before IK
+            # so the solver and the published reports stay in sync.
+            target7 = apply_command_pose_fix(
+                [float(end_pose.values[i]) for i in range(7)]
+            )
+            # Seed CLIK from the *previous CLIK output*, falling back
+            # to live feedback only on the first IK call (no previous
+            # CLIK output yet). Nero is 7-DOF (one redundant joint) so
+            # the damped pseudo-inverse converges to whichever
+            # null-space configuration is closest to the seed; using
+            # live feedback every tick closes a positive-feedback loop
+            # with the joint controller (small feedback drift ->
+            # different null-space branch -> arm jerks toward it ->
+            # more drift) that shows up as visible oscillation when
+            # the cartesian target is near-static. The previous CLIK
+            # output is stable for a stable pose and so picks the same
+            # configuration every cycle. Mirrors the AIRBOT Play seed
+            # policy in `third_party/airbot-play-rust/src/arm/play.rs`.
+            #
+            # Default fallback: if `_latest_ik_target` is None (the
+            # very first cartesian command after entering
+            # CommandFollowing), seed with `q_meas` -- the current
+            # joint positions -- rather than with whatever stale
+            # joint target may be cached from a previous joint-mode
+            # command. `_on_mode_change` clears `_latest_ik_target`
+            # on entry so the fallback engages cleanly across mode
+            # transitions.
+            ik_seed = (
+                self._latest_ik_target
+                if self._latest_ik_target is not None
+                else q_meas
+            )
+            # Pass `q_meas` as the null-space anchor: with Nero's 7-DOF
+            # arm, the bare damped pseudo-inverse warm-started from the
+            # previous IK output drifts along the null space tick-to-tick
+            # (elbow swings dozens of degrees while the EE barely moves).
+            # Anchoring to the live joint positions collapses that
+            # null-space freedom onto a single stable configuration so
+            # `q_target` walks smoothly with the cartesian target instead
+            # of wandering through redundant configurations.
+            q_target, _conv, _err = self._ik(
+                self._model, target7, q0=ik_seed, q_anchor=q_meas
+            )
+            self._latest_ik_target = q_target
             self._latest_joint_target = q_target
             return q_target, np.zeros(ARM_DOF), kp, kd
 
@@ -506,7 +650,13 @@ class ArmController:
                 published.append("joint_effort")
 
         if "end_effector_pose" in publish_states:
-            pose = self._model.end_effector_pose7(q_meas)
+            # Translate the native Nero pose (position + orientation)
+            # into the AIRBOT-aligned reporting frame. The Nero base is
+            # mounted 180 degrees rotated about z relative to AIRBOT,
+            # so position needs the same `q_base` rotation that
+            # orientation gets -- otherwise a Cartesian teleop follower
+            # sees x/y mirrored.
+            pose = apply_publish_pose_fix(self._model.end_effector_pose7(q_meas))
             self._ipc.publish_end_effector_pose(Pose7.from_values(timestamp_ms, pose))
             published.append("end_effector_pose")
 
@@ -517,12 +667,32 @@ def _unix_ms() -> int:
     return int(time.time() * 1000.0) & 0xFFFFFFFFFFFFFFFF
 
 
+def _clamp_p_des_to_max_joint_delta(
+    p_des: np.ndarray, q_meas: np.ndarray
+) -> np.ndarray:
+    """Clamp each `p_des[i]` to within `MAX_COMMAND_JOINT_DELTA_RAD` of `q_meas[i]`.
+
+    Returns a fresh ndarray so the controller's `_latest_joint_target`
+    cache (which keeps the *unclamped* goal) is not mutated -- a held
+    target keeps walking toward the original goal one tick at a time
+    rather than stalling at the first clamp.
+    """
+    delta = np.clip(
+        p_des - q_meas,
+        -MAX_COMMAND_JOINT_DELTA_RAD,
+        MAX_COMMAND_JOINT_DELTA_RAD,
+    )
+    return q_meas + delta
+
+
 __all__ = [
     "RAMP_DURATION_S",
     "RAMP_KP",
     "RAMP_KD",
     "HOMING_SETTLE_S",
     "HOMING_FEEDBACK_WAIT_S",
+    "MAX_COMMAND_JOINT_DELTA_RAD",
+    "DISABLED_HOLD_Q",
     "ArmBackend",
     "ArmIpc",
     "ArmController",

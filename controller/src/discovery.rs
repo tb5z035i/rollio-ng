@@ -1,6 +1,6 @@
-use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
-use rollio_types::config::DeviceType;
+use crate::runtime_paths::resolve_registered_program;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::ffi::OsString;
 use std::io::Read;
@@ -9,23 +9,43 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct KnownDriver {
-    pub(crate) device_type: DeviceType,
-    pub(crate) driver: &'static str,
-    pub(crate) probe_args: &'static [&'static str],
+/// Always-probed device executables. Each entry is the basename of an
+/// executable expected to live either in the workspace's `target/debug` (for
+/// in-tree drivers built via `cargo`) or somewhere on `$PATH`. Adding a new
+/// in-tree driver only requires adding its executable name here. Third-party
+/// drivers don't need to register: they're picked up automatically by the
+/// PATH scan in `enumerate_path_device_executables`.
+///
+/// `rollio-device-pseudo` is intentionally absent so installing the binary
+/// system-wide doesn't silently inject simulated devices into every
+/// `rollio setup` run; pseudo is opt-in via the `--sim-pseudo` CLI flag.
+pub(crate) fn known_device_executables() -> &'static [&'static str] {
+    &[
+        "rollio-device-airbot-play",
+        "rollio-device-realsense",
+        "rollio-device-v4l2",
+        "rollio-device-agx-nero",
+    ]
 }
 
+/// Discovery options that aren't expressible as `rollio-device-*` registry
+/// entries. Currently just controls how many synthetic pseudo devices to
+/// inject (the `pseudo` driver is excluded from the always-on registry and
+/// PATH scan; this is the only path that surfaces it).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DiscoveryOptions {
-    pub(crate) simulated_cameras: usize,
-    pub(crate) simulated_arms: usize,
+    pub(crate) simulated_pseudo: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProbeEntry {
-    pub(crate) driver: KnownDriver,
+    /// Executable basename (e.g. `"rollio-device-airbot-play"`). Used for
+    /// error messages and to route subsequent `query --json` invocations
+    /// back to the same driver process.
+    pub(crate) executable: String,
+    /// Resolved program path, preferring `target/debug` over `$PATH`.
     pub(crate) program: OsString,
+    /// One element from the driver's `probe --json` output array.
     pub(crate) probe_entry: Value,
 }
 
@@ -81,6 +101,94 @@ impl Error for DriverCommandError {
     }
 }
 
+/// Build the set of executables to probe by combining the explicit registry
+/// with anything on `$PATH` matching `rollio-device-*`. The two lists are
+/// deduped by basename; registry entries take priority because the local
+/// `target/debug` build is preferred over PATH lookups via
+/// `resolve_registered_program`. `rollio-device-pseudo` is excluded from
+/// the PATH scan to keep it opt-in.
+fn collect_device_executables(simulated_pseudo: usize) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for executable in known_device_executables() {
+        let name = (*executable).to_owned();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for executable in enumerate_path_device_executables() {
+        if seen.insert(executable.clone()) {
+            out.push(executable);
+        }
+    }
+    if simulated_pseudo > 0 {
+        let name = "rollio-device-pseudo".to_owned();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Scan every directory on `$PATH` for executables whose filename starts with
+/// `rollio-device-`. Returns the deduplicated basenames in first-PATH-entry
+/// order. `rollio-device-pseudo` is filtered out so installing the pseudo
+/// driver system-wide doesn't auto-inject simulated devices into every
+/// `rollio setup` run.
+pub(crate) fn enumerate_path_device_executables() -> Vec<String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for dir in std::env::split_paths(&path) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
+            if !name_str.starts_with("rollio-device-") {
+                continue;
+            }
+            if name_str == "rollio-device-pseudo" {
+                continue;
+            }
+            if !is_executable_entry(&entry) {
+                continue;
+            }
+            if seen.insert(name_str.to_owned()) {
+                out.push(name_str.to_owned());
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn is_executable_entry(entry: &std::fs::DirEntry) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    entry
+        .metadata()
+        .map(|metadata| {
+            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_entry(entry: &std::fs::DirEntry) -> bool {
+    let path = entry.path();
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    matches!(
+        extension.as_deref(),
+        Some("exe" | "cmd" | "bat" | "com")
+    )
+}
+
 pub(crate) fn discover_probe_entries(
     workspace_root: &Path,
     current_exe_dir: &Path,
@@ -90,50 +198,18 @@ pub(crate) fn discover_probe_entries(
     let mut entries = Vec::new();
     let mut probe_errors = Vec::new();
 
-    for driver in known_drivers() {
+    for executable in collect_device_executables(options.simulated_pseudo) {
+        let extra_args = if executable == "rollio-device-pseudo" && options.simulated_pseudo > 0 {
+            vec![
+                OsString::from("--count"),
+                OsString::from(options.simulated_pseudo.to_string()),
+            ]
+        } else {
+            Vec::new()
+        };
         extend_probe_entries(
-            *driver,
-            &[],
-            workspace_root,
-            current_exe_dir,
-            discovery_timeout,
-            &mut entries,
-            &mut probe_errors,
-        );
-    }
-
-    if options.simulated_cameras > 0 {
-        let simulated_camera_args = vec![
-            OsString::from("--count"),
-            OsString::from(options.simulated_cameras.to_string()),
-        ];
-        extend_probe_entries(
-            KnownDriver {
-                device_type: DeviceType::Camera,
-                driver: "pseudo",
-                probe_args: &[],
-            },
-            &simulated_camera_args,
-            workspace_root,
-            current_exe_dir,
-            discovery_timeout,
-            &mut entries,
-            &mut probe_errors,
-        );
-    }
-
-    if options.simulated_arms > 0 {
-        let simulated_robot_args = vec![
-            OsString::from("--count"),
-            OsString::from(options.simulated_arms.to_string()),
-        ];
-        extend_probe_entries(
-            KnownDriver {
-                device_type: DeviceType::Robot,
-                driver: "pseudo",
-                probe_args: &[],
-            },
-            &simulated_robot_args,
+            executable,
+            &extra_args,
             workspace_root,
             current_exe_dir,
             discovery_timeout,
@@ -147,26 +223,6 @@ pub(crate) fn discover_probe_entries(
     }
 
     Ok((entries, probe_errors))
-}
-
-pub(crate) fn known_drivers() -> &'static [KnownDriver] {
-    &[
-        KnownDriver {
-            device_type: DeviceType::Camera,
-            driver: "realsense",
-            probe_args: &[],
-        },
-        KnownDriver {
-            device_type: DeviceType::Camera,
-            driver: "v4l2",
-            probe_args: &[],
-        },
-        KnownDriver {
-            device_type: DeviceType::Robot,
-            driver: "airbot-play",
-            probe_args: &[],
-        },
-    ]
 }
 
 pub(crate) fn run_driver_json(
@@ -254,7 +310,7 @@ pub(crate) fn run_driver_json(
 }
 
 fn extend_probe_entries(
-    driver: KnownDriver,
+    executable: String,
     extra_probe_args: &[OsString],
     workspace_root: &Path,
     current_exe_dir: &Path,
@@ -262,10 +318,8 @@ fn extend_probe_entries(
     entries: &mut Vec<ProbeEntry>,
     probe_errors: &mut Vec<String>,
 ) {
-    let executable_name = default_device_executable_name(driver.driver);
-    let program = resolve_registered_program(&executable_name, workspace_root, current_exe_dir);
+    let program = resolve_registered_program(&executable, workspace_root, current_exe_dir);
     let mut probe_args = vec![OsString::from("probe"), OsString::from("--json")];
-    probe_args.extend(driver.probe_args.iter().map(OsString::from));
     probe_args.extend(extra_probe_args.iter().cloned());
 
     let probe_output = match run_driver_json(&program, &probe_args, workspace_root, discovery_timeout)
@@ -273,7 +327,7 @@ fn extend_probe_entries(
         Ok(value) => value,
         Err(DriverCommandError::NotFound { .. }) => return,
         Err(error) => {
-            probe_errors.push(format!("{}: {error}", driver.driver));
+            probe_errors.push(format!("{}: {error}", executable));
             return;
         }
     };
@@ -281,14 +335,14 @@ fn extend_probe_entries(
     let Some(probe_entries) = probe_output.as_array() else {
         probe_errors.push(format!(
             "{}: probe output must be a JSON array, got {}",
-            driver.driver, probe_output
+            executable, probe_output
         ));
         return;
     };
 
     for probe_entry in probe_entries {
         entries.push(ProbeEntry {
-            driver,
+            executable: executable.clone(),
             program: program.clone(),
             probe_entry: probe_entry.clone(),
         });

@@ -107,7 +107,16 @@ def run_device(config: RuntimeConfig) -> int:
     model: NeroModel | None = None
     arm_controller: ArmController | None = None
     if config.arm is not None:
-        model = NeroModel(with_gripper=config.gripper is not None)
+        # TEMPORARY: assume the gripper is always physically mounted on the
+        # AGX Nero, so the gravity feedforward includes the gripper inertia
+        # whether or not the gripper channel is enabled in the runtime config.
+        # Otherwise, when the controller spawns the device with only the arm
+        # channel (e.g. wizard's per-channel Identify preview), the gravity
+        # model underestimates true torque and the arm visibly sags.
+        # Eventually the device should probe whether the gripper is wired up
+        # (mirroring airbot-play's end-effector detection) and pick the
+        # right model accordingly.
+        model = NeroModel(with_gripper=True)
         arm_controller = ArmController(
             backend=AgxArmBackend(robot),
             ipc=ArmIox(bus_root=config.bus_root, channel_type=config.arm.channel_type),

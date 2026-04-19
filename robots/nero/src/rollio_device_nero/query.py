@@ -90,6 +90,10 @@ def _build_device(device_id: str) -> dict[str, Any]:
         "id": device_id,
         "device_class": DRIVER_NAME,
         "device_label": DEVICE_LABEL,
+        # Default user-facing name for the device row when the wizard
+        # collapses arm + gripper into a single entry. The controller
+        # falls back to a snake-case driver name when this is absent.
+        "default_device_name": "agx_nero",
         "optional_info": {
             "interface": device_id,
             "transport": "can",

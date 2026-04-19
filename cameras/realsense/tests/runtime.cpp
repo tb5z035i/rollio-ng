@@ -44,23 +44,23 @@ auto spawn_run_command(const std::string& config_inline, bool dry_run) -> pid_t 
     if (pid == 0) {
         if (dry_run) {
             char* argv[] = {
-                const_cast<char*>(ROLLIO_CAMERA_REALSENSE_BIN),
+                const_cast<char*>(ROLLIO_DEVICE_REALSENSE_BIN),
                 const_cast<char*>("run"),
                 const_cast<char*>("--dry-run"),
                 const_cast<char*>("--config-inline"),
                 const_cast<char*>(config_inline.c_str()),
                 nullptr,
             };
-            execv(ROLLIO_CAMERA_REALSENSE_BIN, argv);
+            execv(ROLLIO_DEVICE_REALSENSE_BIN, argv);
         } else {
             char* argv[] = {
-                const_cast<char*>(ROLLIO_CAMERA_REALSENSE_BIN),
+                const_cast<char*>(ROLLIO_DEVICE_REALSENSE_BIN),
                 const_cast<char*>("run"),
                 const_cast<char*>("--config-inline"),
                 const_cast<char*>(config_inline.c_str()),
                 nullptr,
             };
-            execv(ROLLIO_CAMERA_REALSENSE_BIN, argv);
+            execv(ROLLIO_DEVICE_REALSENSE_BIN, argv);
         }
         _exit(127);
     }
@@ -109,7 +109,7 @@ auto wait_for_success(const pid_t pid, const std::chrono::seconds timeout) -> vo
 }
 
 auto run_probe_test() -> void {
-    const auto command = std::string("\"") + ROLLIO_CAMERA_REALSENSE_BIN + "\" probe";
+    const auto command = std::string("\"") + ROLLIO_DEVICE_REALSENSE_BIN + "\" probe";
     const auto output = capture_command_output(command);
     if (output.find('[') == std::string::npos || output.find(']') == std::string::npos) {
         throw std::runtime_error("probe output should be a JSON array");
@@ -117,7 +117,7 @@ auto run_probe_test() -> void {
 }
 
 auto run_invalid_capabilities_test() -> void {
-    const auto command = std::string("\"") + ROLLIO_CAMERA_REALSENSE_BIN + "\" capabilities invalid_serial >/dev/null 2>&1";
+    const auto command = std::string("\"") + ROLLIO_DEVICE_REALSENSE_BIN + "\" capabilities invalid_serial >/dev/null 2>&1";
     const auto status = std::system(command.c_str());
     if (status == 0) {
         throw std::runtime_error("capabilities unexpectedly succeeded for an invalid serial");
@@ -150,7 +150,7 @@ auto run_invalid_runtime_test() -> void {
 auto run_serialized_runtime_dry_run_test() -> void {
     const auto config_inline =
         "name = \"realsense_rgb\"\n"
-        "executable = \"rollio-camera-realsense\"\n"
+        "executable = \"rollio-device-realsense\"\n"
         "driver = \"realsense\"\n"
         "id = \"332322071743\"\n"
         "bus_root = \"realsense_rgb\"\n"
@@ -189,7 +189,7 @@ auto main() -> int {
         run_serialized_runtime_dry_run_test();
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "rollio-camera-realsense-tests: " << error.what() << '\n';
+        std::cerr << "rollio-device-realsense-tests: " << error.what() << '\n';
         return 1;
     }
 }

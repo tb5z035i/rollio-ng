@@ -1,25 +1,25 @@
 find_package(realsense2 QUIET)
 
-add_executable(rollio-camera-realsense src/main.cpp)
-target_link_libraries(rollio-camera-realsense PRIVATE rollio-common)
+add_executable(rollio-device-realsense src/main.cpp)
+target_link_libraries(rollio-device-realsense PRIVATE rollio-common)
 
 if(TARGET realsense2::realsense2)
-    target_link_libraries(rollio-camera-realsense PRIVATE realsense2::realsense2)
-    target_compile_definitions(rollio-camera-realsense PRIVATE ROLLIO_HAVE_REALSENSE=1)
+    target_link_libraries(rollio-device-realsense PRIVATE realsense2::realsense2)
+    target_compile_definitions(rollio-device-realsense PRIVATE ROLLIO_HAVE_REALSENSE=1)
 elseif(realsense2_FOUND)
-    target_link_libraries(rollio-camera-realsense PRIVATE ${realsense2_LIBRARY})
-    target_compile_definitions(rollio-camera-realsense PRIVATE ROLLIO_HAVE_REALSENSE=1)
+    target_link_libraries(rollio-device-realsense PRIVATE ${realsense2_LIBRARY})
+    target_compile_definitions(rollio-device-realsense PRIVATE ROLLIO_HAVE_REALSENSE=1)
 else()
-    target_compile_definitions(rollio-camera-realsense PRIVATE ROLLIO_HAVE_REALSENSE=0)
+    target_compile_definitions(rollio-device-realsense PRIVATE ROLLIO_HAVE_REALSENSE=0)
 endif()
 
 if(ROLLIO_BUILD_CPP_TESTS)
-    add_executable(rollio-camera-realsense-tests tests/runtime.cpp)
-    target_link_libraries(rollio-camera-realsense-tests PRIVATE rollio-common)
+    add_executable(rollio-device-realsense-tests tests/runtime.cpp)
+    target_link_libraries(rollio-device-realsense-tests PRIVATE rollio-common)
     target_compile_definitions(
-        rollio-camera-realsense-tests
+        rollio-device-realsense-tests
         PRIVATE
-        ROLLIO_CAMERA_REALSENSE_BIN="$<TARGET_FILE:rollio-camera-realsense>"
+        ROLLIO_DEVICE_REALSENSE_BIN="$<TARGET_FILE:rollio-device-realsense>"
     )
-    add_test(NAME rollio-camera-realsense-tests COMMAND rollio-camera-realsense-tests)
+    add_test(NAME rollio-device-realsense-tests COMMAND rollio-device-realsense-tests)
 endif()

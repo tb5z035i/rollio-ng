@@ -12,7 +12,8 @@
 use crate::discovery::run_driver_json;
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
-    BinaryDeviceConfig, DeviceType, ProjectConfig, RobotStateKind, StateValueLimitsEntry,
+    BinaryDeviceConfig, DeviceType, DirectJointCompatibility, DirectJointCompatibilityPeer,
+    ProjectConfig, RobotCommandKind, RobotStateKind, StateValueLimitsEntry,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -30,6 +31,8 @@ const DEVICE_QUERY_TIMEOUT: Duration = Duration::from_millis(2_000);
 pub(crate) struct ChannelRuntimeMeta {
     pub(crate) value_limits: Vec<StateValueLimitsEntry>,
     pub(crate) supported_states: Vec<RobotStateKind>,
+    pub(crate) supported_commands: Vec<RobotCommandKind>,
+    pub(crate) direct_joint_compatibility: DirectJointCompatibility,
 }
 
 pub(crate) type DeviceRuntimeMetaMap = BTreeMap<(String, String), ChannelRuntimeMeta>;
@@ -122,6 +125,8 @@ fn refresh_device_value_limits(
         }
         if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
             channel.value_limits = meta.value_limits.clone();
+            channel.supported_commands = meta.supported_commands.clone();
+            channel.direct_joint_compatibility = meta.direct_joint_compatibility.clone();
         }
     }
 
@@ -142,11 +147,16 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
                 supported_states =
                     value_limits.iter().map(|entry| entry.state_kind).collect();
             }
+            let supported_commands = parse_query_supported_commands(channel.get("supported_commands"));
+            let direct_joint_compatibility =
+                parse_query_direct_joint_compatibility(channel.get("direct_joint_compatibility"));
             Some((
                 channel_type,
                 ChannelRuntimeMeta {
                     value_limits,
                     supported_states,
+                    supported_commands,
+                    direct_joint_compatibility,
                 },
             ))
         })
@@ -190,6 +200,52 @@ pub(crate) fn parse_query_supported_states(value: Option<&Value>) -> Vec<RobotSt
             serde_json::from_value(serde_json::Value::String(kind_str.to_owned())).ok()
         })
         .collect()
+}
+
+/// Read the `supported_commands` array from a per-channel query entry. The
+/// controller persists this on `DeviceChannelConfigV2.supported_commands`
+/// so downstream teleop/pairing logic stays driver-agnostic.
+pub(crate) fn parse_query_supported_commands(value: Option<&Value>) -> Vec<RobotCommandKind> {
+    let Some(entries) = value.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let kind_str = entry.as_str()?;
+            serde_json::from_value(serde_json::Value::String(kind_str.to_owned())).ok()
+        })
+        .collect()
+}
+
+/// Read the `direct_joint_compatibility` object from a per-channel query
+/// entry. Each peer is `{ "driver": "...", "channel_type": "..." }`.
+pub(crate) fn parse_query_direct_joint_compatibility(
+    value: Option<&Value>,
+) -> DirectJointCompatibility {
+    let Some(map) = value.and_then(Value::as_object) else {
+        return DirectJointCompatibility::default();
+    };
+    let parse_peers = |key: &str| -> Vec<DirectJointCompatibilityPeer> {
+        let Some(entries) = map.get(key).and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let driver = value_as_string(entry.get("driver"))?;
+                let channel_type = value_as_string(entry.get("channel_type"))?;
+                Some(DirectJointCompatibilityPeer {
+                    driver,
+                    channel_type,
+                })
+            })
+            .collect()
+    };
+    DirectJointCompatibility {
+        can_lead: parse_peers("can_lead"),
+        can_follow: parse_peers("can_follow"),
+    }
 }
 
 fn value_as_string(value: Option<&Value>) -> Option<String> {

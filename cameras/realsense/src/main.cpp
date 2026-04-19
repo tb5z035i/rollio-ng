@@ -27,7 +27,7 @@ using SteadyClock = std::chrono::steady_clock;
 
 auto print_usage() -> void {
     std::cerr
-        << "Usage: rollio-camera-realsense <probe|validate|capabilities|query|run> [args...]\n"
+        << "Usage: rollio-device-realsense <probe|validate|capabilities|query|run> [args...]\n"
         << "  probe\n"
         << "  validate [--json] [--channel-type <type>]... <serial>\n"
         << "  capabilities <serial>\n"
@@ -503,20 +503,24 @@ auto print_query_output(const QueryCli& args) -> int {
 
     std::cout << "{\"driver\":\"realsense\",\"devices\":[{\"id\":\"" << json_escape(args.id)
               << "\",\"device_class\":\"realsense\",\"device_label\":\"" << json_escape(label)
-              << "\",\"optional_info\":{},\"channels\":["
+              << "\",\"default_device_name\":\"realsense\","
+              << "\"optional_info\":{},\"channels\":["
               << "{\"channel_type\":\"color\",\"kind\":\"camera\",\"available\":true,"
+              << "\"channel_label\":\"Intel RealSense RGB\",\"default_name\":\"realsense_rgb\","
               << "\"modes\":[\"enabled\",\"disabled\"],\"profiles\":" << profiles_color.str()
               << ",\"supported_states\":[],\"supported_commands\":[],\"supports_fk\":false,\"supports_ik\":false,"
               << "\"dof\":null,\"default_control_frequency_hz\":null,"
               << "\"direct_joint_compatibility\":{\"can_lead\":[],\"can_follow\":[]},"
               << "\"defaults\":{},\"optional_info\":{}},"
               << "{\"channel_type\":\"depth\",\"kind\":\"camera\",\"available\":true,"
+              << "\"channel_label\":\"Intel RealSense Depth\",\"default_name\":\"realsense_depth\","
               << "\"modes\":[\"enabled\",\"disabled\"],\"profiles\":" << profiles_depth.str()
               << ",\"supported_states\":[],\"supported_commands\":[],\"supports_fk\":false,\"supports_ik\":false,"
               << "\"dof\":null,\"default_control_frequency_hz\":null,"
               << "\"direct_joint_compatibility\":{\"can_lead\":[],\"can_follow\":[]},"
               << "\"defaults\":{},\"optional_info\":{}},"
               << "{\"channel_type\":\"infrared\",\"kind\":\"camera\",\"available\":true,"
+              << "\"channel_label\":\"Intel RealSense Infrared\",\"default_name\":\"realsense_ir\","
               << "\"modes\":[\"enabled\",\"disabled\"],\"profiles\":" << profiles_ir.str()
               << ",\"supported_states\":[],\"supported_commands\":[],\"supports_fk\":false,\"supports_ik\":false,"
               << "\"dof\":null,\"default_control_frequency_hz\":null,"
@@ -619,7 +623,7 @@ class RealsenseFrameSinkImpl final : public RealsenseFrameSink {
         local_frame_index_ += 1U;
 
         if (SteadyClock::now() - last_status_ >= std::chrono::seconds(1)) {
-            std::cerr << "rollio-camera-realsense: bus_root channel=" << channel_type()
+            std::cerr << "rollio-device-realsense: bus_root channel=" << channel_type()
                       << " frame_index=" << local_frame_index_ << " latest_timestamp_ns=" << latest_timestamp_ns
                       << " active=true\n";
             last_status_ = SteadyClock::now();
@@ -638,7 +642,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
     const auto channels = build_enabled_camera_channels(config);
 
     if (dry_run) {
-        std::cerr << "rollio-camera-realsense: dry-run ok device=" << config.id << " bus_root=" << config.bus_root
+        std::cerr << "rollio-device-realsense: dry-run ok device=" << config.id << " bus_root=" << config.bus_root
                   << " channels=" << channels.size() << '\n';
         for (const auto& ch : channels) {
             std::cerr << "  - " << ch.channel_type << " service=" << rollio::channel_frames_service_name(
@@ -709,7 +713,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
     pipeline.start(rs_config);
 
     auto last_timeout_log = SteadyClock::now() - std::chrono::seconds(5);
-    std::cerr << "rollio-camera-realsense: device=" << config.id << " bus_root=" << config.bus_root
+    std::cerr << "rollio-device-realsense: device=" << config.id << " bus_root=" << config.bus_root
               << " channels=" << channels.size() << '\n';
 
     while (true) {
@@ -717,7 +721,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
         while (control_sample.has_value()) {
             if (control_sample->payload().tag == rollio::ControlEventTag::Shutdown) {
                 pipeline.stop();
-                std::cerr << "rollio-camera-realsense: shutdown received for " << config.bus_root << '\n';
+                std::cerr << "rollio-device-realsense: shutdown received for " << config.bus_root << '\n';
                 return 0;
             }
             control_sample = control_subscriber.receive().value();
@@ -731,7 +735,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
                 throw;
             }
             if (SteadyClock::now() - last_timeout_log >= std::chrono::seconds(1)) {
-                std::cerr << "rollio-camera-realsense: device=" << config.id
+                std::cerr << "rollio-device-realsense: device=" << config.id
                           << " waiting for next frame after timeout\n";
                 last_timeout_log = SteadyClock::now();
             }
@@ -771,7 +775,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
     if (!dry_run) {
         throw std::runtime_error("realsense support is not compiled in for device: " + config.id);
     }
-    std::cerr << "rollio-camera-realsense: dry-run ok (stub build) device=" << config.id
+    std::cerr << "rollio-device-realsense: dry-run ok (stub build) device=" << config.id
               << " bus_root=" << config.bus_root << " channels=" << resolved.size() << '\n';
     for (const auto& ch : resolved) {
         std::cerr << "  - " << ch.channel_type << " service="
@@ -820,7 +824,7 @@ auto main(int argc, char* argv[]) -> int {
 
         throw std::runtime_error("unknown subcommand: " + command);
     } catch (const std::exception& error) {
-        std::cerr << "rollio-camera-realsense: " << error.what() << '\n';
+        std::cerr << "rollio-device-realsense: " << error.what() << '\n';
         return 1;
     }
 }

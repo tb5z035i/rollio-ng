@@ -65,7 +65,7 @@ ctest --test-dir cameras/build --output-on-failure
 cd ui/terminal && npm install && npm run build && cd ../..
 
 # AIRBOT wrapper + transport validation
-cargo test -p rollio-robot-airbot-play
+cargo test -p rollio-device-airbot-play
 cargo test --offline --manifest-path third_party/airbot-play-rust/Cargo.toml transport::iceoryx2::tests --lib
 cargo run --manifest-path third_party/airbot-play-rust/Cargo.toml --bin airbot-play-iceoryx2 -- --interface can0
 

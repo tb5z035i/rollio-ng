@@ -1,7 +1,7 @@
-# rollio-device-nero
+# rollio-device-agx-nero
 
 Python device driver for the **AGX Nero** 7-DOF arm with the AGX parallel
-gripper, built for the Rollio framework. It ships a `rollio-device-nero`
+gripper, built for the Rollio framework. It ships a `rollio-device-agx-nero`
 executable that is a drop-in peer of the Rust
 [`rollio-device-airbot-play`](../airbot_play_rust) on the iceoryx2 + TOML
 contract, so `rollio setup` / `rollio collect` pick up the Nero with no
@@ -21,18 +21,18 @@ git submodule update --init third_party/iceoryx2 third_party/pyAgxArm
 uv pip install -e robots/nero
 ```
 
-This installs the `rollio-device-nero` executable and the `rollio_device_nero`
+This installs the `rollio-device-agx-nero` executable and the `rollio_device_nero`
 Python package.
 
 ## CLI
 
-`rollio-device-nero` mirrors the four subcommands of `rollio-device-airbot-play`:
+`rollio-device-agx-nero` mirrors the four subcommands of `rollio-device-airbot-play`:
 
 ```bash
-rollio-device-nero probe                       # list candidate Nero arms (CAN ifaces)
-rollio-device-nero validate can0               # connect+enable on can0 (matches test.py)
-rollio-device-nero query can0 --json           # emit DeviceQueryResponse for rollio setup
-rollio-device-nero run --config nero.toml      # run the device, mode-driven by IPC
+rollio-device-agx-nero probe                       # list candidate Nero arms (CAN ifaces)
+rollio-device-agx-nero validate can0               # connect+enable on can0 (matches test.py)
+rollio-device-agx-nero query can0 --json           # emit DeviceQueryResponse for rollio setup
+rollio-device-agx-nero run --config nero.toml      # run the device, mode-driven by IPC
 ```
 
 A minimal device config (`nero.toml`):

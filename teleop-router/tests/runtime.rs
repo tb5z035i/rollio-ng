@@ -34,7 +34,13 @@ struct PoseTestPorts {
 }
 
 // Must stay in sync with `teleop_router::SYNC_MAX_STEP_M` (private).
-const SYNC_MAX_STEP_M: f64 = 0.005;
+const SYNC_MAX_STEP_M: f64 = 0.0025;
+// Must stay in sync with `teleop_router::SYNC_HOLD_DURATION` (private):
+// the cartesian ramp now requires this much sustained leader/follower
+// closeness before declaring sync complete and engaging pass-through.
+// Tests pad a little to absorb scheduling jitter.
+const SYNC_HOLD_DURATION: Duration = Duration::from_secs(1);
+const SYNC_HOLD_PADDING: Duration = Duration::from_millis(200);
 
 #[test]
 fn router_cartesian_initial_sync_ramps_pose() {
@@ -97,7 +103,13 @@ fn router_cartesian_initial_sync_ramps_pose() {
     // by one step (so the router always sees a *new* leader timestamp
     // and re-evaluates).
     let mut follower_x = 0.0_f64;
-    let mut completed_sync = false;
+    // Phase 1: walk the follower toward the leader until the published
+    // target equals the leader (proving the live (leader, follower) gap
+    // has dropped inside the completion thresholds and the router is in
+    // the "publish leader directly" branch). Sync is NOT yet complete
+    // -- the new design only declares completion after SYNC_HOLD_DURATION
+    // of *sustained* closeness, which we exercise in phase 2 below.
+    let mut close_branch_engaged = false;
     for tick in 0..200 {
         follower_x = (follower_x + 0.05).min(1.0);
         let updated_follower = Pose7 {
@@ -114,11 +126,8 @@ fn router_cartesian_initial_sync_ramps_pose() {
             .expect("leader state publish should work");
         let command = wait_for_pose_command(&ports.command_subscriber, Duration::from_millis(500))
             .expect("router should keep producing commands");
-        // Once the leader matches the follower (both at x=1.0) and the
-        // ramp has finished, the router forwards the leader pose
-        // verbatim.
         if (command.values[0] - 1.0).abs() < 1e-9 && follower_x >= 1.0 {
-            completed_sync = true;
+            close_branch_engaged = true;
             break;
         }
         // Defensive sanity: never let the ramp publish a command past
@@ -129,7 +138,36 @@ fn router_cartesian_initial_sync_ramps_pose() {
             command.values[0]
         );
     }
-    assert!(completed_sync, "router did not exit ramp within 200 ticks");
+    assert!(
+        close_branch_engaged,
+        "router did not enter the close branch within 200 ticks"
+    );
+
+    // Phase 2: sustain the close pose for at least SYNC_HOLD_DURATION
+    // (plus padding for scheduling jitter) so the sustained-closeness
+    // counter trips and the router declares pass-through. We can tell
+    // pass-through has engaged by sending a *big* leader jump and
+    // observing it arrive verbatim; until pass-through engages the
+    // router would clamp it to a small step.
+    let hold_until = Instant::now() + SYNC_HOLD_DURATION + SYNC_HOLD_PADDING;
+    while Instant::now() < hold_until {
+        let updated_follower = Pose7 {
+            timestamp_ms: next_ts(),
+            values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        publish_pose(&ports.follower_state_publisher, updated_follower)
+            .expect("follower state publish should work");
+        let updated_leader = Pose7 {
+            timestamp_ms: next_ts(),
+            values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+        publish_pose(&ports.leader_state_publisher, updated_leader)
+            .expect("leader state publish should work");
+        // Drain any commands the router emits during the hold so the
+        // queue does not back up.
+        let _ = wait_for_pose_command(&ports.command_subscriber, Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(20));
+    }
 
     // After completion, an arbitrary big leader jump must be forwarded
     // verbatim (pass-through engaged).

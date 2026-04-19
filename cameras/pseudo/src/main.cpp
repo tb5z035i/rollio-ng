@@ -56,7 +56,7 @@ constexpr uint32_t CHAR_H = FONT_H * FONT_SCALE;
 
 auto print_usage() -> void {
     std::cerr
-        << "Usage: rollio-camera-pseudo <probe|validate|capabilities|run> [args...]\n"
+        << "Usage: rollio-device-pseudo-camera <probe|validate|capabilities|run> [args...]\n"
         << "  probe [--count N]\n"
         << "  validate <id>\n"
         << "  capabilities <id>\n"
@@ -277,7 +277,7 @@ auto run_camera(const rollio::CameraDeviceConfig& config) -> int {
     auto last_status = SteadyClock::now();
     auto frame_index = uint64_t {0};
 
-    std::cerr << "rollio-camera-pseudo: device=" << config.name
+    std::cerr << "rollio-device-pseudo-camera: device=" << config.name
               << " size=" << config.width << "x" << config.height
               << " fps=" << config.fps << '\n';
 
@@ -285,7 +285,7 @@ auto run_camera(const rollio::CameraDeviceConfig& config) -> int {
         auto control_sample = control_subscriber.receive().value();
         while (control_sample.has_value()) {
             if (control_sample->payload().tag == rollio::ControlEventTag::Shutdown) {
-                std::cerr << "rollio-camera-pseudo: shutdown received for " << config.name << '\n';
+                std::cerr << "rollio-device-pseudo-camera: shutdown received for " << config.name << '\n';
                 return 0;
             }
             control_sample = control_subscriber.receive().value();
@@ -310,8 +310,8 @@ auto run_camera(const rollio::CameraDeviceConfig& config) -> int {
 
         frame_index += 1U;
         if (SteadyClock::now() - last_status >= std::chrono::seconds(1)) {
-            std::cerr << "rollio-camera-pseudo: device=" << config.name
-                      << " frame_index=" << frame_index
+    std::cerr << "rollio-device-pseudo-camera: device=" << config.name
+              << " frame_index=" << frame_index
                       << " latest_timestamp_ns=" << latest_timestamp_ns
                       << " active=true\n";
             last_status = SteadyClock::now();
@@ -380,7 +380,7 @@ auto main(int argc, char* argv[]) -> int {
 
         throw std::runtime_error("unknown subcommand: " + command);
     } catch (const std::exception& error) {
-        std::cerr << "rollio-camera-pseudo: " << error.what() << '\n';
+        std::cerr << "rollio-device-pseudo-camera: " << error.what() << '\n';
         return 1;
     }
 }

@@ -26,7 +26,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .. import GRIPPER_DOF
-from ..config import GripperChannelConfig
+from ..config import (
+    CONTROL_FREQUENCY_HZ,
+    MIN_ACHIEVED_FREQUENCY_RATIO,
+    GripperChannelConfig,
+)
 from ..ipc.types import (
     DEVICE_CHANNEL_MODE_COMMAND_FOLLOWING,
     DEVICE_CHANNEL_MODE_DISABLED,
@@ -35,6 +39,7 @@ from ..ipc.types import (
     ParallelMitCommand2,
     ParallelVector2,
 )
+from .rate_monitor import RateMonitor
 
 MAX_WIDTH_M: float = 0.07
 IDENTIFY_PERIOD_S: float = 2.0  # 0..max..0 cycle -- matches airbot G2.
@@ -207,15 +212,25 @@ class GripperController:
         )
 
     def run(self, stop_check: Callable[[], bool]) -> None:
-        period = 1.0 / max(self._config.control_frequency_hz, 1.0)
+        period = 1.0 / CONTROL_FREQUENCY_HZ
         next_tick = self._clock()
+        rate_monitor = RateMonitor(
+            target_hz=CONTROL_FREQUENCY_HZ,
+            min_ratio=MIN_ACHIEVED_FREQUENCY_RATIO,
+            label="gripper",
+            clock=self._clock,
+        )
         while not stop_check() and not self._ipc.shutdown_requested():
             self.step()
+            rate_monitor.record_tick()
             next_tick += period
             sleep_s = next_tick - self._clock()
             if sleep_s > 0:
                 time.sleep(sleep_s)
             else:
+                # We're behind. Realign so we don't spin trying to catch up.
+                # The RateMonitor will surface a warning if this happens
+                # consistently over a 5 s window.
                 next_tick = self._clock()
 
     # ----- internals -----

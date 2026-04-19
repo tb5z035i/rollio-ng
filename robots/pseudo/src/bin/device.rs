@@ -710,6 +710,7 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
             id: id.into(),
             device_class: "pseudo-camera".into(),
             device_label: "Pseudo Camera".into(),
+            default_device_name: Some("pseudo_camera".into()),
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "color".into(),
@@ -750,7 +751,8 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
         Some(DeviceQueryDevice {
             id: id.into(),
             device_class: "pseudo-robot".into(),
-            device_label: "Pseudo Robot".into(),
+            device_label: if dof == 1 { "Pseudo End Effector".into() } else { "Pseudo Arm".into() },
+            default_device_name: Some(if dof == 1 { "pseudo_eef".into() } else { "pseudo_arm".into() }),
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "arm".into(),

@@ -28,7 +28,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DRIVER_NAME: &str = "airbot-play";
-const DEFAULT_PROBE_TIMEOUT_MS: u64 = 1000;
+/// Per-CAN-request timeout used by the upstream `probe_all`. Real AIRBOT
+/// replies arrive in tens of milliseconds; the previous 1000ms default was
+/// chosen for slow CAN hardware but multiplies with the four sequential
+/// `pcba_name` / `product_sn` / `pcba_sn` / `eef_type` requests that
+/// `probe_all` issues per interface — so an empty CAN bus took ~4 seconds
+/// to clear, easily blowing the controller's `DISCOVERY_TIMEOUT`. 250ms is
+/// well above any observed real-hardware response time and drops the
+/// empty-bus probe to ~1 second total.
+const DEFAULT_PROBE_TIMEOUT_MS: u64 = 250;
 
 // AIRBOT Play arm joint envelope (radians). Matches the analytical kinematics
 // limits in `airbot_play_rust::model::play_analytical`. Mirroring them here
@@ -378,6 +386,41 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
                     format!("airbot_{other}"),
                 ),
             };
+            // EEF pairing legality: e2 can only be a follower of g2; g2 can
+            // both lead and follow e2 or g2. Encoded directly here so the
+            // controller's pairing validator stays driver-agnostic.
+            let direct_joint_compatibility = match eef_channel_type.as_str() {
+                "e2" => DirectJointCompatibility {
+                    can_lead: Vec::new(),
+                    can_follow: vec![DirectJointCompatibilityPeer {
+                        driver: DRIVER_NAME.into(),
+                        channel_type: "g2".into(),
+                    }],
+                },
+                "g2" => DirectJointCompatibility {
+                    can_lead: vec![
+                        DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "e2".into(),
+                        },
+                        DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "g2".into(),
+                        },
+                    ],
+                    can_follow: vec![
+                        DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "e2".into(),
+                        },
+                        DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "g2".into(),
+                        },
+                    ],
+                },
+                _ => DirectJointCompatibility::default(),
+            };
             channels.push(DeviceQueryChannel {
                 channel_type: eef_channel_type,
                 kind: DeviceType::Robot,
@@ -404,7 +447,7 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
                 supports_ik: false,
                 dof: Some(1),
                 default_control_frequency_hz: Some(250.0),
-                direct_joint_compatibility: DirectJointCompatibility::default(),
+                direct_joint_compatibility,
                 defaults,
                 value_limits: eef_value_limits(),
                 optional_info: Default::default(),
@@ -414,6 +457,7 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
             id: id.to_owned(),
             device_class: DRIVER_NAME.into(),
             device_label: "AIRBOT Play".into(),
+            default_device_name: Some("airbot_play".into()),
             optional_info: Default::default(),
             channels,
         };

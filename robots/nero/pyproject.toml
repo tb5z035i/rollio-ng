@@ -21,7 +21,7 @@ dev = [
 ]
 
 [project.scripts]
-rollio-device-nero = "rollio_device_nero.cli:main"
+rollio-device-agx-nero = "rollio_device_nero.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

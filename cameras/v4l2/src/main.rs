@@ -36,7 +36,7 @@ const GREY_BYTES: [u8; 4] = *b"GREY";
 type DynError = Box<dyn Error>;
 
 #[derive(Parser)]
-#[command(name = "rollio-camera-v4l2")]
+#[command(name = "rollio-device-v4l2")]
 #[command(about = "V4L2 webcam driver for Rollio")]
 struct Cli {
     #[command(subcommand)]
@@ -370,7 +370,7 @@ impl FrameConverter {
 
 fn main() {
     if let Err(error) = run_cli() {
-        eprintln!("rollio-camera-v4l2: {error}");
+        eprintln!("rollio-device-v4l2: {error}");
         std::process::exit(1);
     }
 }
@@ -517,6 +517,7 @@ fn query_device(path: &str) -> Result<DeviceQueryResponse, DynError> {
             id: path.to_string(),
             device_class: "v4l2".into(),
             device_label: capabilities.name,
+            default_device_name: Some("camera".into()),
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "color".into(),
@@ -637,7 +638,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
     let mut last_timeout_log = Instant::now() - Duration::from_secs(5);
 
     eprintln!(
-        "rollio-camera-v4l2: device={} card={} native_format={} output_format={} size={}x{} fps_request={} fps_actual={}",
+        "rollio-device-v4l2: device={} card={} native_format={} output_format={} size={}x{} fps_request={} fps_actual={}",
         config.id,
         caps.card,
         fourcc_to_string(configured.native_fourcc),
@@ -653,7 +654,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
 
     loop {
         if drain_control_events(&control_subscriber)? {
-            eprintln!("rollio-camera-v4l2: shutdown received for {}", config.bus_root);
+            eprintln!("rollio-device-v4l2: shutdown received for {}", config.bus_root);
             return Ok(());
         }
 
@@ -662,7 +663,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                 if last_timeout_log.elapsed() >= Duration::from_secs(1) {
                     eprintln!(
-                        "rollio-camera-v4l2: device={} waiting for next frame after timeout",
+                        "rollio-device-v4l2: device={} waiting for next frame after timeout",
                         config.id
                     );
                     last_timeout_log = Instant::now();
@@ -696,7 +697,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
         frame_index += 1;
         if last_status_log.elapsed() >= Duration::from_secs(1) {
             eprintln!(
-                "rollio-camera-v4l2: device={} frame_index={} latest_timestamp_ms={} active=true",
+                "rollio-device-v4l2: device={} frame_index={} latest_timestamp_ms={} active=true",
                 config.id, frame_index, timestamp_ms
             );
             last_status_log = Instant::now();
@@ -1024,7 +1025,7 @@ mod tests {
     use super::*;
 
     fn parse_run_config(text: &str) -> Result<RunConfig, DynError> {
-        let device: DeviceConfig = text.parse()?;
+        let device: BinaryDeviceConfig = text.parse()?;
         RunConfig::try_from(device)
     }
 
@@ -1032,13 +1033,14 @@ mod tests {
     fn run_config_requires_rgb_or_bgr_output() {
         let config = r#"
 name = "cam"
-type = "camera"
 driver = "v4l2"
 id = "/dev/video0"
-width = 640
-height = 480
-fps = 30
-pixel_format = "mjpeg"
+bus_root = "cam"
+
+[[channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "mjpeg" }
 "#;
 
         let error = parse_run_config(config).expect_err("mjpeg output should be rejected");
@@ -1052,13 +1054,14 @@ pixel_format = "mjpeg"
     fn run_config_allows_bgr24_output() {
         let config = r#"
 name = "cam"
-type = "camera"
 driver = "v4l2"
 id = "/dev/video0"
-width = 640
-height = 480
-fps = 30
-pixel_format = "bgr24"
+bus_root = "cam"
+
+[[channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "bgr24" }
 "#;
 
         let parsed = parse_run_config(config).expect("bgr24 config should parse");

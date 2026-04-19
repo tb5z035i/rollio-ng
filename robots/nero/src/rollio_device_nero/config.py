@@ -26,7 +26,27 @@ from . import DRIVER_NAME
 ARM_CHANNEL_TYPE: str = "arm"
 GRIPPER_CHANNEL_TYPE: str = "gripper"
 
-DEFAULT_CONTROL_FREQUENCY_HZ: float = 100.0
+# Hard-coded control loop rate for the Nero arm and gripper runtimes.
+# Mirrors AIRBOT Play's `CONTROL_HZ` so the per-tick safety clamp
+# (`MAX_COMMAND_JOINT_DELTA_RAD = pi/36 rad`, ~5 deg) yields the same
+# effective slew cap (~21.8 rad/s) on both robots. The runtime warns if
+# it cannot keep up with this rate (see `runtime.rate_monitor`).
+#
+# The TOML config that the controller writes still carries a
+# `control_frequency_hz` field per channel, but the Nero device driver
+# now ignores it -- the rate is a deployment constant, not a per-channel
+# tunable, exactly as on AIRBOT.
+CONTROL_FREQUENCY_HZ: float = 250.0
+
+# Deprecated alias retained so that `query.py` (which still serves it as
+# `default_control_frequency_hz` to the controller) and any other older
+# callers keep working without churn. Equal to `CONTROL_FREQUENCY_HZ`.
+DEFAULT_CONTROL_FREQUENCY_HZ: float = CONTROL_FREQUENCY_HZ
+
+# Warn when the achieved control rate over a recent window drops below
+# this fraction of the target. 0.95 catches sustained slowdowns without
+# tripping on isolated jitter.
+MIN_ACHIEVED_FREQUENCY_RATIO: float = 0.95
 
 # Per-mode arm gain defaults.
 #
@@ -41,7 +61,7 @@ DEFAULT_CONTROL_FREQUENCY_HZ: float = 100.0
 # (e.g. add a tiny kd to Identifying for a "shake-test" mode) only touches
 # the corresponding branch.
 DEFAULT_TRACKING_KP: float = 10.0
-DEFAULT_TRACKING_KD: float = 0.5
+DEFAULT_TRACKING_KD: float = 1.0
 DEFAULT_FREE_DRIVE_KD: float = 0.0
 DEFAULT_IDENTIFYING_KD: float = 0.0
 
@@ -61,7 +81,6 @@ class ArmChannelConfig:
     mode: str = "free-drive"
     dof: int = 7
     publish_states: list[str] = field(default_factory=list)
-    control_frequency_hz: float = DEFAULT_CONTROL_FREQUENCY_HZ
 
 
 @dataclass(slots=True)
@@ -70,10 +89,14 @@ class GripperChannelConfig:
     enabled: bool = True
     mode: str = "free-drive"
     publish_states: list[str] = field(default_factory=list)
-    control_frequency_hz: float = DEFAULT_CONTROL_FREQUENCY_HZ
-    # Default close/open force used when the controller does not provide one
-    # via `command_defaults.parallel_mit_kp[0]`.
-    default_force_n: float = 1.0
+    # Default close/open force used when the controller does not provide
+    # one via `command_defaults.parallel_mit_kp[0]`. The AGX gripper
+    # firmware exposes the full [0.0, 3.0] N envelope and the actuator's
+    # closing speed scales with this force (it has no separate velocity
+    # knob), so we default at the spec max for snappy teleop. Operators
+    # who need delicate gripping should override via the controller's
+    # `parallel_mit_kp[0]` channel default or per-command MIT `kp` slot.
+    default_force_n: float = 3.0
 
 
 @dataclass(slots=True)
@@ -162,21 +185,24 @@ def _parse_arm(raw: dict[str, Any]) -> ArmChannelConfig:
         # silently send commands the URDF / firmware can't fulfil.
         raise ConfigError(f'arm channel: dof must be 7 for AGX Nero (got {dof})')
     publish_states = _string_list(raw.get("publish_states", []))
-    control_frequency_hz = float(raw.get("control_frequency_hz", DEFAULT_CONTROL_FREQUENCY_HZ))
+    # Note: `control_frequency_hz` from the controller TOML is intentionally
+    # ignored -- the runtime locks to `CONTROL_FREQUENCY_HZ` (250 Hz) so the
+    # per-tick safety clamp gives the same effective slew cap as AIRBOT Play.
     return ArmChannelConfig(
         mode=mode,
         dof=dof,
         publish_states=publish_states,
-        control_frequency_hz=control_frequency_hz,
     )
 
 
 def _parse_gripper(raw: dict[str, Any]) -> GripperChannelConfig:
     mode = _normalize_mode(raw.get("mode", "free-drive"))
     publish_states = _string_list(raw.get("publish_states", []))
-    control_frequency_hz = float(raw.get("control_frequency_hz", DEFAULT_CONTROL_FREQUENCY_HZ))
 
-    default_force_n = 1.0
+    # See `GripperChannelConfig.default_force_n` for the rationale -- the
+    # firmware spec max is 3.0 N and the AGX gripper has no independent
+    # speed knob, so the default is set there for snappy teleop.
+    default_force_n = 3.0
     cmd_defaults = raw.get("command_defaults", {})
     if isinstance(cmd_defaults, dict):
         kp_list = cmd_defaults.get("parallel_mit_kp")
@@ -186,10 +212,11 @@ def _parse_gripper(raw: dict[str, Any]) -> GripperChannelConfig:
             except (TypeError, ValueError):
                 pass
 
+    # Note: `control_frequency_hz` from the controller TOML is intentionally
+    # ignored -- the runtime locks to `CONTROL_FREQUENCY_HZ` (see arm parser).
     return GripperChannelConfig(
         mode=mode,
         publish_states=publish_states,
-        control_frequency_hz=control_frequency_hz,
         default_force_n=default_force_n,
     )
 
@@ -233,7 +260,9 @@ def _string_list(value: Any) -> list[str]:
 __all__ = [
     "ARM_CHANNEL_TYPE",
     "GRIPPER_CHANNEL_TYPE",
+    "CONTROL_FREQUENCY_HZ",
     "DEFAULT_CONTROL_FREQUENCY_HZ",
+    "MIN_ACHIEVED_FREQUENCY_RATIO",
     "DEFAULT_TRACKING_KP",
     "DEFAULT_TRACKING_KD",
     "DEFAULT_FREE_DRIVE_KD",

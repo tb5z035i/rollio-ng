@@ -1,4 +1,4 @@
-use crate::messages::{MAX_DOF, MAX_JOINTS, MAX_PARALLEL, PixelFormat};
+use crate::messages::{MAX_DOF, MAX_PARALLEL, PixelFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -22,329 +22,11 @@ pub enum ConfigError {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level config
+// Top-level config (legacy `Config` removed; use `ProjectConfig` instead).
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(from = "ConfigSerde")]
-pub struct Config {
-    pub project_name: String,
-    pub mode: CollectionMode,
-    pub episode: EpisodeConfig,
-    pub devices: Vec<DeviceConfig>,
-    #[serde(default)]
-    pub pairing: Vec<PairConfig>,
-    pub encoder: EncoderConfig,
-    #[serde(default)]
-    pub assembler: AssemblerConfig,
-    pub storage: StorageConfig,
-    #[serde(default)]
-    pub monitor: MonitorConfig,
-    #[serde(default)]
-    pub controller: ControllerConfig,
-    #[serde(default)]
-    pub visualizer: VisualizerRuntimeConfig,
-    #[serde(default)]
-    pub ui: UiRuntimeConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConfigSerde {
-    #[serde(default = "default_project_name")]
-    project_name: String,
-    #[serde(default)]
-    mode: Option<CollectionMode>,
-    episode: EpisodeConfig,
-    devices: Vec<DeviceConfig>,
-    #[serde(default)]
-    pairing: Vec<PairConfig>,
-    encoder: EncoderConfig,
-    #[serde(default)]
-    assembler: AssemblerConfig,
-    storage: StorageConfig,
-    #[serde(default)]
-    monitor: MonitorConfig,
-    #[serde(default)]
-    controller: ControllerConfig,
-    #[serde(default)]
-    visualizer: VisualizerRuntimeConfig,
-    #[serde(default)]
-    ui: UiRuntimeConfig,
-}
-
-impl From<ConfigSerde> for Config {
-    fn from(value: ConfigSerde) -> Self {
-        let mode = value
-            .mode
-            .unwrap_or_else(|| infer_collection_mode(&value.pairing));
-        Self {
-            project_name: value.project_name,
-            mode,
-            episode: value.episode,
-            devices: value.devices,
-            pairing: value.pairing,
-            encoder: value.encoder,
-            assembler: value.assembler,
-            storage: value.storage,
-            monitor: value.monitor,
-            controller: value.controller,
-            visualizer: value.visualizer,
-            ui: value.ui,
-        }
-    }
-}
 
 fn default_project_name() -> String {
     "default".into()
-}
-
-fn infer_collection_mode(pairing: &[PairConfig]) -> CollectionMode {
-    if pairing.is_empty() {
-        CollectionMode::Intervention
-    } else {
-        CollectionMode::Teleop
-    }
-}
-
-impl Config {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path)?;
-        text.parse()
-    }
-
-    pub fn draft_setup_template() -> Self {
-        Self {
-            project_name: default_project_name(),
-            mode: CollectionMode::Intervention,
-            episode: EpisodeConfig::default(),
-            devices: Vec::new(),
-            pairing: Vec::new(),
-            encoder: EncoderConfig::default(),
-            assembler: AssemblerConfig::default(),
-            storage: StorageConfig::default(),
-            monitor: MonitorConfig::default(),
-            controller: ControllerConfig::default(),
-            visualizer: VisualizerRuntimeConfig::default(),
-            ui: UiRuntimeConfig::default(),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.project_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "project_name must not be empty".into(),
-            ));
-        }
-
-        self.episode.validate()?;
-
-        if self.devices.is_empty() {
-            return Err(ConfigError::Validation(
-                "at least one [[devices]] entry is required".into(),
-            ));
-        }
-
-        let mut names = HashSet::new();
-        for dev in &self.devices {
-            if !names.insert(&dev.name) {
-                return Err(ConfigError::Validation(format!(
-                    "duplicate device name: \"{}\"",
-                    dev.name
-                )));
-            }
-            dev.validate()?;
-        }
-
-        let device_names: HashSet<&str> = self.devices.iter().map(|d| d.name.as_str()).collect();
-        for pair in &self.pairing {
-            if !device_names.contains(pair.leader.as_str()) {
-                return Err(ConfigError::Validation(format!(
-                    "pairing references unknown device: \"{}\"",
-                    pair.leader
-                )));
-            }
-            if !device_names.contains(pair.follower.as_str()) {
-                return Err(ConfigError::Validation(format!(
-                    "pairing references unknown device: \"{}\"",
-                    pair.follower
-                )));
-            }
-            let leader = self
-                .device_named(&pair.leader)
-                .expect("validated leader should exist");
-            let follower = self
-                .device_named(&pair.follower)
-                .expect("validated follower should exist");
-            pair.validate_with_devices(leader, follower)?;
-        }
-
-        match self.mode {
-            CollectionMode::Teleop => {
-                if self.pairing.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "mode=teleop requires at least one [[pairing]] entry".into(),
-                    ));
-                }
-            }
-            CollectionMode::Intervention => {
-                if !self.pairing.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "mode=intervention does not allow [[pairing]] entries".into(),
-                    ));
-                }
-            }
-        }
-
-        self.encoder.validate()?;
-        self.assembler.validate()?;
-        self.storage.validate()?;
-        self.monitor.validate()?;
-        self.controller.validate()?;
-        self.visualizer.validate()?;
-        self.ui.validate()?;
-
-        Ok(())
-    }
-
-    pub fn device_named(&self, name: &str) -> Option<&DeviceConfig> {
-        self.devices.iter().find(|device| device.name == name)
-    }
-
-    pub fn camera_devices(&self) -> impl Iterator<Item = &DeviceConfig> {
-        self.devices
-            .iter()
-            .filter(|device| device.device_type == DeviceType::Camera)
-    }
-
-    pub fn robot_devices(&self) -> impl Iterator<Item = &DeviceConfig> {
-        self.devices
-            .iter()
-            .filter(|device| device.device_type == DeviceType::Robot)
-    }
-
-    pub fn camera_names(&self) -> Vec<String> {
-        self.camera_devices()
-            .map(|device| device.name.clone())
-            .collect()
-    }
-
-    pub fn robot_names(&self) -> Vec<String> {
-        self.robot_devices()
-            .map(|device| device.name.clone())
-            .collect()
-    }
-
-    pub fn visualizer_runtime_config(&self) -> VisualizerRuntimeConfig {
-        let mut config = self.visualizer.clone();
-        config.cameras = self.camera_names();
-        config.robots = self.robot_names();
-        config
-    }
-
-    pub fn ui_runtime_config(&self) -> UiRuntimeConfig {
-        let mut config = self.ui.clone();
-        if config.preview_websocket_url.is_none() {
-            config.preview_websocket_url =
-                Some(format!("ws://127.0.0.1:{}", self.visualizer.port));
-        }
-        config
-    }
-
-    pub fn encoder_runtime_configs(&self) -> Vec<EncoderRuntimeConfig> {
-        self.camera_devices()
-            .map(|camera| {
-                let codec = self.encoder.codec_for_camera(camera);
-                let backend = camera
-                    .pixel_format
-                    .map(|pixel_format| self.encoder.backend_for_pixel_format(pixel_format))
-                    .unwrap_or(if camera.uses_depth_codec() {
-                        self.encoder.depth_backend
-                    } else {
-                        self.encoder.video_backend
-                    });
-                EncoderRuntimeConfig {
-                    process_id: encoder_process_id(&camera.name),
-                    camera_name: Some(camera.name.clone()),
-                    frame_topic: Some(camera_frames_topic(&camera.name)),
-                    output_dir: encoder_output_dir(&self.assembler.staging_dir, &camera.name),
-                    codec,
-                    backend,
-                    artifact_format: self.encoder.resolved_artifact_format_for(codec),
-                    queue_size: self.encoder.queue_size,
-                    fps: camera.fps.unwrap_or(self.episode.fps),
-                }
-            })
-            .collect()
-    }
-
-    pub fn assembler_runtime_config(&self, embedded_config_toml: String) -> AssemblerRuntimeConfig {
-        AssemblerRuntimeConfig {
-            process_id: "episode-assembler".into(),
-            format: self.episode.format,
-            fps: self.episode.fps,
-            chunk_size: self.episode.chunk_size,
-            missing_video_timeout_ms: self.assembler.missing_video_timeout_ms,
-            staging_dir: episode_staging_root(&self.assembler.staging_dir),
-            encoded_handoff: self.assembler.encoded_handoff,
-            cameras: self
-                .camera_devices()
-                .map(|camera| {
-                    let codec = self.encoder.codec_for_camera(camera);
-                    AssemblerCameraRuntimeConfig {
-                        camera_name: camera.name.clone(),
-                        encoder_process_id: encoder_process_id(&camera.name),
-                        width: camera.width.unwrap_or_default(),
-                        height: camera.height.unwrap_or_default(),
-                        fps: camera.fps.unwrap_or(self.episode.fps),
-                        pixel_format: camera.pixel_format.unwrap_or(PixelFormat::Rgb24),
-                        codec,
-                        artifact_format: self.encoder.resolved_artifact_format_for(codec),
-                    }
-                })
-                .collect(),
-            robots: self
-                .robot_devices()
-                .map(|robot| AssemblerRobotRuntimeConfig {
-                    robot_name: robot.name.clone(),
-                    state_topic: robot_state_topic(&robot.name),
-                    dof: robot.dof.unwrap_or_default(),
-                })
-                .collect(),
-            actions: self
-                .pairing
-                .iter()
-                .filter_map(|pair| {
-                    self.device_named(&pair.follower)
-                        .map(|follower| AssemblerActionRuntimeConfig {
-                            source_name: pair.follower.clone(),
-                            command_topic: robot_command_topic(&pair.follower),
-                            dof: follower.dof.unwrap_or_default(),
-                        })
-                })
-                .collect(),
-            embedded_config_toml,
-        }
-    }
-
-    pub fn storage_runtime_config(&self) -> StorageRuntimeConfig {
-        StorageRuntimeConfig {
-            process_id: "storage".into(),
-            backend: self.storage.backend,
-            output_path: self.storage.output_path.clone(),
-            endpoint: self.storage.endpoint.clone(),
-            queue_size: self.storage.queue_size,
-        }
-    }
-}
-
-impl FromStr for Config {
-    type Err = ConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let config: Config = toml::from_str(s)?;
-        config.validate()?;
-        Ok(config)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -413,331 +95,13 @@ impl Default for EpisodeFormat {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Device
-// ---------------------------------------------------------------------------
+// (Legacy `DeviceConfig` removed; use `BinaryDeviceConfig` instead.)
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceConfig {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub device_type: DeviceType,
-    pub driver: String,
-    pub id: String,
-
-    // Camera-specific (optional)
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub fps: Option<u32>,
-    pub pixel_format: Option<PixelFormat>,
-    pub stream: Option<String>,
-    pub channel: Option<u32>,
-
-    // Robot-specific (optional)
-    pub dof: Option<u32>,
-    pub mode: Option<RobotMode>,
-    pub control_frequency_hz: Option<f64>,
-    pub transport: Option<String>,
-    pub interface: Option<String>,
-    pub product_variant: Option<String>,
-    pub end_effector: Option<String>,
-    pub model_path: Option<String>,
-    pub gravity_comp_torque_scales: Option<Vec<f64>>,
-    pub mit_kp: Option<Vec<f64>>,
-    pub mit_kd: Option<Vec<f64>>,
-    pub command_latency_ms: Option<u64>,
-    pub state_noise_stddev: Option<f64>,
-    #[serde(flatten, default)]
-    pub extra: toml::Table,
-}
-
-impl DeviceConfig {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path)?;
-        text.parse()
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "device: name must not be empty".into(),
-            ));
-        }
-        if self.driver.trim().is_empty() {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": driver must not be empty",
-                self.name
-            )));
-        }
-        if self.id.trim().is_empty() {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": id must not be empty",
-                self.name
-            )));
-        }
-        if let Some(fps) = self.fps {
-            if fps == 0 || fps > 1000 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": fps must be 1..1000, got {fps}",
-                    self.name
-                )));
-            }
-        }
-        if let Some(w) = self.width {
-            if w == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": width must be > 0",
-                    self.name
-                )));
-            }
-        }
-        if let Some(h) = self.height {
-            if h == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": height must be > 0",
-                    self.name
-                )));
-            }
-        }
-        if let Some(channel) = self.channel {
-            if channel == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": channel must be > 0",
-                    self.name
-                )));
-            }
-        }
-        if self
-            .stream
-            .as_deref()
-            .is_some_and(|stream| stream.trim().is_empty())
-        {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": stream must not be empty",
-                self.name
-            )));
-        }
-        if self
-            .transport
-            .as_deref()
-            .is_some_and(|transport| transport.trim().is_empty())
-        {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": transport must not be empty",
-                self.name
-            )));
-        }
-        if let Some(control_frequency_hz) = self.control_frequency_hz {
-            if !control_frequency_hz.is_finite() || control_frequency_hz <= 0.0 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": control_frequency_hz must be a positive finite number",
-                    self.name
-                )));
-            }
-        }
-        if let Some(state_noise_stddev) = self.state_noise_stddev {
-            if !state_noise_stddev.is_finite() || state_noise_stddev < 0.0 {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": state_noise_stddev must be a non-negative finite number",
-                    self.name
-                )));
-            }
-        }
-
-        if let Some(path) = &self.model_path {
-            if path.trim().is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": model_path must not be empty",
-                    self.name
-                )));
-            }
-        }
-        if let Some(interface) = &self.interface {
-            if interface.trim().is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": interface must not be empty",
-                    self.name
-                )));
-            }
-        }
-        if let Some(product_variant) = &self.product_variant {
-            if product_variant.trim().is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": product_variant must not be empty",
-                    self.name
-                )));
-            }
-        }
-        if let Some(end_effector) = &self.end_effector {
-            if end_effector.trim().is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "device \"{}\": end_effector must not be empty",
-                    self.name
-                )));
-            }
-        }
-
-        match self.device_type {
-            DeviceType::Camera => self.validate_camera_fields()?,
-            DeviceType::Robot => self.validate_robot_fields()?,
-        }
-
-        Ok(())
-    }
-
-    pub fn executable_name(&self) -> String {
-        let driver_name = self.driver.replace('_', "-");
-        match self.device_type {
-            DeviceType::Camera => format!("rollio-camera-{driver_name}"),
-            DeviceType::Robot => format!("rollio-robot-{driver_name}"),
-        }
-    }
-
-    pub fn uses_depth_codec(&self) -> bool {
-        if self.device_type != DeviceType::Camera {
-            return false;
-        }
-
-        if matches!(
-            self.pixel_format,
-            Some(PixelFormat::Depth16 | PixelFormat::Gray8)
-        ) {
-            return true;
-        }
-
-        self.stream.as_ref().is_some_and(|stream| {
-            let normalized = stream.trim().to_ascii_lowercase();
-            matches!(
-                normalized.as_str(),
-                "depth" | "infrared" | "ir" | "gray" | "grayscale"
-            )
-        })
-    }
-
-    fn validate_camera_fields(&self) -> Result<(), ConfigError> {
-        let width = self.width.ok_or_else(|| {
-            ConfigError::Validation(format!(
-                "device \"{}\": camera width is required",
-                self.name
-            ))
-        })?;
-        if width == 0 {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": width must be > 0",
-                self.name
-            )));
-        }
-
-        let height = self.height.ok_or_else(|| {
-            ConfigError::Validation(format!(
-                "device \"{}\": camera height is required",
-                self.name
-            ))
-        })?;
-        if height == 0 {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": height must be > 0",
-                self.name
-            )));
-        }
-
-        let fps = self.fps.ok_or_else(|| {
-            ConfigError::Validation(format!("device \"{}\": camera fps is required", self.name))
-        })?;
-        if fps == 0 || fps > 1000 {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": fps must be 1..1000, got {fps}",
-                self.name
-            )));
-        }
-
-        if self.pixel_format.is_none() {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": camera pixel_format is required",
-                self.name
-            )));
-        }
-
-        if self.dof.is_some() || self.mode.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": robot-only fields set on a camera device",
-                self.name
-            )));
-        }
-
-        Ok(())
-    }
-
-    fn validate_robot_fields(&self) -> Result<(), ConfigError> {
-        let dof = self.dof.ok_or_else(|| {
-            ConfigError::Validation(format!("device \"{}\": robot dof is required", self.name))
-        })?;
-        if dof == 0 || dof as usize > MAX_JOINTS {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": dof must be 1..{}, got {dof}",
-                self.name, MAX_JOINTS
-            )));
-        }
-
-        if self.mode.is_none() {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": robot mode is required",
-                self.name
-            )));
-        }
-
-        self.validate_joint_array_len(
-            "gravity_comp_torque_scales",
-            self.gravity_comp_torque_scales.as_deref(),
-            dof,
-        )?;
-        self.validate_joint_array_len("mit_kp", self.mit_kp.as_deref(), dof)?;
-        self.validate_joint_array_len("mit_kd", self.mit_kd.as_deref(), dof)?;
-
-        Ok(())
-    }
-
-    fn validate_joint_array_len(
-        &self,
-        field_name: &str,
-        values: Option<&[f64]>,
-        dof: u32,
-    ) -> Result<(), ConfigError> {
-        let Some(values) = values else {
-            return Ok(());
-        };
-
-        if values.len() != dof as usize {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": {field_name} must contain exactly {dof} values, got {}",
-                self.name,
-                values.len()
-            )));
-        }
-        if values.iter().any(|value| !value.is_finite()) {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": {field_name} must contain only finite values",
-                self.name
-            )));
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for DeviceConfig {
-    type Err = ConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let device: DeviceConfig = toml::from_str(s)?;
-        device.validate()?;
-        Ok(device)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
     Camera,
+    #[default]
     Robot,
 }
 
@@ -780,59 +144,15 @@ impl RobotMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirectJointMappingKind {
-    AirbotPlay,
-    AirbotE2,
-    AirbotG2,
-}
-
-impl DirectJointMappingKind {
-    fn from_device(device: &DeviceConfig) -> Option<Self> {
-        match device.driver.as_str() {
-            "airbot-play" => Some(Self::AirbotPlay),
-            "airbot-e2" | "airbot-e2b" => Some(Self::AirbotE2),
-            "airbot-g2" => Some(Self::AirbotG2),
-            _ => None,
-        }
-    }
-
-    fn allows_peer(self, peer: Self) -> bool {
-        match self {
-            Self::AirbotPlay => matches!(peer, Self::AirbotPlay),
-            Self::AirbotE2 => matches!(peer, Self::AirbotG2),
-            Self::AirbotG2 => matches!(peer, Self::AirbotE2 | Self::AirbotG2),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::AirbotPlay => "airbot-play",
-            Self::AirbotE2 => "airbot-e2",
-            Self::AirbotG2 => "airbot-g2",
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pairing
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PairConfig {
-    pub leader: String,
-    pub follower: String,
-    #[serde(default = "default_mapping")]
-    pub mapping: MappingStrategy,
-    #[serde(default)]
-    pub joint_index_map: Vec<u32>,
-    #[serde(default)]
-    pub joint_scales: Vec<f64>,
-}
-
-fn default_mapping() -> MappingStrategy {
-    MappingStrategy::DirectJoint
-}
+//
+// Legacy `PairConfig` (device-name pairing built on `DeviceConfig`) was
+// removed alongside the legacy `Config`/`DeviceConfig`. Channel-level
+// pairing now goes through `ChannelPairingConfig`, validated against the
+// per-channel `direct_joint_compatibility` blob refreshed from the
+// driver's `query --json` response (see `ChannelPairingConfig::validate`).
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -841,233 +161,11 @@ pub enum MappingStrategy {
     Cartesian,
 }
 
-impl PairConfig {
-    fn validate_with_devices(
-        &self,
-        leader: &DeviceConfig,
-        follower: &DeviceConfig,
-    ) -> Result<(), ConfigError> {
-        if leader.device_type != DeviceType::Robot {
-            return Err(ConfigError::Validation(format!(
-                "pairing leader \"{}\" must be a robot device",
-                leader.name
-            )));
-        }
-        if follower.device_type != DeviceType::Robot {
-            return Err(ConfigError::Validation(format!(
-                "pairing follower \"{}\" must be a robot device",
-                follower.name
-            )));
-        }
-        if leader.name == follower.name {
-            return Err(ConfigError::Validation(format!(
-                "pairing leader and follower must be different devices: \"{}\"",
-                leader.name
-            )));
-        }
-
-        match self.mapping {
-            MappingStrategy::DirectJoint => self.validate_direct_joint_mapping(leader, follower),
-            MappingStrategy::Cartesian => {
-                if !self.joint_index_map.is_empty() {
-                    return Err(ConfigError::Validation(format!(
-                        "pairing {} -> {}: joint_index_map is only valid for direct-joint mapping",
-                        leader.name, follower.name
-                    )));
-                }
-                if !self.joint_scales.is_empty() {
-                    return Err(ConfigError::Validation(format!(
-                        "pairing {} -> {}: joint_scales is only valid for direct-joint mapping",
-                        leader.name, follower.name
-                    )));
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn validate_direct_joint_mapping(
-        &self,
-        leader: &DeviceConfig,
-        follower: &DeviceConfig,
-    ) -> Result<(), ConfigError> {
-        let leader_dof = leader.dof.unwrap_or(0);
-        let follower_dof = follower.dof.unwrap_or(0);
-
-        if self.joint_index_map.is_empty() {
-            if leader_dof < follower_dof {
-                return Err(ConfigError::Validation(format!(
-                    "pairing {} -> {}: direct-joint identity mapping requires leader dof ({leader_dof}) >= follower dof ({follower_dof})",
-                    leader.name, follower.name
-                )));
-            }
-        } else {
-            if self.joint_index_map.len() != follower_dof as usize {
-                return Err(ConfigError::Validation(format!(
-                    "pairing {} -> {}: joint_index_map length must match follower dof ({follower_dof})",
-                    leader.name, follower.name
-                )));
-            }
-            for (index, leader_joint) in self.joint_index_map.iter().enumerate() {
-                if *leader_joint >= leader_dof {
-                    return Err(ConfigError::Validation(format!(
-                        "pairing {} -> {}: joint_index_map[{index}]={} exceeds leader dof ({leader_dof})",
-                        leader.name, follower.name, leader_joint
-                    )));
-                }
-            }
-        }
-
-        if !self.joint_scales.is_empty() {
-            let expected_len = if self.joint_index_map.is_empty() {
-                follower_dof as usize
-            } else {
-                self.joint_index_map.len()
-            };
-            if self.joint_scales.len() != expected_len {
-                return Err(ConfigError::Validation(format!(
-                    "pairing {} -> {}: joint_scales length must match {} mapped follower joints",
-                    leader.name, follower.name, expected_len
-                )));
-            }
-            for (index, scale) in self.joint_scales.iter().enumerate() {
-                if !scale.is_finite() {
-                    return Err(ConfigError::Validation(format!(
-                        "pairing {} -> {}: joint_scales[{index}] must be finite",
-                        leader.name, follower.name
-                    )));
-                }
-            }
-        }
-
-        self.validate_airbot_direct_joint_compatibility(leader, follower)?;
-
-        Ok(())
-    }
-
-    fn validate_airbot_direct_joint_compatibility(
-        &self,
-        leader: &DeviceConfig,
-        follower: &DeviceConfig,
-    ) -> Result<(), ConfigError> {
-        let (Some(leader_kind), Some(follower_kind)) = (
-            DirectJointMappingKind::from_device(leader),
-            DirectJointMappingKind::from_device(follower),
-        ) else {
-            return Ok(());
-        };
-
-        if leader_kind.allows_peer(follower_kind) && follower_kind.allows_peer(leader_kind) {
-            return Ok(());
-        }
-
-        Err(ConfigError::Validation(format!(
-            "pairing {} -> {}: direct-joint mapping is not supported between AIRBOT device kinds \"{}\" and \"{}\"",
-            leader.name,
-            follower.name,
-            leader_kind.as_str(),
-            follower_kind.as_str()
-        )))
-    }
+fn default_mapping() -> MappingStrategy {
+    MappingStrategy::DirectJoint
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TeleopRuntimeConfig {
-    pub process_id: String,
-    pub leader_name: String,
-    pub follower_name: String,
-    pub leader_state_topic: String,
-    pub follower_state_topic: String,
-    pub follower_command_topic: String,
-    #[serde(default = "default_mapping")]
-    pub mapping: MappingStrategy,
-    #[serde(default)]
-    pub joint_index_map: Vec<u32>,
-    #[serde(default)]
-    pub joint_scales: Vec<f64>,
-}
-
-impl TeleopRuntimeConfig {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path)?;
-        text.parse()
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.process_id.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: process_id must not be empty".into(),
-            ));
-        }
-        if self.leader_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: leader_name must not be empty".into(),
-            ));
-        }
-        if self.follower_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: follower_name must not be empty".into(),
-            ));
-        }
-        if self.leader_name == self.follower_name {
-            return Err(ConfigError::Validation(
-                "teleop runtime: leader_name and follower_name must differ".into(),
-            ));
-        }
-        if self.leader_state_topic.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: leader_state_topic must not be empty".into(),
-            ));
-        }
-        if self.follower_state_topic.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: follower_state_topic must not be empty".into(),
-            ));
-        }
-        if self.follower_command_topic.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "teleop runtime: follower_command_topic must not be empty".into(),
-            ));
-        }
-        match self.mapping {
-            MappingStrategy::DirectJoint => {
-                if self.joint_scales.iter().any(|scale| !scale.is_finite()) {
-                    return Err(ConfigError::Validation(
-                        "teleop runtime: joint_scales must be finite".into(),
-                    ));
-                }
-                if !self.joint_scales.is_empty()
-                    && !self.joint_index_map.is_empty()
-                    && self.joint_scales.len() != self.joint_index_map.len()
-                {
-                    return Err(ConfigError::Validation(
-                        "teleop runtime: joint_scales length must match joint_index_map length"
-                            .into(),
-                    ));
-                }
-            }
-            MappingStrategy::Cartesian => {
-                if !self.joint_index_map.is_empty() || !self.joint_scales.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "teleop runtime: Cartesian mapping does not use joint_index_map or joint_scales"
-                            .into(),
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for TeleopRuntimeConfig {
-    type Err = ConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let config: TeleopRuntimeConfig = toml::from_str(s)?;
-        config.validate()?;
-        Ok(config)
-    }
-}
+// (Legacy `TeleopRuntimeConfig` removed; use `TeleopRuntimeConfigV2` instead.)
 
 // ---------------------------------------------------------------------------
 // Assembler
@@ -1134,188 +232,8 @@ impl AssemblerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssemblerCameraRuntimeConfig {
-    pub camera_name: String,
-    pub encoder_process_id: String,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
-    pub pixel_format: PixelFormat,
-    pub codec: EncoderCodec,
-    pub artifact_format: EncoderArtifactFormat,
-}
-
-impl AssemblerCameraRuntimeConfig {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.camera_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: camera_name must not be empty".into(),
-            ));
-        }
-        if self.encoder_process_id.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: camera encoder_process_id must not be empty".into(),
-            ));
-        }
-        if self.width == 0 || self.height == 0 {
-            return Err(ConfigError::Validation(format!(
-                "assembler runtime: camera {} must declare non-zero dimensions",
-                self.camera_name
-            )));
-        }
-        if self.fps == 0 || self.fps > 1000 {
-            return Err(ConfigError::Validation(format!(
-                "assembler runtime: camera {} fps must be 1..1000, got {}",
-                self.camera_name, self.fps
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssemblerRobotRuntimeConfig {
-    pub robot_name: String,
-    pub state_topic: String,
-    pub dof: u32,
-}
-
-impl AssemblerRobotRuntimeConfig {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.robot_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: robot_name must not be empty".into(),
-            ));
-        }
-        if self.state_topic.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: robot state_topic must not be empty".into(),
-            ));
-        }
-        if self.dof == 0 || self.dof as usize > MAX_JOINTS {
-            return Err(ConfigError::Validation(format!(
-                "assembler runtime: robot {} dof must be 1..{}, got {}",
-                self.robot_name, MAX_JOINTS, self.dof
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssemblerActionRuntimeConfig {
-    pub source_name: String,
-    pub command_topic: String,
-    pub dof: u32,
-}
-
-impl AssemblerActionRuntimeConfig {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.source_name.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: action source_name must not be empty".into(),
-            ));
-        }
-        if self.command_topic.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: action command_topic must not be empty".into(),
-            ));
-        }
-        if self.dof == 0 || self.dof as usize > MAX_JOINTS {
-            return Err(ConfigError::Validation(format!(
-                "assembler runtime: action source {} dof must be 1..{}, got {}",
-                self.source_name, MAX_JOINTS, self.dof
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssemblerRuntimeConfig {
-    pub process_id: String,
-    pub format: EpisodeFormat,
-    pub fps: u32,
-    pub chunk_size: u32,
-    pub missing_video_timeout_ms: u64,
-    pub staging_dir: String,
-    #[serde(default)]
-    pub encoded_handoff: EncodedHandoffMode,
-    #[serde(default)]
-    pub cameras: Vec<AssemblerCameraRuntimeConfig>,
-    #[serde(default)]
-    pub robots: Vec<AssemblerRobotRuntimeConfig>,
-    #[serde(default)]
-    pub actions: Vec<AssemblerActionRuntimeConfig>,
-    pub embedded_config_toml: String,
-}
-
-impl AssemblerRuntimeConfig {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path)?;
-        text.parse()
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.process_id.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: process_id must not be empty".into(),
-            ));
-        }
-        if self.fps == 0 || self.fps > 1000 {
-            return Err(ConfigError::Validation(format!(
-                "assembler runtime: fps must be 1..1000, got {}",
-                self.fps
-            )));
-        }
-        if self.chunk_size == 0 {
-            return Err(ConfigError::Validation(
-                "assembler runtime: chunk_size must be > 0".into(),
-            ));
-        }
-        if self.missing_video_timeout_ms == 0 {
-            return Err(ConfigError::Validation(
-                "assembler runtime: missing_video_timeout_ms must be > 0".into(),
-            ));
-        }
-        if self.staging_dir.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: staging_dir must not be empty".into(),
-            ));
-        }
-        if self.cameras.is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: at least one camera is required".into(),
-            ));
-        }
-        if self.embedded_config_toml.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "assembler runtime: embedded_config_toml must not be empty".into(),
-            ));
-        }
-        for camera in &self.cameras {
-            camera.validate()?;
-        }
-        for robot in &self.robots {
-            robot.validate()?;
-        }
-        for action in &self.actions {
-            action.validate()?;
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for AssemblerRuntimeConfig {
-    type Err = ConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let config: AssemblerRuntimeConfig = toml::from_str(s)?;
-        config.validate()?;
-        Ok(config)
-    }
-}
+// (Legacy V1 assembler runtime types removed; use the V2 variants in the
+// `AssemblerRuntimeConfigV2` family instead.)
 
 // ---------------------------------------------------------------------------
 // Encoder
@@ -1532,17 +450,6 @@ impl Default for EncoderConfig {
 }
 
 impl EncoderConfig {
-    pub fn codec_for_camera(&self, camera: &DeviceConfig) -> EncoderCodec {
-        if let Some(pixel_format) = camera.pixel_format {
-            return self.codec_for_pixel_format(pixel_format);
-        }
-        if camera.uses_depth_codec() {
-            self.depth_codec_with_gray8_fallback()
-        } else {
-            self.video_codec
-        }
-    }
-
     pub fn codec_for_pixel_format(&self, pixel_format: PixelFormat) -> EncoderCodec {
         match pixel_format {
             PixelFormat::Depth16 => self.depth_codec,
@@ -1657,115 +564,7 @@ fn default_depth_codec() -> EncoderCodec {
     EncoderCodec::Rvl
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncoderRuntimeConfig {
-    pub process_id: String,
-    #[serde(default)]
-    pub camera_name: Option<String>,
-    #[serde(default)]
-    pub frame_topic: Option<String>,
-    pub output_dir: String,
-    pub codec: EncoderCodec,
-    #[serde(default)]
-    pub backend: EncoderBackend,
-    #[serde(default)]
-    pub artifact_format: EncoderArtifactFormat,
-    #[serde(default = "default_queue_size")]
-    pub queue_size: u32,
-    pub fps: u32,
-}
-
-impl EncoderRuntimeConfig {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path)?;
-        text.parse()
-    }
-
-    pub fn resolved_artifact_format(&self) -> EncoderArtifactFormat {
-        EncoderConfig {
-            video_codec: self.codec,
-            depth_codec: self.codec,
-            backend: self.backend,
-            video_backend: self.backend,
-            depth_backend: self.backend,
-            artifact_format: self.artifact_format,
-            queue_size: self.queue_size,
-        }
-        .resolved_artifact_format()
-    }
-
-    pub fn output_extension(&self) -> &'static str {
-        self.resolved_artifact_format().extension()
-    }
-
-    pub fn output_file_name(&self, episode_index: u32) -> String {
-        let stem = self
-            .process_id
-            .chars()
-            .map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
-                _ => '_',
-            })
-            .collect::<String>();
-        format!(
-            "{stem}_episode_{episode_index:06}.{}",
-            self.output_extension()
-        )
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.process_id.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "encoder runtime: process_id must not be empty".into(),
-            ));
-        }
-        if self
-            .camera_name
-            .as_deref()
-            .is_none_or(|camera_name| camera_name.trim().is_empty())
-            && self
-                .frame_topic
-                .as_deref()
-                .is_none_or(|frame_topic| frame_topic.trim().is_empty())
-        {
-            return Err(ConfigError::Validation(
-                "encoder runtime: either camera_name or frame_topic is required".into(),
-            ));
-        }
-        if self.output_dir.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "encoder runtime: output_dir must not be empty".into(),
-            ));
-        }
-        if self.fps == 0 || self.fps > 1000 {
-            return Err(ConfigError::Validation(format!(
-                "encoder runtime: fps must be 1..1000, got {}",
-                self.fps
-            )));
-        }
-
-        EncoderConfig {
-            video_codec: self.codec,
-            depth_codec: self.codec,
-            backend: self.backend,
-            video_backend: self.backend,
-            depth_backend: self.backend,
-            artifact_format: self.artifact_format,
-            queue_size: self.queue_size,
-        }
-        .validate()
-    }
-}
-
-impl FromStr for EncoderRuntimeConfig {
-    type Err = ConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let config: EncoderRuntimeConfig = toml::from_str(s)?;
-        config.validate()?;
-        Ok(config)
-    }
-}
+// (Legacy `EncoderRuntimeConfig` removed; use `EncoderRuntimeConfigV2`.)
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -2174,36 +973,9 @@ impl FromStr for UiRuntimeConfig {
     }
 }
 
-fn encoder_process_id(camera_name: &str) -> String {
-    format!("encoder.{camera_name}")
-}
-
-fn camera_frames_topic(camera_name: &str) -> String {
-    format!("camera/{camera_name}/frames")
-}
-
-fn robot_state_topic(robot_name: &str) -> String {
-    format!("robot/{robot_name}/state")
-}
-
-fn robot_command_topic(robot_name: &str) -> String {
-    format!("robot/{robot_name}/command")
-}
-
-fn encoder_output_dir(staging_root: &str, camera_name: &str) -> String {
-    Path::new(staging_root)
-        .join("encoders")
-        .join(camera_name)
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn episode_staging_root(staging_root: &str) -> String {
-    Path::new(staging_root)
-        .join("episodes")
-        .to_string_lossy()
-        .into_owned()
-}
+// (Legacy V1 topic / process-id helpers removed; the V2 equivalents
+// (`encoder_process_id_v2`, `camera_frames_topic_v2`, etc.) live further
+// down in this file alongside the channel-aware bus contract.)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorConfig {
@@ -2417,12 +1189,6 @@ impl BinaryDeviceConfig {
                 self.name
             )));
         }
-        if matches!(self.driver.as_str(), "airbot-e2" | "airbot-e2b" | "airbot-g2") {
-            return Err(ConfigError::Validation(format!(
-                "device \"{}\": {} is no longer configured as a standalone device; use driver \"airbot-play\" with an enabled \"e2\" or \"g2\" channel instead",
-                self.name, self.driver
-            )));
-        }
         if self
             .executable
             .as_deref()
@@ -2521,6 +1287,18 @@ pub struct DeviceChannelConfigV2 {
     /// and offered no operator value (operators never edit them).
     #[serde(skip)]
     pub value_limits: Vec<StateValueLimitsEntry>,
+    /// Direct-joint pairing peers as reported by the device's `query --json`
+    /// response. Refreshed on every controller startup so pairing legality
+    /// follows the live driver schema instead of any hard-coded vendor table.
+    /// Skipped during (de)serialization for the same reason `value_limits`
+    /// is: stale TOML caused subtle pairing breakages when drivers shipped
+    /// new compatibility metadata, and operators never hand-edit it.
+    #[serde(skip)]
+    pub direct_joint_compatibility: DirectJointCompatibility,
+    /// Robot command kinds the channel accepts, as reported by the driver's
+    /// `query --json`. Refreshed on every controller startup; not persisted.
+    #[serde(skip)]
+    pub supported_commands: Vec<RobotCommandKind>,
     #[serde(flatten, default)]
     pub extra: toml::Table,
 }
@@ -2924,6 +1702,13 @@ impl ChannelPairingConfig {
                         "direct-joint mapping does not allow end-effector pose commands".into(),
                     ));
                 }
+                self.validate_direct_joint_dof_and_index_map(leader, follower)?;
+                self.advise_on_direct_joint_compatibility(
+                    leader_device,
+                    leader,
+                    follower_device,
+                    follower,
+                );
             }
             MappingStrategy::Cartesian => {
                 if self.leader_state != RobotStateKind::EndEffectorPose
@@ -2947,6 +1732,129 @@ impl ChannelPairingConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Technical (driver-agnostic) DOF and `joint_index_map` checks for a
+    /// direct-joint mapping. Ported from the legacy `PairConfig` validator
+    /// so the channel-pairing path catches the same misconfigurations the
+    /// device-pairing path used to:
+    ///
+    /// - Identity mapping requires `leader.dof >= follower.dof`.
+    /// - An explicit `joint_index_map` must have one entry per follower
+    ///   joint, and every leader index must be in range.
+    /// - `joint_scales`, when present, must align with either the
+    ///   `joint_index_map` length or the follower DOF.
+    ///
+    /// Driver name is intentionally NOT consulted here: cross-vendor
+    /// direct-joint pairings (e.g. AIRBOT Play leader -> AGX Nero
+    /// follower) are allowed whenever the joint shapes line up.
+    fn validate_direct_joint_dof_and_index_map(
+        &self,
+        leader: &DeviceChannelConfigV2,
+        follower: &DeviceChannelConfigV2,
+    ) -> Result<(), ConfigError> {
+        let leader_dof = leader.dof.unwrap_or(0);
+        let follower_dof = follower.dof.unwrap_or(0);
+
+        if self.joint_index_map.is_empty() {
+            if leader_dof < follower_dof {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {}:{} -> {}:{}: direct-joint identity mapping requires leader dof ({leader_dof}) >= follower dof ({follower_dof}); add a joint_index_map to remap",
+                    self.leader_device,
+                    self.leader_channel_type,
+                    self.follower_device,
+                    self.follower_channel_type,
+                )));
+            }
+        } else {
+            if self.joint_index_map.len() != follower_dof as usize {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {}:{} -> {}:{}: joint_index_map length ({}) must match follower dof ({follower_dof})",
+                    self.leader_device,
+                    self.leader_channel_type,
+                    self.follower_device,
+                    self.follower_channel_type,
+                    self.joint_index_map.len(),
+                )));
+            }
+            for (index, leader_joint) in self.joint_index_map.iter().enumerate() {
+                if *leader_joint >= leader_dof {
+                    return Err(ConfigError::Validation(format!(
+                        "pairing {}:{} -> {}:{}: joint_index_map[{index}]={} exceeds leader dof ({leader_dof})",
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                        leader_joint,
+                    )));
+                }
+            }
+        }
+
+        if !self.joint_scales.is_empty() {
+            let expected_len = if self.joint_index_map.is_empty() {
+                follower_dof as usize
+            } else {
+                self.joint_index_map.len()
+            };
+            if self.joint_scales.len() != expected_len {
+                return Err(ConfigError::Validation(format!(
+                    "pairing {}:{} -> {}:{}: joint_scales length ({}) must match {expected_len} mapped follower joints",
+                    self.leader_device,
+                    self.leader_channel_type,
+                    self.follower_device,
+                    self.follower_channel_type,
+                    self.joint_scales.len(),
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Advisory check on the per-channel `direct_joint_compatibility` blob
+    /// each driver reports in its `query --json`. Used as an operator hint
+    /// only -- prints a stderr warning when neither side explicitly
+    /// endorses the pairing -- but does NOT block: the framework treats
+    /// the schema field as documentation about driver-vouched-for
+    /// pairings, not as an exhaustive whitelist. Cross-vendor pairings
+    /// are perfectly legal as long as the technical DOF / channel-shape
+    /// checks pass; drivers shouldn't have to know about every other
+    /// driver they could conceivably be paired with.
+    fn advise_on_direct_joint_compatibility(
+        &self,
+        leader_device: &BinaryDeviceConfig,
+        leader_channel: &DeviceChannelConfigV2,
+        follower_device: &BinaryDeviceConfig,
+        follower_channel: &DeviceChannelConfigV2,
+    ) {
+        let leader_meta = &leader_channel.direct_joint_compatibility;
+        let follower_meta = &follower_channel.direct_joint_compatibility;
+        let leader_endorses = leader_meta.can_lead.iter().any(|peer| {
+            peer.driver == follower_device.driver
+                && peer.channel_type == follower_channel.channel_type
+        });
+        let follower_endorses = follower_meta.can_follow.iter().any(|peer| {
+            peer.driver == leader_device.driver
+                && peer.channel_type == leader_channel.channel_type
+        });
+        if leader_endorses || follower_endorses {
+            return;
+        }
+        if leader_meta.can_lead.is_empty() && follower_meta.can_follow.is_empty() {
+            // Neither driver populated the schema field at all; nothing
+            // useful to advise. Stay silent.
+            return;
+        }
+        eprintln!(
+            "rollio: pairing {}:{} -> {}:{}: drivers \"{}\" and \"{}\" did not advertise direct-joint compatibility with each other; pairing will rely on the joint-shape checks above",
+            self.leader_device,
+            self.leader_channel_type,
+            self.follower_device,
+            self.follower_channel_type,
+            leader_device.driver,
+            follower_device.driver,
+        );
     }
 }
 
@@ -3407,6 +2315,12 @@ pub struct DeviceQueryDevice {
     pub id: String,
     pub device_class: String,
     pub device_label: String,
+    /// Default user-facing name for the *device* row when the wizard collapses
+    /// multiple channels into a single device entry (e.g. "airbot_play",
+    /// "realsense", "agx_nero"). Falls back to `driver.replace('-', '_')`
+    /// when absent.
+    #[serde(default)]
+    pub default_device_name: Option<String>,
     #[serde(default)]
     pub optional_info: toml::Table,
     #[serde(default)]

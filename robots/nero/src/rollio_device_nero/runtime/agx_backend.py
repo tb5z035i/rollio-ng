@@ -50,16 +50,35 @@ def enable_robot(robot: Any, *, max_retries: int = 200, retry_sleep_s: float = 0
     starting the per-channel loops; if it returns False we still proceed
     so that the operator can use Disabled-mode hold to bring the arm to
     a safe pose.
+
+    After a successful enable, the arm is locked into MIT motion mode and
+    the driver's `auto_set_motion_mode` is disabled so subsequent
+    `move_mit(...)` calls don't re-send a redundant mode-set CAN frame
+    every tick. With our 7-DOF NERO at 250 Hz, the default behaviour cost
+    ~half the CAN bus to redundant mode-set frames (7 mode-set + 7
+    mit-cmd per tick × 250 = 3500 frames/s ≈ 469 ms/s on a 1 Mbps bus),
+    starving feedback frames and producing visible follower stutter.
     """
     import time as _time
 
+    enabled = False
     for _ in range(max_retries):
         if robot.enable():
-            return True
+            enabled = True
+            break
         with suppress(Exception):
             robot.set_normal_mode()
         _time.sleep(retry_sleep_s)
-    return False
+
+    # Whether or not enable() ultimately reported success, lock in MIT
+    # mode and stop the driver from re-sending it on every `move_mit`.
+    # `set_motion_mode` is idempotent CAN-traffic-wise (one frame), and
+    # `set_auto_set_motion_mode_enabled(False)` is a pure local flag.
+    with suppress(Exception):
+        robot.set_motion_mode("mit")
+    with suppress(Exception):
+        robot.set_auto_set_motion_mode_enabled(False)
+    return enabled
 
 
 def init_gripper(robot: Any) -> Any:

@@ -1,7 +1,5 @@
 use crate::cli::SetupArgs;
-use crate::discovery::{
-    discover_probe_entries, run_driver_json, DiscoveryOptions, KnownDriver,
-};
+use crate::discovery::{discover_probe_entries, run_driver_json, DiscoveryOptions};
 use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild,
 };
@@ -44,7 +42,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
-use crate::discovery::known_drivers;
+use crate::discovery::known_device_executables;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2_000);
 const VALIDATION_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -57,9 +55,9 @@ const SETUP_DEV_RUNTIME_PACKAGES: &[&str] = &[
     "rollio-ui-server",
     "rollio-visualizer",
     "rollio-control-server",
-    "rollio-camera-v4l2",
-    "rollio-robot-airbot-play",
-    "rollio-robot-pseudo",
+    "rollio-device-v4l2",
+    "rollio-device-airbot-play",
+    "rollio-device-pseudo",
 ];
 
 
@@ -108,31 +106,89 @@ fn ensure_setup_dev_runtime_binaries_built(
 
 #[derive(Debug, Clone, Serialize)]
 struct DiscoveredDevice {
-    device_type: DeviceType,
     driver: String,
     id: String,
     /// Device-level display label provided by the executable (e.g.
     /// "AIRBOT Play", or the V4L2 capabilities name). Used as the per-row
     /// label fallback when a channel does not provide its own label.
     display_name: String,
-    camera_profiles: Vec<CameraProfile>,
-    supported_modes_by_channel: BTreeMap<String, Vec<RobotMode>>,
-    /// Per-channel display label and default name as reported by the
-    /// device executable's `query --json`. Indexed by `channel_type`.
+    /// Default user-facing name for the device row when the wizard collapses
+    /// channels into one entry. Sourced from the driver's
+    /// `DeviceQueryDevice.default_device_name`. Falls back to a snake-case
+    /// driver name in the wizard.
+    default_device_name: Option<String>,
+    /// Per-channel metadata keyed by `channel_type`. Holds everything the
+    /// wizard / setup config needs (kind, modes, dof, profiles, defaults,
+    /// value_limits, direct_joint_compatibility, ...).
     channel_meta_by_channel: BTreeMap<String, DiscoveredChannelMeta>,
-    dof: Option<u32>,
-    supported_modes: Vec<RobotMode>,
-    default_frequency_hz: Option<f64>,
+    /// Generic device-level metadata mirroring the driver's
+    /// `optional_info` (transport, interface, product_variant, end_effector).
+    /// Persisted into `BinaryDeviceConfig.extra` so downstream consumers
+    /// stay schema-driven; new keys flow through automatically without
+    /// controller changes.
     transport: Option<String>,
     interface: Option<String>,
     product_variant: Option<String>,
     end_effector: Option<String>,
 }
 
+impl DiscoveredDevice {
+    /// "Primary" kind for compatibility with the legacy single-row UI: a
+    /// device counts as a robot if any of its channels is a robot kind,
+    /// otherwise camera. Used only by the wizard's row-rendering paths;
+    /// authoritative kind lives on each channel.
+    fn primary_device_type(&self) -> DeviceType {
+        if self
+            .channel_meta_by_channel
+            .values()
+            .any(|meta| meta.kind == DeviceType::Robot)
+        {
+            DeviceType::Robot
+        } else {
+            DeviceType::Camera
+        }
+    }
+
+    /// All camera profiles across every camera channel, flattened for
+    /// callers that still need a device-wide list (e.g. legacy wizard
+    /// helpers that grouped profiles before knowing channels).
+    fn all_camera_profiles(&self) -> Vec<CameraProfile> {
+        self.channel_meta_by_channel
+            .values()
+            .filter(|meta| meta.kind == DeviceType::Camera)
+            .flat_map(|meta| meta.profiles.iter().cloned())
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 struct DiscoveredChannelMeta {
+    /// `kind` per channel from `query --json`: camera, robot, etc.
+    /// Defaults to `Robot` to keep older fixtures working unchanged.
+    #[serde(default = "default_channel_kind")]
+    kind: DeviceType,
     channel_label: Option<String>,
     default_name: Option<String>,
+    /// Robot modes the driver accepts on this channel. For camera channels
+    /// this is conventionally `["enabled", "disabled"]`; the controller no
+    /// longer cares about exact strings here — it just maps known ones to
+    /// `RobotMode` enum variants.
+    #[serde(default)]
+    modes: Vec<RobotMode>,
+    /// `dof` reported per channel; only meaningful for robot kinds.
+    #[serde(default)]
+    dof: Option<u32>,
+    /// Camera profiles reported per channel. Empty for non-camera kinds.
+    #[serde(default)]
+    profiles: Vec<CameraProfile>,
+    /// Driver-suggested default control frequency for this channel.
+    #[serde(default)]
+    default_control_frequency_hz: Option<f64>,
+    /// Default command parameters (`joint_mit_kp/kd`, `parallel_mit_kp/kd`).
+    /// Used to seed `DeviceChannelConfigV2.command_defaults` without any
+    /// vendor-specific lookup table.
+    #[serde(default)]
+    defaults: rollio_types::config::ChannelCommandDefaults,
     /// Per-state value limits reported by the device driver (rad / rad·s⁻¹ /
     /// Nm / m for parallel kinds). Captured from the channel's `query --json`
     /// response so the visualizer can render limit-aware bars instead of
@@ -145,6 +201,20 @@ struct DiscoveredChannelMeta {
     /// `value_limits` keys when the driver doesn't populate it explicitly.
     #[serde(default)]
     supported_states: Vec<RobotStateKind>,
+    /// Robot command kinds the driver advertises it accepts on this channel.
+    /// Persisted on `DeviceChannelConfigV2.supported_commands` so downstream
+    /// teleop / pairing logic stays driver-agnostic.
+    #[serde(default)]
+    supported_commands: Vec<rollio_types::config::RobotCommandKind>,
+    /// Direct-joint pairing peers as reported by the driver. Persisted on
+    /// `DeviceChannelConfigV2.direct_joint_compatibility` so pairing
+    /// validation can consult the schema instead of any vendor table.
+    #[serde(default)]
+    direct_joint_compatibility: rollio_types::config::DirectJointCompatibility,
+}
+
+fn default_channel_kind() -> DeviceType {
+    DeviceType::Robot
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1431,8 +1501,7 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
     ensure_setup_dev_runtime_binaries_built(&workspace_root, &current_exe_dir)?;
     let output_path = args.output_path();
     let discovery_options = DiscoveryOptions {
-        simulated_cameras: args.sim_cameras,
-        simulated_arms: args.sim_arms,
+        simulated_pseudo: args.sim_pseudo,
     };
 
     let (config, available_devices, mut warnings, resume_mode) =
@@ -1985,148 +2054,18 @@ fn robot_default_channel_type(_driver: &str) -> String {
 /// One channel + chosen profile + final user-visible name for a camera
 /// discovery row. Built by `build_discovery_config` so multi-stream cameras
 /// (e.g. RealSense color + depth + infrared) collapse into a single
-/// `BinaryDeviceConfig` driven by one process.
-#[derive(Debug, Clone)]
-struct CameraDiscoveryChannel {
-    channel_type: String,
-    profile: CameraProfile,
-    /// Final per-channel name after dedup. Always populated by
-    /// `build_discovery_config` so the wizard never shows a blank `name=`
-    /// column or two rows that both say `name=camera`.
-    name: String,
-}
-
-fn binary_device_from_camera_discovery(
-    discovery: &DiscoveredDevice,
-    channels: &[CameraDiscoveryChannel],
-    name: String,
-) -> BinaryDeviceConfig {
-    let mut extra = toml::Table::new();
-    if let Some(transport) = &discovery.transport {
-        extra.insert("transport".into(), toml::Value::String(transport.clone()));
-    }
-    if let Some(interface) = &discovery.interface {
-        extra.insert("interface".into(), toml::Value::String(interface.clone()));
-    }
-    if let Some(product_variant) = &discovery.product_variant {
-        extra.insert(
-            "product_variant".into(),
-            toml::Value::String(product_variant.clone()),
-        );
-    }
-    if let Some(end_effector) = &discovery.end_effector {
-        extra.insert(
-            "end_effector".into(),
-            toml::Value::String(end_effector.clone()),
-        );
-    }
-    let device_channels = channels
-        .iter()
-        .map(|channel| {
-            let channel_meta = discovery
-                .channel_meta_by_channel
-                .get(&channel.channel_type)
-                .cloned()
-                .unwrap_or_default();
-            DeviceChannelConfigV2 {
-                channel_type: channel.channel_type.clone(),
-                kind: DeviceType::Camera,
-                enabled: true,
-                name: Some(channel.name.clone()),
-                channel_label: channel_meta.channel_label,
-                mode: None,
-                dof: None,
-                publish_states: Vec::new(),
-                recorded_states: Vec::new(),
-                control_frequency_hz: None,
-                profile: Some(CameraChannelProfile {
-                    width: channel.profile.width,
-                    height: channel.profile.height,
-                    fps: channel.profile.fps,
-                    pixel_format: channel.profile.pixel_format,
-                    native_pixel_format: channel.profile.native_pixel_format.clone(),
-                }),
-                command_defaults: ChannelCommandDefaults::default(),
-                value_limits: channel_meta.value_limits,
-                extra: toml::Table::new(),
-            }
-        })
-        .collect();
-    BinaryDeviceConfig {
-        name: name.clone(),
-        executable: Some(default_device_executable_name(&discovery.driver)),
-        driver: discovery.driver.clone(),
-        id: discovery.id.clone(),
-        bus_root: name,
-        channels: device_channels,
-        extra,
-    }
-}
-
-/// Group a camera discovery's profiles by `channel_type` and pick the
-/// "best" profile per channel as the wizard's default. "Best" is
-/// `(width * height) desc, fps desc, original-order asc` — i.e. highest
-/// resolution wins, ties are broken by highest fps, and remaining ties
-/// fall back to whichever profile the device discovery listed first
-/// (which preserves driver-supplied preferences such as a preferred
-/// pixel format). The output preserves the cross-channel order of first
-/// appearance so e.g. RealSense color/depth/infrared keep their natural
-/// listing.
-fn group_camera_profiles_by_channel(
-    profiles: &[CameraProfile],
-) -> Vec<(String, CameraProfile)> {
-    let mut groups: Vec<(String, CameraProfile)> = Vec::new();
-    for profile in profiles {
-        let channel_type = camera_channel_type_for_profile(profile);
-        match groups
-            .iter_mut()
-            .find(|(existing, _)| existing == &channel_type)
-        {
-            None => groups.push((channel_type, profile.clone())),
-            Some((_, current_best)) => {
-                if camera_profile_quality_key(profile)
-                    > camera_profile_quality_key(current_best)
-                {
-                    *current_best = profile.clone();
-                }
-            }
-        }
-    }
-    groups
-}
-
-/// Quality ordering key for `CameraProfile` defaults: higher pixel count
-/// first, ties broken by higher fps. Returned as a tuple so the caller
-/// can compare with `>` directly.
-fn camera_profile_quality_key(profile: &CameraProfile) -> (u64, u32) {
-    let pixels = (profile.width as u64) * (profile.height as u64);
-    (pixels, profile.fps)
-}
-
-/// Per-device base name when a discovery exposes more than one channel
-/// (e.g. RealSense reports color + depth + infrared from one physical unit).
-/// The single-channel path keeps using `default_device_name_base` so legacy
-/// configs and existing tests stay byte-identical.
-fn multi_channel_camera_device_base(driver: &str) -> String {
-    match driver {
-        "realsense" => "realsense".into(),
-        "v4l2" => "camera".into(),
-        "pseudo" => "pseudo_camera".into(),
-        _ => format!("{}_camera", driver.replace('-', "_")),
-    }
-}
-
-fn binary_device_from_robot_discovery(
+/// Build a `BinaryDeviceConfig` from one discovered device by iterating
+/// every channel returned in the driver's `query --json`. There is no
+/// per-driver branching: cameras, robots, and mixed devices all flow
+/// through the same loop. Each channel's `kind`, `dof`, `modes`,
+/// `profiles`, `defaults`, `value_limits`, `direct_joint_compatibility`,
+/// and `supported_commands` are taken straight from the channel meta.
+fn binary_device_from_discovery(
     discovery: &DiscoveredDevice,
     name: String,
     preferred_mode: RobotMode,
     name_counts: &mut BTreeMap<String, usize>,
 ) -> BinaryDeviceConfig {
-    let mode = Some(select_supported_mode(
-        &discovery.supported_modes,
-        preferred_mode,
-    ));
-    let command_defaults = ChannelCommandDefaults::default();
     let mut extra = toml::Table::new();
     if let Some(transport) = &discovery.transport {
         extra.insert("transport".into(), toml::Value::String(transport.clone()));
@@ -2146,77 +2085,23 @@ fn binary_device_from_robot_discovery(
             toml::Value::String(end_effector.clone()),
         );
     }
-    let arm_channel_type = robot_default_channel_type(&discovery.driver);
-    let arm_meta = discovery
+    let single_channel = discovery.channel_meta_by_channel.len() == 1;
+    let channels = discovery
         .channel_meta_by_channel
-        .get(&arm_channel_type)
-        .cloned()
-        .unwrap_or_default();
-    let arm_publish_states = default_publish_states_for_meta(
-        &arm_meta,
-        &[
-            RobotStateKind::JointPosition,
-            RobotStateKind::JointVelocity,
-            RobotStateKind::JointEffort,
-        ],
-    );
-    let arm_recorded_states = arm_publish_states.clone();
-    let arm_channel_name =
-        dedup_channel_default_name(arm_meta.default_name.as_deref(), name_counts);
-    let mut channels = vec![DeviceChannelConfigV2 {
-        channel_type: arm_channel_type,
-        kind: DeviceType::Robot,
-        enabled: true,
-        name: arm_channel_name,
-        channel_label: arm_meta.channel_label,
-        mode,
-        dof: discovery.dof.or(Some(6)),
-        publish_states: arm_publish_states,
-        recorded_states: arm_recorded_states,
-        control_frequency_hz: discovery.default_frequency_hz,
-        profile: None,
-        command_defaults,
-        value_limits: arm_meta.value_limits,
-        extra: toml::Table::new(),
-    }];
-    if discovery.driver == "airbot-play" {
-        if let Some((channel_type, eef_defaults)) =
-            mounted_airbot_end_effector_channel(discovery.end_effector.as_deref())
-        {
-            let eef_meta = discovery
-                .channel_meta_by_channel
-                .get(&channel_type)
-                .cloned()
-                .unwrap_or_default();
-            let eef_publish_states = default_publish_states_for_meta(
-                &eef_meta,
-                &[
-                    RobotStateKind::ParallelPosition,
-                    RobotStateKind::ParallelVelocity,
-                    RobotStateKind::ParallelEffort,
-                ],
-            );
-            let eef_recorded_states = eef_publish_states.clone();
-            let eef_channel_name =
-                dedup_channel_default_name(eef_meta.default_name.as_deref(), name_counts);
-            channels.push(DeviceChannelConfigV2 {
-                channel_type,
-                kind: DeviceType::Robot,
-                enabled: true,
-                name: eef_channel_name,
-                channel_label: eef_meta.channel_label,
-                mode: Some(preferred_mode),
-                dof: Some(1),
-                publish_states: eef_publish_states,
-                recorded_states: eef_recorded_states,
-                control_frequency_hz: discovery.default_frequency_hz.or(Some(250.0)),
-                profile: None,
-                command_defaults: eef_defaults,
-                value_limits: eef_meta.value_limits,
-                extra: toml::Table::new(),
-            });
-        }
-    }
+        .iter()
+        .map(|(channel_type, meta)| {
+            let channel_name = if single_channel {
+                // Avoid double-deduping: a single-channel device uses the
+                // device-level name (already deduped in `build_discovery_config`)
+                // as the channel name. Multi-channel devices need per-channel
+                // names so the wizard can tell rows apart.
+                Some(name.clone())
+            } else {
+                dedup_channel_default_name(meta.default_name.as_deref(), name_counts)
+            };
+            build_channel_config_from_meta(channel_type, meta, preferred_mode, channel_name)
+        })
+        .collect();
     BinaryDeviceConfig {
         name: name.clone(),
         executable: Some(default_device_executable_name(&discovery.driver)),
@@ -2228,30 +2113,109 @@ fn binary_device_from_robot_discovery(
     }
 }
 
-fn mounted_airbot_end_effector_channel(
-    end_effector: Option<&str>,
-) -> Option<(String, ChannelCommandDefaults)> {
-    match end_effector?.trim().to_ascii_lowercase().as_str() {
-        "e2" | "e2b" => Some((
-            "e2".into(),
-            ChannelCommandDefaults {
-                joint_mit_kp: Vec::new(),
-                joint_mit_kd: Vec::new(),
-                parallel_mit_kp: vec![0.0],
-                parallel_mit_kd: vec![0.0],
-            },
-        )),
-        "g2" => Some((
-            "g2".into(),
-            ChannelCommandDefaults {
-                joint_mit_kp: Vec::new(),
-                joint_mit_kd: Vec::new(),
-                parallel_mit_kp: vec![10.0],
-                parallel_mit_kd: vec![0.5],
-            },
-        )),
-        _ => None,
+fn build_channel_config_from_meta(
+    channel_type: &str,
+    meta: &DiscoveredChannelMeta,
+    preferred_mode: RobotMode,
+    channel_name: Option<String>,
+) -> DeviceChannelConfigV2 {
+    match meta.kind {
+        DeviceType::Camera => {
+            let profile = pick_default_camera_profile(&meta.profiles);
+            DeviceChannelConfigV2 {
+                channel_type: channel_type.to_owned(),
+                kind: DeviceType::Camera,
+                enabled: true,
+                name: channel_name,
+                channel_label: meta.channel_label.clone(),
+                mode: None,
+                dof: None,
+                publish_states: Vec::new(),
+                recorded_states: Vec::new(),
+                control_frequency_hz: None,
+                profile,
+                command_defaults: meta.defaults.clone(),
+                value_limits: meta.value_limits.clone(),
+                direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
+                supported_commands: meta.supported_commands.clone(),
+                extra: toml::Table::new(),
+            }
+        }
+        DeviceType::Robot => {
+            let mode = Some(select_supported_mode(&meta.modes, preferred_mode));
+            let publish_states = default_publish_states_for_meta(
+                meta,
+                &robot_publish_states_fallback(channel_type),
+            );
+            let recorded_states = publish_states.clone();
+            DeviceChannelConfigV2 {
+                channel_type: channel_type.to_owned(),
+                kind: DeviceType::Robot,
+                enabled: true,
+                name: channel_name,
+                channel_label: meta.channel_label.clone(),
+                mode,
+                dof: meta.dof,
+                publish_states,
+                recorded_states,
+                control_frequency_hz: meta.default_control_frequency_hz,
+                profile: None,
+                command_defaults: meta.defaults.clone(),
+                value_limits: meta.value_limits.clone(),
+                direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
+                supported_commands: meta.supported_commands.clone(),
+                extra: toml::Table::new(),
+            }
+        }
     }
+}
+
+/// Channel-shape-generic fallback for `publish_states` when the driver
+/// neither populates `supported_states` nor `value_limits`. Picks
+/// joint-shaped defaults for typical arm channel names; parallel-shaped
+/// defaults for grippers / end-effectors. Driver-specific tables are NOT
+/// consulted — the driver should populate `supported_states` properly.
+fn robot_publish_states_fallback(channel_type: &str) -> Vec<RobotStateKind> {
+    let lower = channel_type.to_ascii_lowercase();
+    if lower.contains("gripper")
+        || lower.contains("eef")
+        || lower == "e2"
+        || lower == "g2"
+        || lower == "e2b"
+    {
+        vec![
+            RobotStateKind::ParallelPosition,
+            RobotStateKind::ParallelVelocity,
+            RobotStateKind::ParallelEffort,
+        ]
+    } else {
+        vec![
+            RobotStateKind::JointPosition,
+            RobotStateKind::JointVelocity,
+            RobotStateKind::JointEffort,
+        ]
+    }
+}
+
+fn pick_default_camera_profile(profiles: &[CameraProfile]) -> Option<CameraChannelProfile> {
+    profiles
+        .iter()
+        .max_by_key(|profile| camera_profile_quality_key(profile))
+        .map(|profile| CameraChannelProfile {
+            width: profile.width,
+            height: profile.height,
+            fps: profile.fps,
+            pixel_format: profile.pixel_format,
+            native_pixel_format: profile.native_pixel_format.clone(),
+        })
+}
+
+/// Quality ordering key for `CameraProfile` defaults: higher pixel count
+/// first, ties broken by higher fps. Returned as a tuple so the caller
+/// can compare with `>` directly.
+fn camera_profile_quality_key(profile: &CameraProfile) -> (u64, u32) {
+    let pixels = (profile.width as u64) * (profile.height as u64);
+    (pixels, profile.fps)
 }
 
 fn channel_uses_parallel_teleop(ch: &DeviceChannelConfigV2) -> bool {
@@ -2324,8 +2288,16 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
     let arms = primary_robot_channels(devices, false);
     let eefs = primary_robot_channels(devices, true);
     for pairs in [pair_robot_channels_by_order(&arms), pair_robot_channels_by_order(&eefs)] {
-        if let Some((leader_dev, leader_ch, follower_dev, follower_ch)) = pairs {
-            let dof = follower_ch.dof.unwrap_or(6);
+        let Some((leader_dev, leader_ch, follower_dev, follower_ch)) = pairs else {
+            continue;
+        };
+        let leader_dof = leader_ch.dof.unwrap_or(0);
+        let follower_dof = follower_ch.dof.unwrap_or(0);
+        if leader_dof == 0 || follower_dof == 0 {
+            continue;
+        }
+        if leader_dof == follower_dof {
+            let dof = follower_dof;
             let parallel_pair =
                 channel_uses_parallel_teleop(leader_ch) && channel_uses_parallel_teleop(follower_ch);
             let (leader_state, follower_command, map_len) = if parallel_pair {
@@ -2348,9 +2320,37 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
                 joint_index_map: (0..map_len).collect(),
                 joint_scales: vec![1.0; map_len as usize],
             });
+        } else if channel_supports_cartesian_leader(leader_ch)
+            && channel_supports_cartesian_follower(follower_ch)
+        {
+            // Cross-DOF arms (e.g. 6-DOF leader -> 7-DOF follower) cannot
+            // safely use direct-joint identity mapping, but Cartesian
+            // (end-effector pose) tracking is DOF-agnostic. Default to it
+            // when both sides advertise the required state/command.
+            pairings.push(ChannelPairingConfig {
+                leader_device: leader_dev.name.clone(),
+                leader_channel_type: leader_ch.channel_type.clone(),
+                follower_device: follower_dev.name.clone(),
+                follower_channel_type: follower_ch.channel_type.clone(),
+                mapping: MappingStrategy::Cartesian,
+                leader_state: RobotStateKind::EndEffectorPose,
+                follower_command: RobotCommandKind::EndPose,
+                joint_index_map: Vec::new(),
+                joint_scales: Vec::new(),
+            });
         }
     }
     pairings
+}
+
+fn channel_supports_cartesian_leader(ch: &DeviceChannelConfigV2) -> bool {
+    ch.publish_states
+        .contains(&RobotStateKind::EndEffectorPose)
+}
+
+fn channel_supports_cartesian_follower(ch: &DeviceChannelConfigV2) -> bool {
+    ch.supported_commands
+        .contains(&RobotCommandKind::EndPose)
 }
 
 fn primary_robot_channels(
@@ -2616,53 +2616,20 @@ fn available_devices_from_discoveries(
     let mut available = Vec::new();
 
     for discovery in discoveries {
-        match discovery.device_type {
-            DeviceType::Camera => {
-                let profile = discovery.camera_profiles.first().cloned().ok_or_else(|| {
-                    format!("camera \"{}\" exposed no supported profiles", discovery.id)
-                })?;
-                let mut current = project
-                    .devices
-                    .iter()
-                    .find(|device| {
-                        device_matches_discovery_binary(
-                            device,
-                            discovery,
-                            profile.stream.as_deref(),
-                            profile.channel,
-                        )
-                    })
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "missing setup device for discovered camera {} ({})",
-                            discovery.display_name, discovery.id
-                        )
-                    })?;
-                enrich_current_device_from_discovery(&mut current, discovery);
-                let rows = available_rows_from_discovery(&current, discovery);
-                for row in rows {
-                    available.push(row);
-                }
-            }
-            DeviceType::Robot => {
-                let mut current = project
-                    .devices
-                    .iter()
-                    .find(|device| device_matches_discovery_binary(device, discovery, None, None))
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "missing setup device for discovered robot {} ({})",
-                            discovery.display_name, discovery.id
-                        )
-                    })?;
-                enrich_current_device_from_discovery(&mut current, discovery);
-                let rows = available_rows_from_discovery(&current, discovery);
-                for row in rows {
-                    available.push(row);
-                }
-            }
+        let mut current = project
+            .devices
+            .iter()
+            .find(|device| device_matches_discovery_binary(device, discovery, None, None))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "missing setup device for discovered device {} ({})",
+                    discovery.display_name, discovery.id
+                )
+            })?;
+        enrich_current_device_from_discovery(&mut current, discovery);
+        for row in available_rows_from_discovery(&current, discovery) {
+            available.push(row);
         }
     }
 
@@ -2681,13 +2648,10 @@ fn available_rows_from_discovery(
             let device_type = channel.kind;
             let camera_profiles = if device_type == DeviceType::Camera {
                 discovery
-                    .camera_profiles
-                    .iter()
-                    .filter(|profile| {
-                        camera_channel_type_for_profile(profile) == channel.channel_type
-                    })
-                    .cloned()
-                    .collect()
+                    .channel_meta_by_channel
+                    .get(&channel.channel_type)
+                    .map(|meta| meta.profiles.clone())
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -2725,16 +2689,16 @@ fn row_current_from_binary_channel(
 }
 
 fn supported_modes_from_project_channel(
-    device: &BinaryDeviceConfig,
+    _device: &BinaryDeviceConfig,
     channel: &DeviceChannelConfigV2,
 ) -> Vec<RobotMode> {
     if channel.kind != DeviceType::Robot {
         return Vec::new();
     }
-    match device.driver.as_str() {
-        "airbot-play" => default_supported_robot_modes(),
-        _ => channel.mode.into_iter().collect(),
-    }
+    // Without a live driver session we can only echo the persisted mode.
+    // The discovery path uses `supported_modes_from_discovery` which does
+    // consult the driver's `query --json` `modes` array directly.
+    channel.mode.into_iter().collect()
 }
 
 fn supported_modes_from_discovery(
@@ -2745,13 +2709,10 @@ fn supported_modes_from_discovery(
         return Vec::new();
     }
     discovery
-        .supported_modes_by_channel
+        .channel_meta_by_channel
         .get(&channel.channel_type)
-        .cloned()
-        .unwrap_or_else(|| match discovery.driver.as_str() {
-            "airbot-play" => default_supported_robot_modes(),
-            _ => channel.mode.into_iter().collect(),
-        })
+        .map(|meta| meta.modes.clone())
+        .unwrap_or_else(|| channel.mode.into_iter().collect())
 }
 
 fn split_camera_channel_type(channel_type: &str) -> (Option<&str>, Option<u32>) {
@@ -2767,32 +2728,20 @@ fn display_name_for_binary_channel(
     channel: &DeviceChannelConfigV2,
 ) -> String {
     // Prefer the device-provided per-channel label so the controller stays
-    // driver-agnostic. The hardcoded `canonical_device_display_name` is only
-    // a fallback for legacy configs / tests where the channel hasn't been
-    // populated by a recent device executable.
+    // driver-agnostic. Falls back to a generic `{driver_label} ({channel_type})`
+    // format only when no driver-supplied label exists; new device
+    // executables MUST set `channel_label` (or `device_label`) in their
+    // `query --json` to control display strings.
     if let Some(label) = channel.channel_label.as_deref() {
         if !label.trim().is_empty() {
             return label.to_owned();
         }
     }
-    match (channel.kind, device.driver.as_str(), channel.channel_type.as_str()) {
-        (DeviceType::Camera, _, channel_type) => {
-            let (stream, camera_channel) = split_camera_channel_type(channel_type);
-            canonical_device_display_name(
-                DeviceType::Camera,
-                &device.driver,
-                None,
-                stream,
-                camera_channel,
-            )
-        }
-        _ => canonical_device_display_name(
-            channel.kind,
-            &device.driver,
-            channel.dof,
-            None,
-            None,
-        ),
+    let driver_label = driver_to_label_fallback(&device.driver);
+    if channel.channel_type.is_empty() {
+        driver_label
+    } else {
+        format!("{driver_label} ({})", channel.channel_type)
     }
 }
 
@@ -2843,22 +2792,26 @@ fn discover_devices(
 
     for entry in probe_entries {
         match build_discovered_device(
-            entry.driver,
+            &entry.executable,
             &entry.probe_entry,
             &entry.program,
             workspace_root,
             DISCOVERY_TIMEOUT,
         ) {
             Ok(device) => discoveries.push(device),
-            Err(error) => probe_errors.push(format!("{}: {error}", entry.driver.driver)),
+            Err(error) => probe_errors.push(format!("{}: {error}", entry.executable)),
         }
     }
 
     Ok((discoveries, probe_errors))
 }
 
+/// Single, device-type-free discovery entry. Every channel reported by the
+/// driver's `query --json` is parsed into a `DiscoveredChannelMeta`,
+/// preserving its `kind` (camera or robot). The wizard later builds one
+/// `DeviceChannelConfigV2` per channel without any per-driver branching.
 fn build_discovered_device(
-    driver: KnownDriver,
+    executable: &str,
     probe_entry: &Value,
     program: &OsString,
     workspace_root: &Path,
@@ -2890,79 +2843,52 @@ fn build_discovered_device(
         })
         .ok_or_else(|| format!("query returned no devices for id {id}: {query}"))?;
 
-    let channel_meta_by_channel = parse_query_channel_meta(query_device);
-    // Prefer the device-supplied label; fall back to canonical display
-    // mapping only when the executable doesn't expose one. New device
-    // executables MUST set device_label or channel_label so the controller
-    // stays driver-agnostic.
-    let device_label = value_as_string(query_device.get("device_label"));
+    // Driver name is authoritative from the query response. Fall back to
+    // stripping the well-known `rollio-device-` prefix off the executable
+    // name only if the response didn't include one (e.g. older drivers).
+    let driver = value_as_string(query.get("driver"))
+        .or_else(|| executable.strip_prefix("rollio-device-").map(ToOwned::to_owned))
+        .unwrap_or_else(|| executable.to_owned());
 
-    match driver.device_type {
-        DeviceType::Camera => {
-            let camera_profiles = parse_query_camera_profiles(driver.driver, query_device);
-            let display_name = device_label.clone().unwrap_or_else(|| {
-                canonical_device_display_name(
-                    DeviceType::Camera,
-                    driver.driver,
-                    None,
-                    camera_profiles
-                        .first()
-                        .and_then(|profile| profile.stream.as_deref()),
-                    camera_profiles.first().and_then(|profile| profile.channel),
-                )
-            });
-            Ok(DiscoveredDevice {
-                device_type: DeviceType::Camera,
-                driver: driver.driver.to_owned(),
-                id,
-                display_name,
-                camera_profiles,
-                supported_modes_by_channel: BTreeMap::new(),
-                channel_meta_by_channel,
-                dof: None,
-                supported_modes: Vec::new(),
-                default_frequency_hz: None,
-                transport: query_metadata_string(query_device, "transport")
-                    .or_else(|| value_as_string(probe_entry.get("transport"))),
-                interface: query_metadata_string(query_device, "interface")
-                    .or_else(|| value_as_string(probe_entry.get("interface"))),
-                product_variant: query_metadata_string(query_device, "product_variant")
-                    .or_else(|| value_as_string(probe_entry.get("product_variant"))),
-                end_effector: query_metadata_string(query_device, "end_effector")
-                    .or_else(|| value_as_string(probe_entry.get("end_effector"))),
-            })
-        }
-        DeviceType::Robot => {
-            let primary_channel = query_primary_robot_channel(query_device)?;
-            let supported_modes_by_channel = parse_query_robot_modes_by_channel(query_device);
-            let dof = value_as_u32(primary_channel.get("dof"))
-                .or_else(|| value_as_u32(probe_entry.get("dof")));
-            let display_name = device_label.clone().unwrap_or_else(|| {
-                canonical_device_display_name(DeviceType::Robot, driver.driver, dof, None, None)
-            });
-            Ok(DiscoveredDevice {
-                device_type: DeviceType::Robot,
-                driver: driver.driver.to_owned(),
-                id,
-                display_name,
-                camera_profiles: Vec::new(),
-                supported_modes_by_channel,
-                channel_meta_by_channel,
-                dof,
-                supported_modes: parse_query_robot_modes(primary_channel),
-                default_frequency_hz: value_as_f64(primary_channel.get("default_control_frequency_hz"))
-                    .or_else(|| value_as_f64(primary_channel.get("control_frequency_hz"))),
-                transport: query_metadata_string(query_device, "transport")
-                    .or_else(|| value_as_string(probe_entry.get("transport"))),
-                interface: query_metadata_string(query_device, "interface")
-                    .or_else(|| value_as_string(probe_entry.get("interface"))),
-                product_variant: query_metadata_string(query_device, "product_variant")
-                    .or_else(|| value_as_string(probe_entry.get("product_variant"))),
-                end_effector: query_robot_end_effector(query_device)
-                    .or_else(|| value_as_string(probe_entry.get("end_effector"))),
-            })
-        }
-    }
+    let channel_meta_by_channel = parse_query_channel_meta(query_device);
+    let device_label = value_as_string(query_device.get("device_label"));
+    let default_device_name = value_as_string(query_device.get("default_device_name"));
+    let display_name = device_label
+        .clone()
+        .unwrap_or_else(|| driver_to_label_fallback(&driver));
+
+    Ok(DiscoveredDevice {
+        driver,
+        id,
+        display_name,
+        default_device_name,
+        channel_meta_by_channel,
+        transport: query_metadata_string(query_device, "transport")
+            .or_else(|| value_as_string(probe_entry.get("transport"))),
+        interface: query_metadata_string(query_device, "interface")
+            .or_else(|| value_as_string(probe_entry.get("interface"))),
+        product_variant: query_metadata_string(query_device, "product_variant")
+            .or_else(|| value_as_string(probe_entry.get("product_variant"))),
+        end_effector: query_metadata_string(query_device, "end_effector")
+            .or_else(|| value_as_string(probe_entry.get("end_effector"))),
+    })
+}
+
+/// "airbot-play" -> "Airbot Play" fallback when a driver doesn't supply its
+/// own `device_label` in `query --json`. Generic, no per-driver lookup.
+fn driver_to_label_fallback(driver: &str) -> String {
+    driver
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn validate_existing_project(
@@ -3019,103 +2945,50 @@ fn build_discovery_config(discoveries: &[DiscoveredDevice]) -> Result<ProjectCon
     let mut eef_index = 0usize;
 
     for discovery in discoveries {
-        match discovery.device_type {
-            DeviceType::Camera => {
-                let groups = group_camera_profiles_by_channel(&discovery.camera_profiles);
-                if groups.is_empty() {
-                    return Err(format!(
-                        "camera \"{}\" exposed no supported profiles",
-                        discovery.id
-                    )
-                    .into());
-                }
-
-                let multi_channel = groups.len() > 1;
-                let device_base = if multi_channel {
-                    multi_channel_camera_device_base(&discovery.driver)
-                } else {
-                    let (_, first_profile) = &groups[0];
-                    default_device_name_base(
-                        discovery.device_type,
-                        &discovery.driver,
-                        discovery.dof,
-                        first_profile.stream.as_deref(),
-                        first_profile.channel,
-                    )
-                };
-                let device_name =
-                    next_default_device_name(device_base, &mut default_name_counts);
-
-                let channels = groups
-                    .into_iter()
-                    .map(|(channel_type, profile)| {
-                        // Single-channel camera (e.g. V4L2 webcam): keep the
-                        // channel name in lockstep with the deduped device
-                        // name so the wizard never shows two rows that both
-                        // say `name=camera`. Multi-channel cameras
-                        // (RealSense) need per-channel names so users can
-                        // tell color/depth/infrared apart at a glance.
-                        let channel_name = if multi_channel {
-                            let base = discovery
-                                .channel_meta_by_channel
-                                .get(&channel_type)
-                                .and_then(|meta| meta.default_name.clone())
-                                .unwrap_or_else(|| {
-                                    default_device_name_base(
-                                        DeviceType::Camera,
-                                        &discovery.driver,
-                                        None,
-                                        profile.stream.as_deref(),
-                                        profile.channel,
-                                    )
-                                });
-                            next_default_device_name(base, &mut default_name_counts)
-                        } else {
-                            device_name.clone()
-                        };
-                        CameraDiscoveryChannel {
-                            channel_type,
-                            profile,
-                            name: channel_name,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                config.devices.push(binary_device_from_camera_discovery(
-                    discovery,
-                    &channels,
-                    device_name,
-                ));
-            }
-            DeviceType::Robot => {
-                let is_eef = discovery.dof == Some(1);
-                let preferred_mode = if is_eef {
-                    let preferred_mode = group_default_mode(eef_index);
-                    eef_index += 1;
-                    preferred_mode
-                } else {
-                    let preferred_mode = group_default_mode(arm_index);
-                    arm_index += 1;
-                    preferred_mode
-                };
-                let name = next_default_device_name(
-                    default_device_name_base(
-                        discovery.device_type,
-                        &discovery.driver,
-                        discovery.dof,
-                        None,
-                        None,
-                    ),
-                    &mut default_name_counts,
-                );
-                config.devices.push(binary_device_from_robot_discovery(
-                    discovery,
-                    name,
-                    preferred_mode,
-                    &mut default_name_counts,
-                ));
-            }
+        if discovery.channel_meta_by_channel.is_empty() {
+            return Err(format!(
+                "device \"{}\" ({}) exposed no channels in its query response",
+                discovery.display_name, discovery.id
+            )
+            .into());
         }
+        // Pick a "preferred mode" per device. The legacy wizard alternated
+        // `FreeDrive` / `CommandFollowing` between leader/follower groups
+        // based on whether a device was detected as an EEF (dof == 1) or
+        // arm. We approximate that here by checking the first robot
+        // channel's dof; cameras don't care about mode and take None.
+        let preferred_mode = if discovery
+            .channel_meta_by_channel
+            .values()
+            .any(|meta| meta.kind == DeviceType::Robot && meta.dof != Some(1))
+        {
+            let mode = group_default_mode(arm_index);
+            arm_index += 1;
+            mode
+        } else if discovery
+            .channel_meta_by_channel
+            .values()
+            .any(|meta| meta.kind == DeviceType::Robot)
+        {
+            let mode = group_default_mode(eef_index);
+            eef_index += 1;
+            mode
+        } else {
+            // Pure camera devices don't use the mode field but the unified
+            // builder still needs a placeholder value.
+            RobotMode::FreeDrive
+        };
+        let name_base = discovery
+            .default_device_name
+            .clone()
+            .unwrap_or_else(|| discovery.driver.replace('-', "_"));
+        let device_name = next_default_device_name(name_base, &mut default_name_counts);
+        config.devices.push(binary_device_from_discovery(
+            discovery,
+            device_name,
+            preferred_mode,
+            &mut default_name_counts,
+        ));
     }
 
     config.pairings = build_default_channel_pairings(&config.devices);
@@ -3189,67 +3062,6 @@ fn parse_camera_capabilities(capabilities: &Value) -> Vec<CameraProfile> {
         .collect()
 }
 
-fn parse_query_camera_profiles(driver: &str, device: &Value) -> Vec<CameraProfile> {
-    let profiles = device
-        .get("channels")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|channel| {
-            value_as_string(channel.get("kind")).as_deref() == Some("camera")
-                && channel
-                    .get("available")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true)
-        })
-        .flat_map(|channel| {
-            let channel_type = value_as_string(channel.get("channel_type"));
-            channel
-                .get("profiles")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(move |profile| {
-                    let width = value_as_u32(profile.get("width"))?;
-                    let height = value_as_u32(profile.get("height"))?;
-                    let fps = value_as_u32(profile.get("fps")).or_else(|| {
-                        value_as_f64(profile.get("fps")).map(|fps| fps.round() as u32)
-                    })?;
-                    let pixel_format = value_as_string(profile.get("pixel_format"))
-                        .and_then(|value| parse_pixel_format_name(&value))
-                        .unwrap_or(PixelFormat::Rgb24);
-                    Some(CameraProfile {
-                        width,
-                        height,
-                        fps,
-                        pixel_format,
-                        native_pixel_format: value_as_string(profile.get("native_pixel_format")),
-                        stream: channel_type.clone(),
-                        channel: None,
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    normalize_camera_profiles(driver, profiles)
-}
-
-fn query_primary_robot_channel<'a>(device: &'a Value) -> Result<&'a Value, Box<dyn Error>> {
-    device
-        .get("channels")
-        .and_then(Value::as_array)
-        .and_then(|channels| {
-            channels
-                .iter()
-                .find(|channel| value_as_string(channel.get("channel_type")).as_deref() == Some("arm"))
-                .or_else(|| {
-                    channels.iter().find(|channel| {
-                        value_as_string(channel.get("kind")).as_deref() == Some("robot")
-                    })
-                })
-        })
-        .ok_or_else(|| "query returned no robot channels".into())
-}
-
 fn parse_query_robot_modes(channel: &Value) -> Vec<RobotMode> {
     channel
         .get("modes")
@@ -3275,8 +3087,22 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
         .flatten()
         .filter_map(|channel| {
             let channel_type = value_as_string(channel.get("channel_type"))?;
+            let kind = value_as_string(channel.get("kind"))
+                .and_then(|s| match s.as_str() {
+                    "camera" => Some(DeviceType::Camera),
+                    "robot" => Some(DeviceType::Robot),
+                    _ => None,
+                })
+                .unwrap_or(DeviceType::Robot);
             let channel_label = value_as_string(channel.get("channel_label"));
             let default_name = value_as_string(channel.get("default_name"));
+            let modes = parse_query_robot_modes(channel);
+            let dof = value_as_u32(channel.get("dof"));
+            let default_control_frequency_hz =
+                value_as_f64(channel.get("default_control_frequency_hz"))
+                    .or_else(|| value_as_f64(channel.get("control_frequency_hz")));
+            let defaults = parse_query_command_defaults(channel.get("defaults"));
+            let profiles = parse_channel_camera_profiles(channel);
             let value_limits =
                 crate::device_query::parse_query_value_limits(channel.get("value_limits"));
             let mut supported_states =
@@ -3290,31 +3116,76 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                     .map(|entry| entry.state_kind)
                     .collect();
             }
+            let supported_commands =
+                crate::device_query::parse_query_supported_commands(channel.get("supported_commands"));
+            let direct_joint_compatibility =
+                crate::device_query::parse_query_direct_joint_compatibility(
+                    channel.get("direct_joint_compatibility"),
+                );
             Some((
                 channel_type,
                 DiscoveredChannelMeta {
+                    kind,
                     channel_label,
                     default_name,
+                    modes,
+                    dof,
+                    profiles,
+                    default_control_frequency_hz,
+                    defaults,
                     value_limits,
                     supported_states,
+                    supported_commands,
+                    direct_joint_compatibility,
                 },
             ))
         })
         .collect()
 }
 
-fn parse_query_robot_modes_by_channel(device: &Value) -> BTreeMap<String, Vec<RobotMode>> {
-    device
-        .get("channels")
+fn parse_channel_camera_profiles(channel: &Value) -> Vec<CameraProfile> {
+    let stream = value_as_string(channel.get("channel_type"));
+    channel
+        .get("profiles")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|channel| value_as_string(channel.get("kind")).as_deref() == Some("robot"))
-        .filter_map(|channel| {
-            let channel_type = value_as_string(channel.get("channel_type"))?;
-            Some((channel_type, parse_query_robot_modes(channel)))
+        .filter_map(|profile| {
+            let width = value_as_u32(profile.get("width"))?;
+            let height = value_as_u32(profile.get("height"))?;
+            let fps = value_as_u32(profile.get("fps")).or_else(|| {
+                value_as_f64(profile.get("fps")).map(|fps| fps.round() as u32)
+            })?;
+            let pixel_format = value_as_string(profile.get("pixel_format"))
+                .and_then(|value| parse_pixel_format_name(&value))
+                .unwrap_or(PixelFormat::Rgb24);
+            Some(CameraProfile {
+                width,
+                height,
+                fps,
+                pixel_format,
+                native_pixel_format: value_as_string(profile.get("native_pixel_format")),
+                stream: stream.clone(),
+                channel: None,
+            })
         })
         .collect()
+}
+
+fn parse_query_command_defaults(value: Option<&Value>) -> rollio_types::config::ChannelCommandDefaults {
+    let parse_array = |key: &str| -> Vec<f64> {
+        value
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default()
+    };
+    rollio_types::config::ChannelCommandDefaults {
+        joint_mit_kp: parse_array("joint_mit_kp"),
+        joint_mit_kd: parse_array("joint_mit_kd"),
+        parallel_mit_kp: parse_array("parallel_mit_kp"),
+        parallel_mit_kd: parse_array("parallel_mit_kd"),
+    }
 }
 
 fn query_metadata_string(device: &Value, key: &str) -> Option<String> {
@@ -3325,22 +3196,6 @@ fn query_metadata_string(device: &Value, key: &str) -> Option<String> {
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
     })
-}
-
-fn query_robot_end_effector(device: &Value) -> Option<String> {
-    device
-        .get("channels")
-        .and_then(Value::as_array)
-        .and_then(|channels| {
-            channels.iter().find_map(|channel| {
-                let channel_type = value_as_string(channel.get("channel_type"))?;
-                match channel_type.as_str() {
-                    "e2" | "g2" => Some(channel_type),
-                    _ => None,
-                }
-            })
-        })
-        .or_else(|| query_metadata_string(device, "end_effector"))
 }
 
 fn enrich_current_device_from_discovery(
@@ -3358,31 +3213,34 @@ fn enrich_current_device_from_discovery(
             }
         }
     }
-    if discovery.device_type != DeviceType::Camera {
+    if !discovery
+        .channel_meta_by_channel
+        .values()
+        .any(|meta| meta.kind == DeviceType::Camera)
+    {
         return;
     }
-    let Some(channel) = current
-        .channels
-        .iter_mut()
-        .find(|channel| channel.kind == DeviceType::Camera)
-    else {
-        return;
-    };
-    let Some(profile) = channel.profile.as_mut() else {
-        return;
-    };
-    if profile.native_pixel_format.is_some() {
-        return;
-    }
-    let matched = discovery.camera_profiles.iter().find(|candidate| {
-        candidate.width == profile.width
-            && candidate.height == profile.height
-            && candidate.fps == profile.fps
-            && candidate.pixel_format == profile.pixel_format
-            && camera_channel_type_for_profile(candidate) == channel.channel_type
-    });
-    if let Some(matched) = matched {
-        profile.native_pixel_format = matched.native_pixel_format.clone();
+    let camera_profiles = discovery.all_camera_profiles();
+    for channel in current.channels.iter_mut() {
+        if channel.kind != DeviceType::Camera {
+            continue;
+        }
+        let Some(profile) = channel.profile.as_mut() else {
+            continue;
+        };
+        if profile.native_pixel_format.is_some() {
+            continue;
+        }
+        let matched = camera_profiles.iter().find(|candidate| {
+            candidate.width == profile.width
+                && candidate.height == profile.height
+                && candidate.fps == profile.fps
+                && candidate.pixel_format == profile.pixel_format
+                && camera_channel_type_for_profile(candidate) == channel.channel_type
+        });
+        if let Some(matched) = matched {
+            profile.native_pixel_format = matched.native_pixel_format.clone();
+        }
     }
 }
 
@@ -3417,29 +3275,6 @@ fn parse_pixel_format_name(value: &str) -> Option<PixelFormat> {
         "gray8" => Some(PixelFormat::Gray8),
         _ => None,
     }
-}
-
-fn normalize_camera_profiles(driver: &str, profiles: Vec<CameraProfile>) -> Vec<CameraProfile> {
-    let mut normalized = Vec::with_capacity(profiles.len());
-
-    for mut profile in profiles {
-        if driver == "v4l2" {
-            // The V4L2 driver advertises native capture formats (for example
-            // MJPG/YUYV) in capabilities, but its runtime config must request a
-            // converted RGB/BGR output format.
-            profile.pixel_format = PixelFormat::Rgb24;
-            if profile.stream.is_none() {
-                profile.stream = Some("color".into());
-            }
-            profile.channel = None;
-        }
-
-        if !normalized.contains(&profile) {
-            normalized.push(profile);
-        }
-    }
-
-    normalized
 }
 
 fn parse_robot_modes(value: Option<&Value>) -> Vec<RobotMode> {
@@ -3544,23 +3379,18 @@ fn discovery_camera_channel_key(stream: Option<&str>, channel: Option<u32>) -> S
     }
 }
 
+/// Match the project-side `BinaryDeviceConfig` to a fresh discovery by
+/// `(driver, id)` only. Devices may now carry mixed-kind channels under a
+/// single config, so matching on a "primary channel type" no longer makes
+/// sense; the unified discovery loop emits one row per discovered device
+/// regardless of which channels it exposes.
 fn device_matches_discovery_binary(
     device: &BinaryDeviceConfig,
     discovery: &DiscoveredDevice,
-    stream: Option<&str>,
-    channel: Option<u32>,
+    _stream: Option<&str>,
+    _channel: Option<u32>,
 ) -> bool {
-    let channel_type = match discovery.device_type {
-        DeviceType::Camera => discovery_camera_channel_key(stream, channel),
-        DeviceType::Robot => robot_default_channel_type(&discovery.driver),
-    };
-    device_identity_from_binary(device)
-        == DeviceIdentity {
-            device_type: discovery.device_type,
-            driver: discovery.driver.clone(),
-            id: discovery.id.clone(),
-            channel_type,
-        }
+    device.driver == discovery.driver && device.id == discovery.id
 }
 
 fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> String {
@@ -3573,66 +3403,6 @@ fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> String {
         DeviceType::Robot => "robot",
     };
     format!("{kind}|{}|{}|{}|-", device.driver, device.id, ch.channel_type)
-}
-
-fn canonical_device_display_name(
-    device_type: DeviceType,
-    driver: &str,
-    dof: Option<u32>,
-    stream: Option<&str>,
-    channel: Option<u32>,
-) -> String {
-    match device_type {
-        DeviceType::Camera => match (driver, stream) {
-            ("realsense", Some("color")) => "Intel RealSense RGB".into(),
-            ("realsense", Some("depth")) => "Intel RealSense Depth".into(),
-            ("realsense", Some("infrared")) => channel
-                .map(|value| format!("Intel RealSense Infrared {value}"))
-                .unwrap_or_else(|| "Intel RealSense Infrared".into()),
-            ("realsense", _) => "Intel RealSense Camera".into(),
-            ("v4l2", _) => "V4L2 Camera".into(),
-            ("pseudo", _) => "Pseudo Camera".into(),
-            _ => format!("{driver} camera"),
-        },
-        DeviceType::Robot => match driver {
-            "airbot-play" => "AIRBOT Play".into(),
-            "airbot-e2" => "AIRBOT E2".into(),
-            "airbot-g2" => "AIRBOT G2".into(),
-            "pseudo" if dof == Some(1) => "Pseudo End Effector".into(),
-            "pseudo" => "Pseudo Arm".into(),
-            _ => format!("{driver} robot"),
-        },
-    }
-}
-
-fn default_device_name_base(
-    device_type: DeviceType,
-    driver: &str,
-    dof: Option<u32>,
-    stream: Option<&str>,
-    channel: Option<u32>,
-) -> String {
-    match device_type {
-        DeviceType::Camera => match (driver, stream) {
-            ("realsense", Some("color")) => "realsense_rgb".into(),
-            ("realsense", Some("depth")) => "realsense_depth".into(),
-            ("realsense", Some("infrared")) => channel
-                .map(|value| format!("realsense_ir{value}"))
-                .unwrap_or_else(|| "realsense_ir".into()),
-            ("realsense", _) => "realsense_camera".into(),
-            ("v4l2", _) => "camera".into(),
-            ("pseudo", _) => "pseudo_camera".into(),
-            _ => format!("{}_camera", driver.replace('-', "_")),
-        },
-        DeviceType::Robot => match driver {
-            "airbot-play" => "airbot_play".into(),
-            "airbot-e2" => "airbot_e2".into(),
-            "airbot-g2" => "airbot_g2".into(),
-            "pseudo" if dof == Some(1) => "pseudo_eef".into(),
-            "pseudo" => "pseudo_arm".into(),
-            _ => format!("{}_robot", driver.replace('-', "_")),
-        },
-    }
 }
 
 fn next_default_device_name(base: String, counts: &mut BTreeMap<String, usize>) -> String {
@@ -3702,26 +3472,42 @@ mod tests {
             .collect()
     }
 
+    fn make_robot_modes() -> Vec<RobotMode> {
+        vec![
+            RobotMode::FreeDrive,
+            RobotMode::CommandFollowing,
+            RobotMode::Identifying,
+            RobotMode::Disabled,
+        ]
+    }
+
     fn camera_discovery(id: &str) -> DiscoveredDevice {
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "color".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Pseudo Camera".into()),
+                default_name: None,
+                modes: Vec::new(),
+                profiles: vec![CameraProfile {
+                    width: 640,
+                    height: 480,
+                    fps: 30,
+                    pixel_format: PixelFormat::Rgb24,
+                    native_pixel_format: None,
+                    stream: Some("color".into()),
+                    channel: None,
+                }],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
         DiscoveredDevice {
-            device_type: DeviceType::Camera,
             driver: "pseudo".into(),
             id: id.into(),
             display_name: id.into(),
-            camera_profiles: vec![CameraProfile {
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: PixelFormat::Rgb24,
-                native_pixel_format: None,
-                stream: Some("color".into()),
-                channel: None,
-            }],
-            supported_modes_by_channel: BTreeMap::new(),
-            channel_meta_by_channel: BTreeMap::new(),
-            dof: None,
-            supported_modes: Vec::new(),
-            default_frequency_hz: None,
+            default_device_name: Some("pseudo_camera".into()),
+            channel_meta_by_channel,
             transport: Some("simulated".into()),
             interface: None,
             product_variant: None,
@@ -3730,20 +3516,26 @@ mod tests {
     }
 
     fn robot_discovery(id: &str, dof: u32) -> DiscoveredDevice {
+        let default_name = if dof == 1 { "pseudo_eef" } else { "pseudo_arm" };
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "arm".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Robot,
+                channel_label: None,
+                default_name: Some(default_name.to_owned()),
+                modes: make_robot_modes(),
+                dof: Some(dof),
+                default_control_frequency_hz: Some(60.0),
+                ..DiscoveredChannelMeta::default()
+            },
+        );
         DiscoveredDevice {
-            device_type: DeviceType::Robot,
             driver: "pseudo".into(),
             id: id.into(),
             display_name: id.into(),
-            camera_profiles: Vec::new(),
-            supported_modes_by_channel: BTreeMap::from([(
-                "arm".into(),
-                default_supported_robot_modes(),
-            )]),
-            channel_meta_by_channel: BTreeMap::new(),
-            dof: Some(dof),
-            supported_modes: default_supported_robot_modes(),
-            default_frequency_hz: Some(60.0),
+            default_device_name: Some(default_name.to_owned()),
+            channel_meta_by_channel,
             transport: Some("simulated".into()),
             interface: None,
             product_variant: None,
@@ -3752,48 +3544,77 @@ mod tests {
     }
 
     fn airbot_play_discovery(end_effector: Option<&str>) -> DiscoveredDevice {
-        let mut supported_modes_by_channel = BTreeMap::from([(
-            "arm".into(),
-            default_supported_robot_modes(),
-        )]);
-        let mut channel_meta_by_channel = BTreeMap::from([(
-            "arm".into(),
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "arm".to_owned(),
             DiscoveredChannelMeta {
+                kind: DeviceType::Robot,
                 channel_label: Some("AIRBOT Play".into()),
                 default_name: Some("airbot_play_arm".into()),
+                modes: make_robot_modes(),
+                dof: Some(6),
+                default_control_frequency_hz: Some(250.0),
+                direct_joint_compatibility: rollio_types::config::DirectJointCompatibility {
+                    can_lead: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                        driver: "airbot-play".into(),
+                        channel_type: "arm".into(),
+                    }],
+                    can_follow: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                        driver: "airbot-play".into(),
+                        channel_type: "arm".into(),
+                    }],
+                },
                 ..DiscoveredChannelMeta::default()
             },
-        )]);
+        );
         if let Some(channel_type) = end_effector.map(|value| value.to_ascii_lowercase()) {
-            supported_modes_by_channel.insert(
-                channel_type.clone(),
-                default_supported_robot_modes(),
-            );
-            let (label, name) = match channel_type.as_str() {
-                "e2" => ("AIRBOT E2", "airbot_e2"),
-                "g2" => ("AIRBOT G2", "airbot_g2"),
-                _ => ("AIRBOT EEF", "airbot_eef"),
+            let (label, name, defaults) = match channel_type.as_str() {
+                "e2" => (
+                    "AIRBOT E2",
+                    "airbot_e2",
+                    rollio_types::config::ChannelCommandDefaults {
+                        joint_mit_kp: Vec::new(),
+                        joint_mit_kd: Vec::new(),
+                        parallel_mit_kp: vec![0.0],
+                        parallel_mit_kd: vec![0.0],
+                    },
+                ),
+                "g2" => (
+                    "AIRBOT G2",
+                    "airbot_g2",
+                    rollio_types::config::ChannelCommandDefaults {
+                        joint_mit_kp: Vec::new(),
+                        joint_mit_kd: Vec::new(),
+                        parallel_mit_kp: vec![10.0],
+                        parallel_mit_kd: vec![0.5],
+                    },
+                ),
+                _ => (
+                    "AIRBOT EEF",
+                    "airbot_eef",
+                    rollio_types::config::ChannelCommandDefaults::default(),
+                ),
             };
             channel_meta_by_channel.insert(
                 channel_type,
                 DiscoveredChannelMeta {
+                    kind: DeviceType::Robot,
                     channel_label: Some(label.into()),
                     default_name: Some(name.into()),
+                    modes: make_robot_modes(),
+                    dof: Some(1),
+                    default_control_frequency_hz: Some(250.0),
+                    defaults,
                     ..DiscoveredChannelMeta::default()
                 },
             );
         }
         DiscoveredDevice {
-            device_type: DeviceType::Robot,
             driver: "airbot-play".into(),
             id: "PZ123".into(),
             display_name: "AIRBOT Play".into(),
-            camera_profiles: Vec::new(),
-            supported_modes_by_channel,
+            default_device_name: Some("airbot_play".into()),
             channel_meta_by_channel,
-            dof: Some(6),
-            supported_modes: default_supported_robot_modes(),
-            default_frequency_hz: Some(250.0),
             transport: Some("can".into()),
             interface: Some("can0".into()),
             product_variant: Some("play-e2".into()),
@@ -3841,107 +3662,11 @@ mod tests {
         assert_eq!(config.pairings[1].follower_device, "pseudo_eef_2");
     }
 
-    #[test]
-    fn parse_camera_capabilities_infers_stream_pixel_formats() {
-        let profiles = parse_camera_capabilities(&json!({
-            "profiles": [
-                {"stream": "color", "width": 640, "height": 480, "fps": 30},
-                {"stream": "depth", "width": 640, "height": 480, "fps": 30},
-                {"stream": "infrared", "index": 1, "width": 640, "height": 480, "fps": 30}
-            ]
-        }));
-
-        assert_eq!(profiles.len(), 3);
-        assert_eq!(profiles[0].pixel_format, PixelFormat::Rgb24);
-        assert_eq!(profiles[1].pixel_format, PixelFormat::Depth16);
-        assert_eq!(profiles[2].pixel_format, PixelFormat::Gray8);
-        assert_eq!(profiles[2].channel, Some(1));
-    }
-
-    #[test]
-    fn parse_camera_capabilities_accepts_v4l2_native_format_shape() {
-        let profiles = parse_camera_capabilities(&json!({
-            "profiles": [
-                {"native_pixel_format": "MJPG", "width": 640, "height": 480, "fps": 30.0},
-                {"native_pixel_format": "YUYV", "width": 1280, "height": 720, "fps": 29.97}
-            ]
-        }));
-
-        assert_eq!(profiles.len(), 2);
-        assert_eq!(profiles[0].pixel_format, PixelFormat::Mjpeg);
-        assert_eq!(profiles[0].fps, 30);
-        assert_eq!(profiles[1].pixel_format, PixelFormat::Yuyv);
-        assert_eq!(profiles[1].fps, 30);
-    }
-
-    #[test]
-    fn normalize_camera_profiles_maps_v4l2_native_formats_to_rgb24() {
-        let profiles = normalize_camera_profiles(
-            "v4l2",
-            vec![
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Mjpeg,
-                    native_pixel_format: Some("MJPG".into()),
-                    stream: None,
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Yuyv,
-                    native_pixel_format: Some("YUYV".into()),
-                    stream: None,
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 1280,
-                    height: 720,
-                    fps: 30,
-                    pixel_format: PixelFormat::Yuyv,
-                    native_pixel_format: Some("YUYV".into()),
-                    stream: None,
-                    channel: None,
-                },
-            ],
-        );
-
-        assert_eq!(
-            profiles,
-            vec![
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: Some("MJPG".into()),
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: Some("YUYV".into()),
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 1280,
-                    height: 720,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: Some("YUYV".into()),
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-            ]
-        );
-    }
+    // (Legacy `parse_camera_capabilities_*` and `normalize_camera_profiles_*`
+    // tests removed alongside their helper functions: profiles now flow
+    // through `parse_query_channel_meta` directly from the driver's
+    // `query --json`, and the v4l2 special-case is dead code because the
+    // driver itself reports normalized RGB24/BGR24.)
 
     #[test]
     fn available_devices_from_discoveries_merges_airbot_interface_into_existing_config() {
@@ -4084,17 +3809,21 @@ mod tests {
         discovery.channel_meta_by_channel.insert(
             "arm".into(),
             DiscoveredChannelMeta {
+                kind: DeviceType::Robot,
                 channel_label: Some("AIRBOT Play".into()),
                 default_name: Some("airbot_play_arm".into()),
-                value_limits: Vec::new(),
+                modes: make_robot_modes(),
+                dof: Some(6),
+                default_control_frequency_hz: Some(250.0),
                 supported_states: supported,
+                ..DiscoveredChannelMeta::default()
             },
         );
         discovery
     }
 
     #[test]
-    fn binary_device_from_robot_discovery_defaults_publish_states_to_all_supported() {
+    fn binary_device_from_discovery_defaults_publish_states_to_all_supported() {
         // The driver advertises EndEffectorPose alongside the standard
         // joint kinds; the wizard should opt all of them into both
         // publish_states and recorded_states by default so operators don't
@@ -4105,7 +3834,7 @@ mod tests {
             RobotStateKind::JointEffort,
             RobotStateKind::EndEffectorPose,
         ]);
-        let device = binary_device_from_robot_discovery(
+        let device = binary_device_from_discovery(
             &discovery,
             "airbot_play".into(),
             RobotMode::FreeDrive,
@@ -4423,13 +4152,22 @@ mod tests {
     }
 
     #[test]
-    fn known_drivers_skip_pseudo_and_standalone_eef_by_default() {
-        let drivers = known_drivers()
-            .iter()
-            .map(|driver| driver.driver)
-            .collect::<Vec<_>>();
+    fn known_device_executables_skip_pseudo_and_standalone_eef_by_default() {
+        let executables = known_device_executables().iter().copied().collect::<Vec<_>>();
 
-        assert_eq!(drivers, vec!["realsense", "v4l2", "airbot-play"]);
+        assert_eq!(
+            executables,
+            vec![
+                "rollio-device-airbot-play",
+                "rollio-device-realsense",
+                "rollio-device-v4l2",
+                "rollio-device-agx-nero",
+            ]
+        );
+        assert!(
+            !executables.contains(&"rollio-device-pseudo"),
+            "pseudo must stay opt-in via --sim-pseudo"
+        );
     }
 
     #[cfg(unix)]
@@ -4458,32 +4196,31 @@ mod tests {
     }
 
     fn v4l2_discovery(id: &str) -> DiscoveredDevice {
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "color".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("V4L2 Camera".into()),
+                default_name: Some("camera".into()),
+                profiles: vec![CameraProfile {
+                    width: 640,
+                    height: 480,
+                    fps: 30,
+                    pixel_format: PixelFormat::Rgb24,
+                    native_pixel_format: Some("MJPG".into()),
+                    stream: Some("color".into()),
+                    channel: None,
+                }],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
         DiscoveredDevice {
-            device_type: DeviceType::Camera,
             driver: "v4l2".into(),
             id: id.into(),
             display_name: "V4L2 Camera".into(),
-            camera_profiles: vec![CameraProfile {
-                width: 640,
-                height: 480,
-                fps: 30,
-                pixel_format: PixelFormat::Rgb24,
-                native_pixel_format: Some("MJPG".into()),
-                stream: Some("color".into()),
-                channel: None,
-            }],
-            supported_modes_by_channel: BTreeMap::new(),
-            channel_meta_by_channel: BTreeMap::from([(
-                "color".into(),
-                DiscoveredChannelMeta {
-                    channel_label: Some("V4L2 Camera".into()),
-                    default_name: Some("camera".into()),
-                    ..DiscoveredChannelMeta::default()
-                },
-            )]),
-            dof: None,
-            supported_modes: Vec::new(),
-            default_frequency_hz: None,
+            default_device_name: Some("camera".into()),
+            channel_meta_by_channel,
             transport: None,
             interface: None,
             product_variant: None,
@@ -4492,13 +4229,14 @@ mod tests {
     }
 
     fn realsense_multi_stream_discovery(id: &str) -> DiscoveredDevice {
-        DiscoveredDevice {
-            device_type: DeviceType::Camera,
-            driver: "realsense".into(),
-            id: id.into(),
-            display_name: "Intel RealSense".into(),
-            camera_profiles: vec![
-                CameraProfile {
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "color".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Intel RealSense RGB".into()),
+                default_name: Some("realsense_rgb".into()),
+                profiles: vec![CameraProfile {
                     width: 1920,
                     height: 1080,
                     fps: 30,
@@ -4506,8 +4244,17 @@ mod tests {
                     native_pixel_format: None,
                     stream: Some("color".into()),
                     channel: None,
-                },
-                CameraProfile {
+                }],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
+        channel_meta_by_channel.insert(
+            "depth".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Intel RealSense Depth".into()),
+                default_name: Some("realsense_depth".into()),
+                profiles: vec![CameraProfile {
                     width: 640,
                     height: 480,
                     fps: 30,
@@ -4515,8 +4262,17 @@ mod tests {
                     native_pixel_format: None,
                     stream: Some("depth".into()),
                     channel: None,
-                },
-                CameraProfile {
+                }],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
+        channel_meta_by_channel.insert(
+            "infrared".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Intel RealSense Infrared".into()),
+                default_name: Some("realsense_ir".into()),
+                profiles: vec![CameraProfile {
                     width: 640,
                     height: 480,
                     fps: 30,
@@ -4524,13 +4280,16 @@ mod tests {
                     native_pixel_format: None,
                     stream: Some("infrared".into()),
                     channel: None,
-                },
-            ],
-            supported_modes_by_channel: BTreeMap::new(),
-            channel_meta_by_channel: BTreeMap::new(),
-            dof: None,
-            supported_modes: Vec::new(),
-            default_frequency_hz: None,
+                }],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
+        DiscoveredDevice {
+            driver: "realsense".into(),
+            id: id.into(),
+            display_name: "Intel RealSense".into(),
+            default_device_name: Some("realsense".into()),
+            channel_meta_by_channel,
             transport: None,
             interface: None,
             product_variant: None,
@@ -4631,75 +4390,89 @@ mod tests {
     /// the best one (largest pixel count, then highest fps).
     #[test]
     fn build_discovery_config_picks_highest_resolution_and_fps_default_profile() {
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "color".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Intel RealSense RGB".into()),
+                default_name: Some("realsense_rgb".into()),
+                profiles: vec![
+                    CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    },
+                    CameraProfile {
+                        width: 1280,
+                        height: 720,
+                        fps: 60,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    },
+                    CameraProfile {
+                        width: 1920,
+                        height: 1080,
+                        fps: 30,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    },
+                    CameraProfile {
+                        width: 1920,
+                        height: 1080,
+                        fps: 60,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    },
+                ],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
+        channel_meta_by_channel.insert(
+            "depth".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Camera,
+                channel_label: Some("Intel RealSense Depth".into()),
+                default_name: Some("realsense_depth".into()),
+                profiles: vec![
+                    CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Depth16,
+                        native_pixel_format: None,
+                        stream: Some("depth".into()),
+                        channel: None,
+                    },
+                    CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 90,
+                        pixel_format: PixelFormat::Depth16,
+                        native_pixel_format: None,
+                        stream: Some("depth".into()),
+                        channel: None,
+                    },
+                ],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
         let discovery = DiscoveredDevice {
-            device_type: DeviceType::Camera,
             driver: "realsense".into(),
             id: "best-default".into(),
             display_name: "Intel RealSense".into(),
-            camera_profiles: vec![
-                // Color: lowest profile listed first to ensure the
-                // selector does not just take the head.
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 1280,
-                    height: 720,
-                    fps: 60,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 1920,
-                    height: 1080,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 1920,
-                    height: 1080,
-                    fps: 60,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                },
-                // Depth: same pixel count at two fps values.
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Depth16,
-                    native_pixel_format: None,
-                    stream: Some("depth".into()),
-                    channel: None,
-                },
-                CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 90,
-                    pixel_format: PixelFormat::Depth16,
-                    native_pixel_format: None,
-                    stream: Some("depth".into()),
-                    channel: None,
-                },
-            ],
-            supported_modes_by_channel: BTreeMap::new(),
-            channel_meta_by_channel: BTreeMap::new(),
-            dof: None,
-            supported_modes: Vec::new(),
-            default_frequency_hz: None,
+            default_device_name: Some("realsense".into()),
+            channel_meta_by_channel,
             transport: None,
             interface: None,
             product_variant: None,

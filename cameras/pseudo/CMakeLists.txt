@@ -1,13 +1,13 @@
-add_executable(rollio-camera-pseudo src/main.cpp)
-target_link_libraries(rollio-camera-pseudo PRIVATE rollio-common)
+add_executable(rollio-device-pseudo-camera src/main.cpp)
+target_link_libraries(rollio-device-pseudo-camera PRIVATE rollio-common)
 
 if(ROLLIO_BUILD_CPP_TESTS)
-    add_executable(rollio-camera-pseudo-tests tests/runtime.cpp)
-    target_link_libraries(rollio-camera-pseudo-tests PRIVATE rollio-common)
+    add_executable(rollio-device-pseudo-camera-tests tests/runtime.cpp)
+    target_link_libraries(rollio-device-pseudo-camera-tests PRIVATE rollio-common)
     target_compile_definitions(
-        rollio-camera-pseudo-tests
+        rollio-device-pseudo-camera-tests
         PRIVATE
-        ROLLIO_CAMERA_PSEUDO_BIN="$<TARGET_FILE:rollio-camera-pseudo>"
+        ROLLIO_DEVICE_PSEUDO_CAMERA_BIN="$<TARGET_FILE:rollio-device-pseudo-camera>"
     )
-    add_test(NAME rollio-camera-pseudo-tests COMMAND rollio-camera-pseudo-tests)
+    add_test(NAME rollio-device-pseudo-camera-tests COMMAND rollio-device-pseudo-camera-tests)
 endif()

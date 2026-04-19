@@ -108,13 +108,13 @@ auto spawn_camera_process(const std::string& config_inline) -> pid_t {
     }
     if (pid == 0) {
         char* argv[] = {
-            const_cast<char*>(ROLLIO_CAMERA_PSEUDO_BIN),
+            const_cast<char*>(ROLLIO_DEVICE_PSEUDO_CAMERA_BIN),
             const_cast<char*>("run"),
             const_cast<char*>("--config-inline"),
             const_cast<char*>(config_inline.c_str()),
             nullptr,
         };
-        execv(ROLLIO_CAMERA_PSEUDO_BIN, argv);
+        execv(ROLLIO_DEVICE_PSEUDO_CAMERA_BIN, argv);
         _exit(127);
     }
 
@@ -171,7 +171,7 @@ auto wait_for_exit(const pid_t pid, const std::chrono::seconds timeout) -> void 
 }
 
 auto run_probe_test() -> void {
-    const auto command = std::string("\"") + ROLLIO_CAMERA_PSEUDO_BIN + "\" probe --count 3";
+    const auto command = std::string("\"") + ROLLIO_DEVICE_PSEUDO_CAMERA_BIN + "\" probe --count 3";
     const auto output = capture_stdout(command);
     if (count_substring(output, "\"id\":\"pseudo_cam_") != 3U) {
         throw std::runtime_error("probe output did not contain three pseudo camera ids");
@@ -179,7 +179,7 @@ auto run_probe_test() -> void {
 }
 
 auto run_capabilities_test() -> void {
-    const auto command = std::string("\"") + ROLLIO_CAMERA_PSEUDO_BIN + "\" capabilities pseudo_cam_0";
+    const auto command = std::string("\"") + ROLLIO_DEVICE_PSEUDO_CAMERA_BIN + "\" capabilities pseudo_cam_0";
     const auto output = capture_stdout(command);
     if (output.find("\"rgb24\"") == std::string::npos || output.find("\"width\":640") == std::string::npos) {
         throw std::runtime_error("capabilities output is missing expected profile data");
@@ -234,7 +234,7 @@ auto main() -> int {
         run_runtime_test();
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "rollio-camera-pseudo-tests: " << error.what() << '\n';
+        std::cerr << "rollio-device-pseudo-camera-tests: " << error.what() << '\n';
         return 1;
     }
 }

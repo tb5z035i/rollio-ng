@@ -35,11 +35,21 @@ Each channel has its own mode:
 ## Driver Discovery
 
 - Device support is provided by executables.
-- The framework should support a hybrid discovery model:
-  - explicit executable registration
-  - optional PATH-based discovery
-- The goal is that adding a new device family should not require framework
-  source changes as long as the executable satisfies the shared contract.
+- All device executables follow the unified `rollio-device-{driver}` naming
+  convention. The legacy `rollio-camera-*` / `rollio-robot-*` split is gone:
+  a single device may expose camera channels, robot channels, or a mix.
+- The controller discovers devices via a hybrid model:
+  - **Explicit registry** in [`controller/src/discovery.rs`](../controller/src/discovery.rs)
+    for in-tree drivers (`known_device_executables()`); these are always
+    probed even when the workspace `target/debug` builds aren't on `$PATH`.
+  - **PATH scan** for any executable whose filename starts with
+    `rollio-device-`. Third-party drivers installed via `pip install` /
+    `cargo install` are picked up automatically with no framework changes.
+  - `rollio-device-pseudo` is excluded from both paths and surfaces only
+    when the controller is invoked with `--sim-pseudo N`.
+- The framework keeps **no per-driver tables** — all capability, naming,
+  pairing, and pixel-format metadata flows through the device's own
+  `query --json` response.
 
 ## Executable Contract
 

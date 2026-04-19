@@ -1,31 +1,36 @@
 # Cameras
 
-In-repo camera drivers live under `cameras/`.
+In-repo camera drivers live under `cameras/`. Cameras are just *device drivers*
+that happen to expose `kind: camera` channels in their `query --json` response;
+the framework no longer special-cases them vs robot drivers.
 
 ## Layout
 
-- `pseudo/`: synthetic reference camera used by CI and smoke tests.
-- `realsense/`: hardware-backed RealSense driver with no-hardware fallback coverage.
-- `v4l2/`: Rust V4L2 webcam driver that converts native frames to `rgb24`/`bgr24`.
+- `pseudo/`: synthetic reference camera (`rollio-device-pseudo-camera`) used
+  by C++ integration tests.
+- `realsense/`: hardware-backed RealSense driver (`rollio-device-realsense`)
+  with no-hardware fallback coverage.
+- `v4l2/`: Rust V4L2 webcam driver (`rollio-device-v4l2`) that converts native
+  frames to `rgb24`/`bgr24`.
 - `build/`: generated CMake build directory.
 
 ## Add A New Camera Driver
 
-1. Create a folder under `cameras/<driver_name>/`.
-2. Expose a binary named `rollio-camera-<driver_name>`.
-3. Implement the existing driver CLI contract:
-   - `probe`
-   - `validate`
-   - `capabilities`
-   - `run --config <path>` or `run --config-inline <toml>`
-4. Publish frames to `camera/{name}/frames`.
+Same convention as any other device driver — see
+[`robots/README.md`](../robots/README.md) for the full contract. Briefly:
+
+1. Create a folder under `cameras/<driver_name>/` (or `robots/`, doesn't
+   matter to the framework).
+2. Expose a binary named `rollio-device-<driver_name>`.
+3. Implement the device CLI contract (`probe`, `validate`, `query`, `run`).
+4. Publish frames to `{bus_root}/{channel_type}/frames`.
 5. Listen for `control/events` and exit cleanly on shutdown.
-6. Add `add_subdirectory(<driver_name>)` to `cameras/CMakeLists.txt` if it is a C++ driver.
-7. Add focused tests or at least a no-hardware validation path.
+6. Add `add_subdirectory(<driver_name>)` to `cameras/CMakeLists.txt` if it
+   is a C++ driver.
 
 ## V4L2 Webcam Driver
 
-The in-repo `v4l2` driver is a Rust binary exposed as `rollio-camera-v4l2`.
+The in-repo `v4l2` driver is a Rust binary exposed as `rollio-device-v4l2`.
 
 - Use `driver = "v4l2"` and set `id` to the Linux device node, for example `/dev/video0`.
 - The first version supports a single color stream only. If `stream` is provided, it must be `"color"`.
@@ -35,12 +40,13 @@ The in-repo `v4l2` driver is a Rust binary exposed as `rollio-camera-v4l2`.
 
 ## Controller Resolution
 
-`rollio collect` first looks for in-repo camera binaries under
-`cameras/build/<driver_name>/rollio-camera-<driver_name>`.
+`rollio collect` resolves camera drivers exactly the same way it resolves any
+other device driver. Looks for `rollio-device-<driver>`:
 
-For Rust camera drivers built as workspace members, it also checks
-`target/debug/rollio-camera-<driver_name>` before falling back to `PATH`.
+1. In the workspace `target/debug/`
+2. In the controller's own directory or `cameras/build/<driver>/`
+3. Anywhere on `$PATH`
 
-If no in-repo binary exists, it falls back to `PATH`, so external camera drivers
-can be added without changing the controller as long as they follow the same CLI
-and iceoryx2 bus contract.
+External camera drivers can be added without changing the controller as long
+as they follow the unified `rollio-device-*` naming convention and the
+iceoryx2 bus contract.

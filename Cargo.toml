@@ -14,7 +14,6 @@ members = [
     "robots/airbot_play_rust",
     "test/test-publisher",
     "cameras/v4l2",
-    "test/robot-keyboard",
     "test/bus-tap",
     "ui-server",
     "control-server",
