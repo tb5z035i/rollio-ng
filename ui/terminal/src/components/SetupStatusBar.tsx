@@ -11,7 +11,6 @@ interface SetupStatusBarProps {
   outputPath: string;
   width: number;
   status: SetupStatus;
-  stepHint: string;
   message?: string;
 }
 
@@ -25,23 +24,23 @@ const HEALTH_LABELS: Record<SetupHealth, string> = {
   degraded: "[Waiting]",
 };
 
+/** Status bar text excluding key hints — those moved to a dedicated
+ *  `KeyHintsBar` row above the status bar. Keeps the bar focused on the
+ *  always-visible session metadata: step counter, websocket health, and
+ *  output file path. */
 export function buildSetupStatusBarLeft(props: {
   stepIndex: number;
   totalSteps: number;
   connected: boolean;
   outputPath: string;
   status: SetupStatus;
-  stepHint: string;
   message?: string;
 }): string {
   const connection = props.connected ? "Connected" : "Connecting";
   const output = props.outputPath.length > 28
     ? `...${props.outputPath.slice(-25)}`
     : props.outputPath;
-  return (
-    ` Setup | ${props.stepIndex}/${props.totalSteps} | Keys: ${props.stepHint}` +
-    ` | WS: ${connection} | File: ${output}`
-  );
+  return ` Setup | ${props.stepIndex}/${props.totalSteps} | WS: ${connection} | File: ${output}`;
 }
 
 export function SetupStatusBar({
@@ -51,7 +50,6 @@ export function SetupStatusBar({
   outputPath,
   width,
   status,
-  stepHint,
 }: SetupStatusBarProps) {
   const health: SetupHealth = connected ? "normal" : "degraded";
   const left = buildSetupStatusBarLeft({
@@ -60,7 +58,6 @@ export function SetupStatusBar({
     connected,
     outputPath,
     status,
-    stepHint,
   });
   const right =
     status === "saved"

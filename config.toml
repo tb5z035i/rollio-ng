@@ -130,7 +130,7 @@ control_frequency_hz = 250.0
 [devices.channels.command_defaults]
 joint_mit_kp = []
 joint_mit_kd = []
-parallel_mit_kp = [10.0]
+parallel_mit_kp = [1.0]
 parallel_mit_kd = [0.5]
 
 [[pairings]]

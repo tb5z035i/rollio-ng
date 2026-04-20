@@ -3,6 +3,7 @@ import { Box, Text, useInput, useStdin, useStdout } from "ink";
 import { TitleBar } from "./components/TitleBar.js";
 import { SetupStatusBar } from "./components/SetupStatusBar.js";
 import { LivePreviewPanels } from "./components/LivePreviewPanels.js";
+import { KeyHintsBar, type KeyHint } from "./components/KeyHintsBar.js";
 import { useControlSocket, usePreviewSocket } from "./lib/websocket.js";
 import {
   encodeSetupCommand,
@@ -47,6 +48,34 @@ type PreviewJumpStep = "devices" | "states" | "storage" | "pairing";
 type PreviewAction =
   | { kind: "jump"; label: string; targetStep: PreviewJumpStep }
   | { kind: "save"; label: string };
+
+/** Two-phase modal picker state for the pairing step. While non-null, the
+ *  global key handler hijacks j/k/enter/esc to scroll/commit/cancel the
+ *  picker rather than acting on the underlying detail row.
+ *
+ *  - `kind`: `"edit"` mutates an existing pair via setup_set_pairing_*;
+ *    `"create"` defers any controller mutation until the operator
+ *    confirms BOTH endpoints, then sends a single setup_create_pairing.
+ *    Esc in `"create"` mode silently drops the draft — no pair is born.
+ *  - `index`: target pair (edit only).
+ *  - `draftLeader`: leader confirmed in the first phase of a `"create"`
+ *    draft, carried forward into the follower phase.
+ *  - `phase`: which side of the pair we're picking next.
+ *  - `cursor`: highlighted row in the candidate list.
+ */
+type PairingDraft =
+  | {
+      kind: "edit";
+      index: number;
+      phase: "leader" | "follower";
+      cursor: number;
+    }
+  | {
+      kind: "create";
+      phase: "leader" | "follower";
+      cursor: number;
+      draftLeader?: PairChannelOption;
+    };
 
 /** One toggleable row in the "States" sub-step: a single (channel, state)
  *  pair across every selected robot channel. */
@@ -139,6 +168,7 @@ export function SetupApp({
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [editingField, setEditingField] = useState<EditableFieldId | null>(null);
   const [draftValue, setDraftValue] = useState("");
+  const [pairingDraft, setPairingDraft] = useState<PairingDraft | null>(null);
 
   useEffect(() => {
     if (!connected) {
@@ -177,6 +207,37 @@ export function SetupApp({
     [setupState],
   );
   const stateRows = useMemo(() => buildStateRows(setupState), [setupState]);
+  // Picker option lists are computed against the *targeted* pair (edit
+  // mode only) so the no-self-loop and follower-uniqueness rules behave
+  // correctly when the operator re-picks an existing pair's endpoint
+  // (the pair's own current values shouldn't filter themselves out).
+  // For create mode the picker has no pair yet — pass `undefined` so the
+  // candidate set reflects the full live pairing graph.
+  const pickerExceptIndex =
+    pairingDraft?.kind === "edit" ? pairingDraft.index : undefined;
+  // Leader options are independent of the picked leader (the create-mode
+  // follower phase exclude-self check is applied below at render-time).
+  const leaderOptions = useMemo(
+    () => eligibleLeaderOptions(setupState, pickerExceptIndex),
+    [pickerExceptIndex, setupState],
+  );
+  const baseFollowerOptions = useMemo(
+    () => eligibleFollowerOptions(setupState, pickerExceptIndex),
+    [pickerExceptIndex, setupState],
+  );
+  // In create mode's follower phase, additionally exclude the leader the
+  // operator just picked so the picker can't suggest a self-loop.
+  const followerOptions = useMemo(() => {
+    if (pairingDraft?.kind !== "create" || !pairingDraft.draftLeader) {
+      return baseFollowerOptions;
+    }
+    const leader = pairingDraft.draftLeader;
+    return baseFollowerOptions.filter(
+      (option) =>
+        option.deviceName !== leader.deviceName ||
+        option.channelType !== leader.channelType,
+    );
+  }, [baseFollowerOptions, pairingDraft]);
   const focusableCount = useMemo(() => {
     switch (setupState?.step) {
       case "devices":
@@ -184,7 +245,11 @@ export function SetupApp({
       case "states":
         return stateRows.length;
       case "pairing":
-        return setupState.config.pairings.length;
+        // +1 for the trailing virtual `[+ new pair]` row so the operator
+        // can focus it and press `m` to create a new pair (keeping the
+        // create flow visible/discoverable instead of buried behind a
+        // bare keystroke).
+        return setupState.config.pairings.length + 1;
       case "storage":
         return settingsFields.length;
       case "preview":
@@ -213,6 +278,24 @@ export function SetupApp({
     }
   }, [editingField, setupState?.step]);
 
+  useEffect(() => {
+    if (pairingDraft === null) return;
+    if (setupState?.step !== "pairing") {
+      setPairingDraft(null);
+      return;
+    }
+    // Edit mode targets a real pair: close the picker if the pair was
+    // removed by another peer (or the index drifted out of bounds).
+    // Create mode is purely UI-side until the operator commits both
+    // endpoints, so the pair count is irrelevant.
+    if (pairingDraft.kind === "edit") {
+      const pairCount = setupState.config.pairings.length;
+      if (pairingDraft.index >= pairCount) {
+        setPairingDraft(null);
+      }
+    }
+  }, [pairingDraft, setupState?.step, setupState?.config.pairings.length]);
+
   const rendererLabel = getAsciiRendererLabel(cameraRendererId);
   const detailLines = useMemo(
     () =>
@@ -225,6 +308,9 @@ export function SetupApp({
         editingField,
         draftValue,
         stateRows,
+        pairingDraft,
+        leaderOptions,
+        followerOptions,
       ),
     [
       draftValue,
@@ -235,6 +321,9 @@ export function SetupApp({
       settingsFields,
       setupState,
       stateRows,
+      pairingDraft,
+      leaderOptions,
+      followerOptions,
     ],
   );
   const showLivePanels = useMemo(
@@ -256,7 +345,10 @@ export function SetupApp({
     if (!showLivePanels) {
       return 0;
     }
-    return Math.max(8, rows - 2 - detailLines.length - 1);
+    // Layout below the camera panel: detail lines + KeyHintsBar (1 row) +
+    // SetupStatusBar (1 row). Subtract them from the available rows so
+    // the camera area stops short of overdrawing those bars.
+    return Math.max(8, rows - 2 - detailLines.length - 2);
   }, [detailLines.length, rows, showLivePanels]);
   const preferredLiveCameraNames = useMemo(() => {
     if (!setupState) {
@@ -278,9 +370,24 @@ export function SetupApp({
     }
     return [];
   }, [identifyDevice, selectedDevices, setupState]);
-  const stepHint = useMemo(
-    () => stepHintForState(setupState, editingField, previewActions.length),
-    [editingField, previewActions.length, setupState],
+  const keyHints = useMemo(
+    () =>
+      buildSetupKeyHints({
+        setupState,
+        editingField,
+        pairingDraft,
+        previewActionCount: previewActions.length,
+        showLivePanels,
+        rendererLabel,
+      }),
+    [
+      editingField,
+      pairingDraft,
+      previewActions.length,
+      rendererLabel,
+      setupState,
+      showLivePanels,
+    ],
   );
 
   useInput(
@@ -324,6 +431,110 @@ export function SetupApp({
         }
         if (input.length > 0 && !key.tab) {
           setDraftValue((current) => current + input);
+        }
+        return;
+      }
+
+      // Pairing picker hijacks all navigation / commit / cancel keys while
+      // open; the underlying focus list and step navigation stay frozen.
+      if (pairingDraft !== null && setupState.step === "pairing") {
+        const options =
+          pairingDraft.phase === "leader" ? leaderOptions : followerOptions;
+        const normalizedPicker = input.toLowerCase();
+        // Accept several "cancel" inputs because some terminals/OSes
+        // delay or swallow the bare `\x1b` byte that Ink reads as
+        // `key.escape`. `q` and `m` (m toggles back the picker the same
+        // key opened it with) are reliable fallbacks in any terminal.
+        if (
+          key.escape ||
+          input === "\u001b" ||
+          normalizedPicker === "q" ||
+          normalizedPicker === "m"
+        ) {
+          setPairingDraft(null);
+          return;
+        }
+        if (options.length === 0) {
+          // No candidates available. The escape-fallback keys above are
+          // already handled; here we additionally accept Enter as a
+          // synonym for "close" so the operator can dismiss the empty
+          // picker without remembering the cancel keys.
+          if (key.return) {
+            setPairingDraft(null);
+          }
+          return;
+        }
+        if (key.upArrow || normalizedPicker === "k") {
+          setPairingDraft((draft) =>
+            draft === null
+              ? draft
+              : { ...draft, cursor: (draft.cursor + options.length - 1) % options.length },
+          );
+          return;
+        }
+        if (key.downArrow || normalizedPicker === "j") {
+          setPairingDraft((draft) =>
+            draft === null ? draft : { ...draft, cursor: (draft.cursor + 1) % options.length },
+          );
+          return;
+        }
+        if (key.return) {
+          const choice = options[pairingDraft.cursor];
+          if (!choice) {
+            return;
+          }
+          if (pairingDraft.kind === "edit") {
+            // Edit mode mutates the targeted pair on the controller as
+            // each endpoint is committed.
+            const action =
+              pairingDraft.phase === "leader"
+                ? "setup_set_pairing_leader"
+                : "setup_set_pairing_follower";
+            sendControl(
+              encodeSetupCommand(action, {
+                index: pairingDraft.index,
+                value: `${choice.deviceName}|${choice.channelType}`,
+              }),
+            );
+            if (pairingDraft.phase === "leader") {
+              // Advance to the follower phase. `eligibleFollowerOptions`
+              // already excludes the targeted pair's leader, so the
+              // cursor can simply land on the first option.
+              setPairingDraft({
+                kind: "edit",
+                index: pairingDraft.index,
+                phase: "follower",
+                cursor: 0,
+              });
+            } else {
+              setPairingDraft(null);
+            }
+          } else {
+            // Create mode: hold the operator's picks UI-side until both
+            // are confirmed, then send a single setup_create_pairing.
+            // This way, esc at any point silently drops the draft —
+            // nothing is created on the controller.
+            if (pairingDraft.phase === "leader") {
+              setPairingDraft({
+                kind: "create",
+                phase: "follower",
+                cursor: 0,
+                draftLeader: choice,
+              });
+            } else if (pairingDraft.draftLeader) {
+              const leader = pairingDraft.draftLeader;
+              sendControl(
+                encodeSetupCommand("setup_create_pairing", {
+                  value: `${leader.deviceName}|${leader.channelType};${choice.deviceName}|${choice.channelType}`,
+                }),
+              );
+              setPairingDraft(null);
+            } else {
+              // Defensive: missing leader during follower phase → restart.
+              setPairingDraft({ kind: "create", phase: "leader", cursor: 0 });
+            }
+          }
+          return;
         }
         return;
       }
@@ -378,6 +589,61 @@ export function SetupApp({
           );
         }
         return;
+      }
+
+      if (setupState.step === "pairing") {
+        const pairCount = setupState.config.pairings.length;
+        const onNewPairRow = focusedIndex === pairCount;
+        if (normalizedInput === "m") {
+          // `m` always opens the picker. On an existing pair it edits
+          // that pair (mutations apply immediately on the controller).
+          // On the virtual `[+ new pair]` row it opens a *create* draft
+          // — the operator's leader/follower selections are held UI-side
+          // until BOTH are confirmed, at which point a single
+          // `setup_create_pairing` lands the new pair on the controller.
+          // Esc at any point during create-mode silently drops the draft,
+          // so no half-baked pair is ever born.
+          if (onNewPairRow) {
+            setPairingDraft({
+              kind: "create",
+              phase: "leader",
+              cursor: 0,
+            });
+            return;
+          }
+          const focusedPair = setupState.config.pairings[focusedIndex];
+          if (focusedPair) {
+            // Re-derive leader options against the focused pair so the
+            // cursor lands on the pair's current leader (the memoized
+            // `leaderOptions` still uses the previous picker context,
+            // i.e. `undefined` here).
+            const optionsForPair = eligibleLeaderOptions(setupState, focusedIndex);
+            setPairingDraft({
+              kind: "edit",
+              index: focusedIndex,
+              phase: "leader",
+              cursor: Math.max(
+                0,
+                optionsForPair.findIndex(
+                  (option) =>
+                    option.deviceName === focusedPair.leader_device &&
+                    option.channelType === focusedPair.leader_channel_type,
+                ),
+              ),
+            });
+          }
+          return;
+        }
+        if (normalizedInput === "d" || key.delete || key.backspace) {
+          // `d` only deletes existing pairs; on the virtual new-pair
+          // row it's a no-op (there's nothing to delete yet).
+          if (!onNewPairRow && setupState.config.pairings[focusedIndex]) {
+            sendControl(
+              encodeSetupCommand("setup_remove_pairing", { index: focusedIndex }),
+            );
+          }
+          return;
+        }
       }
 
       if (key.return) {
@@ -554,6 +820,7 @@ export function SetupApp({
         </Box>
       )}
 
+      <KeyHintsBar hints={keyHints} width={columns} />
       <SetupStatusBar
         stepIndex={setupState?.step_index ?? 1}
         totalSteps={setupState?.total_steps ?? 1}
@@ -561,7 +828,6 @@ export function SetupApp({
         outputPath={setupState?.output_path ?? "config.toml"}
         width={columns}
         status={setupState?.status ?? "editing"}
-        stepHint={`${stepHint} | r:Renderer ${rendererLabel}`}
         message={setupState?.message}
       />
     </Box>
@@ -723,6 +989,131 @@ function buildStateRows(setupState: SetupStateMessage | null): StateRow[] {
   return rows;
 }
 
+/** Channel that satisfies the `supported_modes` predicate for one side of
+ *  a teleop pair. Mirrors the controller's `eligible_leader_channels` /
+ *  `eligible_follower_channels` so the picker only ever offers options
+ *  the controller will accept. */
+type PairChannelOption = {
+  /** The `BinaryDeviceConfig.name` (== `bus_root`) of the device that
+   *  owns the channel. Used as the pair endpoint identifier on the wire. */
+  deviceName: string;
+  channelType: string;
+  /** Per-channel display name (falls back to channel_type), used to render
+   *  the picker rows so the operator sees the same string they typed in
+   *  the device step. */
+  displayName: string;
+  /** "{display}/{channel_type}" — used as a stable React key. */
+  label: string;
+};
+
+function buildPairOptions(
+  setupState: SetupStateMessage | null,
+  predicate: (modes: SetupAvailableDevice["supported_modes"]) => boolean,
+): PairChannelOption[] {
+  if (!setupState) return [];
+  const modesByKey = new Map<string, SetupAvailableDevice["supported_modes"]>();
+  for (const available of setupState.available_devices) {
+    if (available.device_type !== "robot") continue;
+    const ch = available.current.channels[0];
+    if (!ch) continue;
+    modesByKey.set(
+      `${available.driver}|${available.id}|${ch.channel_type}`,
+      available.supported_modes,
+    );
+  }
+  const out: PairChannelOption[] = [];
+  for (const device of setupState.config.devices) {
+    for (const channel of device.channels) {
+      if (channel.kind !== "robot" || channel.enabled === false) {
+        continue;
+      }
+      const supported =
+        modesByKey.get(`${device.driver}|${device.id}|${channel.channel_type}`) ?? [];
+      if (!predicate(supported)) continue;
+      const displayName = (channel.name?.trim() || channel.channel_type) ?? channel.channel_type;
+      out.push({
+        deviceName: device.name,
+        channelType: channel.channel_type,
+        displayName,
+        label: `${displayName}/${channel.channel_type}`,
+      });
+    }
+  }
+  return out;
+}
+
+/** Channels that may serve as the leader for the pair at
+ *  `exceptPairIndex` (or for a brand-new pair when omitted). Mirrors the
+ *  controller-side `SetupSession::eligible_leader_channels` so the picker
+ *  never shows an option the controller would later reject. The leader
+ *  must support `free-drive` OR `command-following` (either mode lets
+ *  the controller observe joint state, which is all the leader needs to
+ *  do); passive EEFs that only advertise free-drive (e.g. AIRBOT E2)
+ *  qualify because the operator manually moves them and the controller
+ *  forwards the observed positions. Leaders may be shared across pairs,
+ *  so the only per-pair constraint is the no-self-loop guard against the
+ *  targeted pair's current follower. */
+function eligibleLeaderOptions(
+  setupState: SetupStateMessage | null,
+  exceptPairIndex?: number,
+): PairChannelOption[] {
+  const all = buildPairOptions(setupState, (modes) =>
+    modes.includes("free-drive") || modes.includes("command-following"),
+  );
+  const targetedPair =
+    exceptPairIndex !== undefined
+      ? setupState?.config.pairings[exceptPairIndex]
+      : undefined;
+  return all.filter((option) => {
+    if (
+      targetedPair &&
+      option.deviceName === targetedPair.follower_device &&
+      option.channelType === targetedPair.follower_channel_type
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Channels that may serve as the follower for the pair at
+ *  `exceptPairIndex` (or for a brand-new pair when omitted). Mirrors the
+ *  controller-side `SetupSession::eligible_follower_channels`. The
+ *  follower must support `command-following` and, additionally, must not
+ *  already be a follower in another pair (each follower can only follow
+ *  one leader at a time) and must not collapse onto its own pair's
+ *  leader. */
+function eligibleFollowerOptions(
+  setupState: SetupStateMessage | null,
+  exceptPairIndex?: number,
+): PairChannelOption[] {
+  const all = buildPairOptions(setupState, (modes) =>
+    modes.includes("command-following"),
+  );
+  if (!setupState) return all;
+  const targetedPair =
+    exceptPairIndex !== undefined
+      ? setupState.config.pairings[exceptPairIndex]
+      : undefined;
+  const claimedFollowers = new Set<string>();
+  setupState.config.pairings.forEach((pair, idx) => {
+    if (idx === exceptPairIndex) return;
+    claimedFollowers.add(`${pair.follower_device}|${pair.follower_channel_type}`);
+  });
+  return all.filter((option) => {
+    const key = `${option.deviceName}|${option.channelType}`;
+    if (claimedFollowers.has(key)) return false;
+    if (
+      targetedPair &&
+      option.deviceName === targetedPair.leader_device &&
+      option.channelType === targetedPair.leader_channel_type
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function buildPreviewActions(setupState: SetupStateMessage | null): PreviewAction[] {
   if (!setupState) {
     return [];
@@ -837,6 +1228,9 @@ function buildDetailLines(
   editingField: EditableFieldId | null,
   draftValue: string,
   stateRows: StateRow[],
+  pairingDraft: PairingDraft | null,
+  leaderOptions: PairChannelOption[],
+  followerOptions: PairChannelOption[],
 ): DetailLine[] {
   if (!setupState) {
     return [
@@ -909,6 +1303,10 @@ function buildDetailLines(
           ...messageLines,
         ];
       }
+      const stateKindWidth = stateRows.reduce(
+        (acc, row) => Math.max(acc, row.stateKind.length),
+        0,
+      );
       let lastChannel: string | null = null;
       const lines: DetailLine[] = [
         textLine(
@@ -929,48 +1327,62 @@ function buildDetailLines(
           );
           lastChannel = row.channelLabel;
         }
-        lines.push(stateRowLine(row, index === focusedIndex));
+        lines.push(stateRowLine(row, index === focusedIndex, stateKindWidth));
       }
       lines.push(...warningLines, ...messageLines);
       return lines;
     }
-    case "pairing":
-      return setupState.config.pairings.length > 0
-        ? [
-            textLine(
-              "pairing-title",
-              "Review teleoperation mappings for leader/follower pairs.",
-              { color: "cyan", bold: true },
+    case "pairing": {
+      const pairCount = setupState.config.pairings.length;
+      // The new-pair row sits at index = pairCount and is always
+      // present, so the create flow stays discoverable even when the
+      // pairing list is empty. `d` is intentionally a no-op on this row
+      // (see m-key handler) — there's nothing to delete.
+      const newPairFocused = focusedIndex === pairCount;
+      const pairLines: DetailLine[] = [
+        textLine(
+          "pairing-title",
+          "Manage teleoperation pairs. m: edit (or create on the new-pair row), d: delete.",
+          { color: "cyan", bold: true },
+        ),
+        ...setupState.config.pairings.map((pair, index) =>
+          buildDetailLine(`pair:${index}`, [
+            focusPrefix(index === focusedIndex),
+            textSegment(
+              `${pair.leader_device}:${pair.leader_channel_type} -> ${pair.follower_device}:${pair.follower_channel_type}`,
+              {
+                bold: index === focusedIndex,
+              },
             ),
-            ...setupState.config.pairings.map((pair, index) =>
-              buildDetailLine(`pair:${index}`, [
-                focusPrefix(index === focusedIndex),
-                textSegment(
-                  `${pair.leader_device}:${pair.leader_channel_type} -> ${pair.follower_device}:${pair.follower_channel_type}`,
-                  {
-                    bold: index === focusedIndex,
-                  },
-                ),
-                textSegment(` | ${pair.mapping}`, { color: "green" }),
-              ]),
-            ),
-            ...warningLines,
-            ...messageLines,
-          ]
-        : [
-            textLine("pairing-empty", "No teleop pairings are active.", {
-              color: "yellow",
-              bold: true,
-            }),
-            textLine(
-              "pairing-hint",
-              "Switch collection mode to teleop from Settings to enable pair editing.",
-              { color: "gray" },
-            ),
-            ...warningLines,
-            ...messageLines,
-          ];
-    case "storage":
+            textSegment(` | ${pair.mapping}`, { color: "green" }),
+          ]),
+        ),
+        buildDetailLine("pair:new", [
+          focusPrefix(newPairFocused),
+          textSegment("[+ new pair]", {
+            bold: newPairFocused,
+            color: "cyan",
+          }),
+          textSegment("  press m to create + edit", { color: "gray" }),
+        ]),
+      ];
+      const pickerLines = pairingDraft
+        ? buildPairingPickerLines(
+            pairingDraft,
+            pairingDraft.phase === "leader" ? leaderOptions : followerOptions,
+          )
+        : [];
+      return [...pairLines, ...pickerLines, ...warningLines, ...messageLines];
+    }
+    case "storage": {
+      const settingsLabelWidth = settingsFields.reduce(
+        (acc, field) => Math.max(acc, field.label.length),
+        0,
+      );
+      const settingsValueWidth = settingsFields.reduce((acc, field) => {
+        const renderedValue = field.value || (field.kind === "text" ? "(empty)" : "");
+        return Math.max(acc, renderedValue.length);
+      }, 0);
       return [
         textLine(
           "storage-title",
@@ -978,11 +1390,19 @@ function buildDetailLines(
           { color: "cyan", bold: true },
         ),
         ...settingsFields.map((field, index) =>
-          settingsFieldLine(field, index === focusedIndex, editingField, draftValue),
+          settingsFieldLine(
+            field,
+            index === focusedIndex,
+            editingField,
+            draftValue,
+            settingsLabelWidth,
+            settingsValueWidth,
+          ),
         ),
         ...warningLines,
         ...messageLines,
       ];
+    }
     case "preview":
       return [
         buildDetailLine("preview-project", [
@@ -1023,16 +1443,86 @@ function buildDetailLines(
   }
 }
 
-function stateRowLine(row: StateRow, focused: boolean): DetailLine {
+function buildPairingPickerLines(
+  draft: PairingDraft,
+  options: PairChannelOption[],
+): DetailLine[] {
+  const phaseLabel = draft.phase === "leader" ? "leader" : "follower";
+  const eligibilityHint =
+    draft.phase === "leader"
+      ? "channels that support free-drive or command-following"
+      : "channels that support command-following";
+  const headerColor = draft.phase === "leader" ? "magenta" : "cyan";
+  const modeBadge =
+    draft.kind === "create" ? "[new pair] " : "[edit pair] ";
+  // In create mode's follower phase, surface the leader the operator
+  // already locked in so they can confirm context before picking.
+  const draftSummary =
+    draft.kind === "create" && draft.draftLeader
+      ? ` — leader: ${draft.draftLeader.label}`
+      : "";
+  if (options.length === 0) {
+    return [
+      buildDetailLine("pairing-picker-header", [
+        textSegment(modeBadge, { color: headerColor, bold: true }),
+        textSegment(`Pick ${phaseLabel}: `, { color: headerColor, bold: true }),
+        textSegment(`(no eligible channels — ${eligibilityHint})`, { color: "yellow" }),
+        draftSummary
+          ? textSegment(draftSummary, { color: "gray" })
+          : null,
+      ].filter((span): span is DetailSpan => span !== null)),
+      textLine(
+        "pairing-picker-cancel",
+        draft.kind === "create"
+          ? "Press esc / m / q to drop the new-pair draft (nothing is saved); revisit step 1 to enable a compatible channel."
+          : "Press esc / m / q to close the picker; revisit step 1 to enable a compatible channel.",
+        { color: "gray" },
+      ),
+    ];
+  }
+  const lines: DetailLine[] = [
+    buildDetailLine("pairing-picker-header", [
+      textSegment(modeBadge, { color: headerColor, bold: true }),
+      textSegment(`Pick ${phaseLabel} `, { color: headerColor, bold: true }),
+      textSegment(`(${eligibilityHint})`, { color: "gray" }),
+      draftSummary
+        ? textSegment(draftSummary, { color: "gray" })
+        : null,
+      textSegment(
+        "  [j/k: Move  enter: Select  esc / m / q: Cancel]",
+        { color: "cyan" },
+      ),
+    ].filter((span): span is DetailSpan => span !== null)),
+  ];
+  options.forEach((option, index) => {
+    const focused = index === draft.cursor;
+    lines.push(
+      buildDetailLine(`pairing-picker-option:${option.label}:${index}`, [
+        focusPrefix(focused),
+        textSegment(option.label, { bold: focused }),
+      ]),
+    );
+  });
+  return lines;
+}
+
+function stateRowLine(
+  row: StateRow,
+  focused: boolean,
+  stateKindWidth: number,
+): DetailLine {
   const publishGlyph = row.isPublished ? "P" : ".";
   const recordedGlyph = row.isRecorded ? "R" : ".";
+  // Pad to the widest stateKind so the trailing "[p:Publish e:Record]"
+  // hint lines up vertically across every row in the step.
+  const paddedStateKind = row.stateKind.padEnd(stateKindWidth);
   return buildDetailLine(`state:${row.deviceName}:${row.stateKind}`, [
     focusPrefix(focused),
     textSegment(`[${publishGlyph} ${recordedGlyph}] `, {
       color: row.isPublished ? "green" : "gray",
       bold: focused,
     }),
-    textSegment(row.stateKind, {
+    textSegment(paddedStateKind, {
       bold: focused,
       color: row.isPublished ? undefined : "gray",
     }),
@@ -1045,21 +1535,29 @@ function settingsFieldLine(
   focused: boolean,
   editingField: EditableFieldId | null,
   draftValue: string,
+  labelWidth: number,
+  valueWidth: number,
 ): DetailLine {
+  // Pad the label to the widest in the current set so every field's value
+  // column starts at the same x-coordinate, no matter how long the label is.
+  const paddedLabel = `${field.label}:`.padEnd(labelWidth + 1) + " ";
   if (field.kind === "cycle") {
     return buildDetailLine(`setting:${field.id}`, [
       focusPrefix(focused),
-      textSegment(`${field.label}: `, { bold: true }),
-      textSegment(field.value, { color: "green" }),
+      textSegment(paddedLabel, { bold: true }),
+      textSegment(field.value.padEnd(valueWidth), { color: "green" }),
       textSegment(" [h/l cycle]", { color: "cyan" }),
     ]);
   }
 
   const isEditing = field.editableFieldId === editingField;
-  const displayValue = isEditing ? `${draftValue}|` : field.value || "(empty)";
+  const rawValue = isEditing ? `${draftValue}|` : field.value || "(empty)";
+  // Pad the value column too so the trailing `[Enter edit]` /
+  // `[h/l cycle]` hints land at the same x-coordinate across rows.
+  const displayValue = rawValue.padEnd(valueWidth);
   return buildDetailLine(`setting:${field.id}`, [
     focusPrefix(focused),
-    textSegment(`${field.label}: `, { bold: true }),
+    textSegment(paddedLabel, { bold: true }),
     textSegment(displayValue, {
       color: field.value || isEditing ? undefined : "gray",
     }),
@@ -1281,19 +1779,6 @@ function deviceDetails(
         ),
       ]),
       selected
-        ? noticeLine(
-            "camera-selected",
-            "Selected",
-            "Space toggles, Enter renames, h/l or [/] cycles camera profiles.",
-            "green",
-          )
-        : noticeLine(
-            "camera-inactive",
-            "Inactive",
-            "Press Space to select this camera before renaming, tuning, or identify.",
-            "yellow",
-          ),
-      selected
         ? identifying
           ? noticeLine(
               "camera-identify-active",
@@ -1307,13 +1792,8 @@ function deviceDetails(
               "Press i to launch a live preview for the focused selected camera.",
               "cyan",
             )
-        : noticeLine(
-            "camera-identify-disabled",
-            "Identify locked",
-            "Identify is only available for selected devices.",
-            "gray",
-          ),
-    ];
+        : null,
+    ].filter((line): line is DetailLine => line !== null);
   }
 
   const transport = extraString(device.current.extra, "transport");
@@ -1324,8 +1804,8 @@ function deviceDetails(
     `driver=${device.driver}`,
     `id=${device.id}`,
     `channels=${channelSummary}`,
-    `interface=${iface ?? "n/a"}`,
-    `transport=${transport ?? "n/a"}`,
+    iface ? `interface=${iface}` : null,
+    transport ? `transport=${transport}` : null,
     productVariant ? `variant=${productVariant}` : null,
     endEffector ? `eef=${endEffector}` : null,
   ]
@@ -1336,19 +1816,6 @@ function deviceDetails(
       textSegment("Focused robot: ", { color: "cyan", bold: true }),
       textSegment(robotIdentity),
     ]),
-    selected
-      ? noticeLine(
-          "robot-selected",
-          "Selected",
-          "Space toggles, Enter renames, h/l or [/] cycles robot modes.",
-          "green",
-        )
-      : noticeLine(
-          "robot-inactive",
-          "Inactive",
-          "Press Space to select this robot before renaming, tuning, or identify.",
-          "yellow",
-        ),
     selected
       ? identifying
         ? noticeLine(
@@ -1363,13 +1830,8 @@ function deviceDetails(
             "Press i to switch the focused selected robot channel into identifying mode.",
             "cyan",
           )
-      : noticeLine(
-          "robot-identify-disabled",
-          "Identify locked",
-          "Identify is only available for selected devices.",
-          "gray",
-        ),
-  ];
+      : null,
+  ].filter((line): line is DetailLine => line !== null);
 }
 
 function extraString(extra: Record<string, unknown> | undefined, key: string): string | null {
@@ -1409,29 +1871,96 @@ function storageSummary(setupState: SetupStateMessage): string {
     : (setupState.config.storage.endpoint ?? "(unset)");
 }
 
-function stepHintForState(
-  setupState: SetupStateMessage | null,
-  editingField: EditableFieldId | null,
-  previewActionCount: number,
-): string {
+type BuildSetupKeyHintsArgs = {
+  setupState: SetupStateMessage | null;
+  editingField: EditableFieldId | null;
+  pairingDraft: PairingDraft | null;
+  previewActionCount: number;
+  showLivePanels: boolean;
+  rendererLabel: string;
+};
+
+/** Build the per-step key hint list shown by `KeyHintsBar`. The fixed
+ *  navigation keys (`b/n`, `q`) sit at the end of each list so the
+ *  operator-facing step verbs stay at the top. `r:Renderer [<label>]`
+ *  is only included when a live preview is on screen. */
+function buildSetupKeyHints({
+  setupState,
+  editingField,
+  pairingDraft,
+  previewActionCount,
+  showLivePanels,
+  rendererLabel,
+}: BuildSetupKeyHintsArgs): KeyHint[] {
   if (editingField !== null) {
-    return "Type text Enter:Save Esc:Cancel";
+    return [
+      { key: "type", label: "Edit text" },
+      { key: "enter", label: "Save" },
+      { key: "esc", label: "Cancel" },
+    ];
   }
+
+  if (pairingDraft !== null && setupState?.step === "pairing") {
+    return [
+      { key: "j/k", label: "Move" },
+      { key: "enter", label: "Select" },
+      // `m` and `q` are accepted as cancel-fallbacks because some
+      // terminals delay the bare escape byte that drives `key.escape`.
+      { key: "esc / m / q", label: "Cancel" },
+    ];
+  }
+
+  const navTail: KeyHint[] = [
+    { key: "b", label: "Previous Step" },
+    { key: "n", label: "Next Step" },
+    ...(showLivePanels
+      ? ([{ key: "r", label: `Renderer [${rendererLabel}]` }] as KeyHint[])
+      : []),
+    { key: "q", label: "Cancel" },
+  ];
 
   switch (setupState?.step) {
     case "devices":
-      return "j/k:Focus space:Toggle Enter:Rename h/l or [/] Cycle i:Identify b/n:Step q:Cancel";
+      return [
+        { key: "j/k", label: "Switch Focus" },
+        { key: "space", label: "Toggle Select" },
+        { key: "enter", label: "Rename" },
+        { key: "[/]", label: "Switch Profile" },
+        { key: "i", label: "Identify" },
+        ...navTail,
+      ];
     case "states":
-      return "j/k:Focus p:Publish e:Record b/n:Step q:Cancel";
+      return [
+        { key: "j/k", label: "Switch Focus" },
+        { key: "p", label: "Toggle Publish" },
+        { key: "e", label: "Toggle Record" },
+        ...navTail,
+      ];
     case "pairing":
-      return "j/k:Focus h/l Cycle mapping b/n:Step q:Cancel";
+      return [
+        { key: "j/k", label: "Switch Focus" },
+        { key: "m", label: "New / Edit Pair" },
+        { key: "d", label: "Delete Pair" },
+        { key: "[/]", label: "Cycle Mapping" },
+        ...navTail,
+      ];
     case "storage":
-      return "j/k:Field Enter:Edit h/l or [/] Cycle b/n:Step q:Cancel";
+      return [
+        { key: "j/k", label: "Switch Focus" },
+        { key: "enter", label: "Edit / Cycle" },
+        { key: "[/]", label: "Cycle" },
+        ...navTail,
+      ];
     case "preview":
-      return previewActionCount > 0
-        ? "j/k:Action Enter:Select 1-9:Jump b:Back q:Cancel"
-        : "Enter:Save b:Back q:Cancel";
+      return [
+        { key: "j/k", label: "Switch Focus" },
+        { key: "enter", label: previewActionCount > 0 ? "Select" : "Save" },
+        ...(previewActionCount > 0
+          ? ([{ key: "1-9", label: "Jump" }] as KeyHint[])
+          : []),
+        ...navTail,
+      ];
     default:
-      return "b/n:Step q:Cancel";
+      return navTail;
   }
 }

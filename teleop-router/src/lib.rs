@@ -44,7 +44,7 @@ const SYNC_COMPLETE_THRESHOLD_RAD: f64 = 0.25;
 /// 0.0025 m/tick to soften startup motion now that gravity tracking is
 /// reliable enough at the lower step. At a 250 Hz router loop this
 /// caps startup translational speed at ~0.625 m/s.
-const SYNC_MAX_STEP_M: f64 = 0.0025;
+const SYNC_MAX_STEP_M: f64 = 0.0005;
 /// Maximum per-cycle rotational step (rad) while the cartesian ramp is
 /// active. The follower's published EE orientation is slerped toward the
 /// leader by at most this angle per tick. Halved from 0.01 to 0.005
@@ -52,7 +52,7 @@ const SYNC_MAX_STEP_M: f64 = 0.0025;
 /// loop this caps startup angular speed at ~1.25 rad/s (~71 deg/s),
 /// which is still fast enough to keep up with normal operator hand
 /// rotation but noticeably gentler at engagement.
-const SYNC_MAX_STEP_ROT_RAD: f64 = 0.005;
+const SYNC_MAX_STEP_ROT_RAD: f64 = 0.001;
 /// Translational error (metres) under which the cartesian ramp is
 /// considered complete (in conjunction with the rotational threshold).
 /// Sized at ~5x the per-tick step so the ramp has comfortable headroom

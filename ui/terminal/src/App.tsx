@@ -5,6 +5,7 @@ import { encodeEpisodeCommand } from "./lib/protocol.js";
 import { getTerminalMetrics } from "./lib/terminal-geometry.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { KeyHintsBar, type KeyHint } from "./components/KeyHintsBar.js";
 import { getAsciiRendererLabel, nextAsciiRendererId, type AsciiRendererId } from "./lib/renderers/index.js";
 import { DebugPanel, DEBUG_PANEL_HEIGHT } from "./components/DebugPanel.js";
 import {
@@ -104,7 +105,9 @@ export function App({
 
   // Layout constants
   const debugPanelHeight = showDebug ? DEBUG_PANEL_HEIGHT : 0;
-  const contentHeight = Math.max(1, rows - 2 - debugPanelHeight); // minus title + status bars
+  // Title bar (1) + KeyHintsBar (1) + StatusBar (1) = 3 rows reserved for
+  // chrome around the live preview area. Plus the debug panel when on.
+  const contentHeight = Math.max(1, rows - 3 - debugPanelHeight);
   const rendererLabel = getAsciiRendererLabel(cameraRendererId);
   const effectiveEpisodeStatus = episodeStatus ?? {
     type: "episode_status" as const,
@@ -169,6 +172,14 @@ export function App({
     recordTiming("app.render", renderDurationMs);
   });
 
+  const collectKeyHints = buildCollectKeyHints({
+    episodeState: effectiveEpisodeStatus.state,
+    episodeKeyBindings,
+    showDebug,
+    rendererLabel,
+    hasCameraFrames: frames.size > 0,
+  });
+
   return (
     <Box flexDirection="column" width={columns} height={rows}>
       {/* Title Bar */}
@@ -194,19 +205,58 @@ export function App({
         />
       )}
 
+      <KeyHintsBar hints={collectKeyHints} width={columns} />
       {/* Status Bar */}
       <StatusBar
         mode="Collect"
         state={effectiveEpisodeStatus.state}
         episodeCount={effectiveEpisodeStatus.episode_count}
         elapsedMs={effectiveEpisodeStatus.elapsed_ms}
-        episodeKeyBindings={episodeKeyBindings}
         connected={connected}
         health={health}
         width={columns}
-        debugEnabled={showDebug}
-        rendererLabel={rendererLabel}
       />
     </Box>
   );
+}
+
+type BuildCollectKeyHintsArgs = {
+  episodeState: "idle" | "recording" | "pending";
+  episodeKeyBindings: EpisodeKeyBindings;
+  showDebug: boolean;
+  rendererLabel: string;
+  hasCameraFrames: boolean;
+};
+
+/** Per-episode-state key hint set for collect mode. The state-specific
+ *  controls always lead so the next-step action sits where the operator
+ *  expects it; debug + renderer toggles trail. `r:Renderer` is gated on
+ *  `hasCameraFrames` to mirror the wizard rule. */
+function buildCollectKeyHints({
+  episodeState,
+  episodeKeyBindings,
+  showDebug,
+  rendererLabel,
+  hasCameraFrames,
+}: BuildCollectKeyHintsArgs): KeyHint[] {
+  const stateHints: KeyHint[] = (() => {
+    switch (episodeState) {
+      case "idle":
+        return [{ key: episodeKeyBindings.startKey, label: "Start" }];
+      case "recording":
+        return [{ key: episodeKeyBindings.stopKey, label: "Stop" }];
+      case "pending":
+        return [
+          { key: episodeKeyBindings.keepKey, label: "Keep" },
+          { key: episodeKeyBindings.discardKey, label: "Discard" },
+        ];
+    }
+  })();
+  const tail: KeyHint[] = [
+    { key: "d", label: `Debug [${showDebug ? "On" : "Off"}]` },
+  ];
+  if (hasCameraFrames) {
+    tail.push({ key: "r", label: `Renderer [${rendererLabel}]` });
+  }
+  return [...stateHints, ...tail];
 }

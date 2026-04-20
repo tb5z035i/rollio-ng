@@ -426,18 +426,28 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
                 },
                 _ => DirectJointCompatibility::default(),
             };
+            // E2 is a passive parallel gripper (no actuation), so it can
+            // only be observed in free-drive — there is no servo to follow
+            // commands, identify, or be electrically disabled. G2 actuates
+            // and exposes the full mode set. Keeping this driver-side
+            // makes the controller's mode cycle fully capability-driven:
+            // the wizard simply hides modes the driver doesn't advertise.
+            let modes: Vec<String> = match eef_channel_type.as_str() {
+                "e2" => vec!["free-drive".into()],
+                _ => vec![
+                    "free-drive".into(),
+                    "command-following".into(),
+                    "identifying".into(),
+                    "disabled".into(),
+                ],
+            };
             channels.push(DeviceQueryChannel {
                 channel_type: eef_channel_type,
                 kind: DeviceType::Robot,
                 available: true,
                 channel_label: Some(channel_label),
                 default_name: Some(default_name),
-                modes: vec![
-                    "free-drive".into(),
-                    "command-following".into(),
-                    "identifying".into(),
-                    "disabled".into(),
-                ],
+                modes,
                 profiles: Vec::new(),
                 supported_states: vec![
                     RobotStateKind::ParallelPosition,

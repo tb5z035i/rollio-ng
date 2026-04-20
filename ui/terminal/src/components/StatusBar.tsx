@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { EpisodeKeyBindings } from "../runtime-config.js";
 
 type HealthStatus = "normal" | "degraded" | "failure";
 type EpisodeState = "idle" | "recording" | "pending";
@@ -10,12 +9,9 @@ interface StatusBarProps {
   state: EpisodeState;
   episodeCount: number;
   elapsedMs: number;
-  episodeKeyBindings: EpisodeKeyBindings;
   connected: boolean;
   health: HealthStatus;
   width: number;
-  debugEnabled?: boolean;
-  rendererLabel?: string;
 }
 
 const HEALTH_COLORS: Record<HealthStatus, string> = {
@@ -48,35 +44,23 @@ export function formatElapsedMs(elapsedMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+/** Status bar text excluding key hints and debug/renderer toggles —
+ *  those moved to a dedicated `KeyHintsBar` row above the status bar.
+ *  Keeps the bar focused on always-visible session metadata: mode,
+ *  episode state/elapsed, episode count, and websocket health. */
 export function buildStatusBarLeft(props: {
   mode: string;
   state: EpisodeState;
   episodeCount: number;
   elapsedMs: number;
-  episodeKeyBindings: EpisodeKeyBindings;
   connected: boolean;
-  debugEnabled?: boolean;
-  rendererLabel?: string;
 }): string {
   const connStatus = props.connected ? "Connected" : "Disconnected";
-  const debugStatus = props.debugEnabled ? "On" : "Off";
-  const rendererStatus = props.rendererLabel
-    ? ` | r:Render ${props.rendererLabel}`
-    : "";
   const stateLabel =
     props.state === "recording"
       ? `${formatEpisodeState(props.state)} ${formatElapsedMs(props.elapsedMs)}`
       : formatEpisodeState(props.state);
-  const controlHint =
-    props.state === "idle"
-      ? `${props.episodeKeyBindings.startKey}:Start`
-      : props.state === "recording"
-        ? `${props.episodeKeyBindings.stopKey}:Stop`
-        : `${props.episodeKeyBindings.keepKey}:Keep ${props.episodeKeyBindings.discardKey}:Discard`;
-  return (
-    ` ${props.mode} | ${stateLabel} | Ep: ${props.episodeCount} | WS: ${connStatus}` +
-    ` | ${controlHint} | d:Debug ${debugStatus}${rendererStatus}`
-  );
+  return ` ${props.mode} | ${stateLabel} | Ep: ${props.episodeCount} | WS: ${connStatus}`;
 }
 
 export function StatusBar({
@@ -84,22 +68,16 @@ export function StatusBar({
   state,
   episodeCount,
   elapsedMs,
-  episodeKeyBindings,
   connected,
   health,
   width,
-  debugEnabled = false,
-  rendererLabel,
 }: StatusBarProps) {
   const left = buildStatusBarLeft({
     mode,
     state,
     episodeCount,
     elapsedMs,
-    episodeKeyBindings,
     connected,
-    debugEnabled,
-    rendererLabel,
   });
   const right = ` ${HEALTH_LABELS[health]} `;
   const padding = Math.max(0, width - left.length - right.length);

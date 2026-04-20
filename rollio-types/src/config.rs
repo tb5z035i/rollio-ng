@@ -1134,12 +1134,12 @@ impl From<ProjectConfigSerde> for ProjectConfig {
     }
 }
 
-fn infer_collection_mode_v2(pairings: &[ChannelPairingConfig]) -> CollectionMode {
-    if pairings.is_empty() {
-        CollectionMode::Intervention
-    } else {
-        CollectionMode::Teleop
-    }
+fn infer_collection_mode_v2(_pairings: &[ChannelPairingConfig]) -> CollectionMode {
+    // Teleop is the only collection mode the setup wizard exposes; the
+    // implicit default for any project (with or without pairings) is
+    // teleop. Intervention configs left over from older saves still
+    // round-trip through the explicit `mode = "intervention"` TOML key.
+    CollectionMode::Teleop
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2407,22 +2407,13 @@ impl ProjectConfig {
         for pairing in &self.pairings {
             pairing.validate(self)?;
         }
-        match self.mode {
-            CollectionMode::Teleop => {
-                if self.pairings.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "mode=teleop requires at least one [[pairings]] entry".into(),
-                    ));
-                }
-            }
-            CollectionMode::Intervention => {
-                if !self.pairings.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "mode=intervention does not allow [[pairings]] entries".into(),
-                    ));
-                }
-            }
-        }
+        // Both modes accept any pairing count: teleop is the only mode the
+        // wizard exposes now, and the operator may save a teleop project
+        // before assembling pairings (e.g. while iterating on device
+        // selection in step 1). Downstream consumers (`teleop_runtime_configs_v2`)
+        // simply emit zero teleop runtimes when no pairings exist; intervention
+        // configs still tolerate stray pairings without taking action.
+        let _ = self.mode;
         self.encoder.validate()?;
         self.assembler.validate()?;
         self.storage.validate()?;
