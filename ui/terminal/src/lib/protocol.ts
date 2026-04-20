@@ -145,16 +145,28 @@ export interface SetupBinaryDeviceConfig {
   extra?: Record<string, unknown>;
 }
 
+export type MappingPolicy = "direct-joint" | "cartesian" | "parallel";
+
 export interface SetupChannelPairing {
   leader_device: string;
   leader_channel_type: string;
   follower_device: string;
   follower_channel_type: string;
-  mapping: "direct-joint" | "cartesian";
+  mapping: MappingPolicy;
   leader_state: string;
   follower_command: string;
   joint_index_map: number[];
   joint_scales: number[];
+}
+
+export interface SetupDirectJointPeer {
+  driver: string;
+  channel_type: string;
+}
+
+export interface SetupDirectJointCompatibility {
+  can_lead?: SetupDirectJointPeer[];
+  can_follow?: SetupDirectJointPeer[];
 }
 
 export interface SetupAvailableDevice {
@@ -169,6 +181,14 @@ export interface SetupAvailableDevice {
    *  channel. The "States" sub-step uses this list to render the
    *  toggleable publish/recorded options. Empty for camera channels. */
   supported_states?: string[];
+  /** All robot command kinds the driver accepts on this channel. The
+   *  "Pairing" picker uses this to filter follower candidates per
+   *  policy. Empty for camera channels. */
+  supported_commands?: string[];
+  /** Driver-advertised direct-joint compatibility whitelist; the
+   *  pairing picker uses this to enforce the two-sided whitelist for
+   *  DirectJoint pairs. */
+  direct_joint_compatibility?: SetupDirectJointCompatibility;
   current: SetupBinaryDeviceConfig;
 }
 
@@ -247,6 +267,7 @@ export type CommandAction =
   | "setup_remove_pairing"
   | "setup_set_pairing_leader"
   | "setup_set_pairing_follower"
+  | "setup_set_pairing_ratio"
   | "setup_toggle_publish_state"
   | "setup_toggle_recorded_state"
   | "setup_cycle_episode_format"
@@ -386,6 +407,7 @@ export function encodeSetupCommand(
     | "setup_remove_pairing"
     | "setup_set_pairing_leader"
     | "setup_set_pairing_follower"
+    | "setup_set_pairing_ratio"
     | "setup_toggle_publish_state"
     | "setup_toggle_recorded_state"
     | "setup_cycle_episode_format"

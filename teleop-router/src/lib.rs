@@ -912,6 +912,11 @@ fn map_leader_state(
             _ => Err(TeleopRouterError::InvalidCartesianRoute),
         },
         MappingStrategy::DirectJoint => {
+            // Per the teleop-policy redesign, DirectJoint owns
+            // joint-space teleop only. Parallel-grip routing moved to
+            // its own arm. Reject any parallel command kind here so a
+            // schema mismatch surfaces early instead of silently
+            // dispatching the wrong payload type.
             let LeaderState::Vector {
                 timestamp_ms,
                 values,
@@ -931,6 +936,29 @@ fn map_leader_state(
                     &config.command_defaults.joint_mit_kp,
                     &config.command_defaults.joint_mit_kd,
                 )),
+                RobotCommandKind::ParallelPosition
+                | RobotCommandKind::ParallelMit
+                | RobotCommandKind::EndPose => {
+                    return Err(TeleopRouterError::InvalidCartesianRoute);
+                }
+            }))
+        }
+        MappingStrategy::Parallel => {
+            // Parallel teleop: dof=1 leader publishes a single-element
+            // vector; the controller scales it by `joint_scales[0]`
+            // (the operator-supplied ratio) and forwards as
+            // ParallelMit when the follower advertised it (kp/kd from
+            // command_defaults), otherwise as ParallelPosition.
+            let LeaderState::Vector {
+                timestamp_ms,
+                values,
+            } = state
+            else {
+                return Err(TeleopRouterError::InvalidCartesianRoute);
+            };
+            let ratio = config.joint_scales.first().copied().unwrap_or(1.0);
+            let mapped: Vec<f64> = values.iter().map(|value| value * ratio).collect();
+            Ok(Some(match config.follower_command_kind {
                 RobotCommandKind::ParallelPosition => ForwardedCommand::ParallelPosition(
                     ParallelVector2::from_slice(*timestamp_ms, &mapped),
                 ),
@@ -942,7 +970,11 @@ fn map_leader_state(
                         &config.command_defaults.parallel_mit_kd,
                     ))
                 }
-                RobotCommandKind::EndPose => return Err(TeleopRouterError::InvalidCartesianRoute),
+                RobotCommandKind::JointPosition
+                | RobotCommandKind::JointMit
+                | RobotCommandKind::EndPose => {
+                    return Err(TeleopRouterError::InvalidCartesianRoute);
+                }
             }))
         }
     }
@@ -1149,6 +1181,67 @@ mod tests {
         assert_eq!(&command.position[..3], &[0.1, 0.2, 0.3]);
         assert_eq!(&command.kp[..3], &[10.0, 20.0, 30.0]);
         assert_eq!(&command.kd[..3], &[1.0, 2.0, 3.0]);
+    }
+
+    fn parallel_config(ratio: f64, follower_kind: RobotCommandKind) -> TeleopRuntimeConfigV2 {
+        TeleopRuntimeConfigV2 {
+            process_id: "teleop.parallel".into(),
+            leader_channel_id: "leader/gripper".into(),
+            follower_channel_id: "follower/gripper".into(),
+            leader_state_kind: RobotStateKind::ParallelPosition,
+            leader_state_topic: "leader/gripper/states/parallel_position".into(),
+            follower_command_kind: follower_kind,
+            follower_command_topic: "follower/gripper/commands/parallel_position".into(),
+            follower_state_kind: None,
+            follower_state_topic: None,
+            sync_max_step_rad: None,
+            sync_complete_threshold_rad: None,
+            mapping: MappingStrategy::Parallel,
+            joint_index_map: Vec::new(),
+            joint_scales: vec![ratio],
+            command_defaults: ChannelCommandDefaults::default(),
+        }
+    }
+
+    #[test]
+    fn parallel_policy_scales_position_value() {
+        let config = parallel_config(2.5, RobotCommandKind::ParallelPosition);
+        let state = LeaderState::Vector {
+            timestamp_ms: 42,
+            values: vec![0.04],
+        };
+        let command = map_leader_state(&config, &state).expect("mapping should work");
+        let Some(ForwardedCommand::ParallelPosition(command)) = command else {
+            panic!("expected ParallelPosition command");
+        };
+        // ratio * leader_value = 2.5 * 0.04 = 0.1
+        assert!(
+            (command.values[0] - 0.1).abs() < 1e-9,
+            "expected scaled value ~ 0.1, got {}",
+            command.values[0],
+        );
+    }
+
+    #[test]
+    fn parallel_policy_emits_parallel_mit_when_follower_advertises_mit() {
+        let mut config = parallel_config(1.0, RobotCommandKind::ParallelMit);
+        config.command_defaults = ChannelCommandDefaults {
+            joint_mit_kp: Vec::new(),
+            joint_mit_kd: Vec::new(),
+            parallel_mit_kp: vec![3.0],
+            parallel_mit_kd: vec![0.5],
+        };
+        let state = LeaderState::Vector {
+            timestamp_ms: 7,
+            values: vec![0.05],
+        };
+        let command = map_leader_state(&config, &state).expect("mapping should work");
+        let Some(ForwardedCommand::ParallelMit(command)) = command else {
+            panic!("expected ParallelMit command");
+        };
+        assert!((command.position[0] - 0.05).abs() < 1e-9);
+        assert!((command.kp[0] - 3.0).abs() < 1e-9);
+        assert!((command.kd[0] - 0.5).abs() < 1e-9);
     }
 
     #[test]

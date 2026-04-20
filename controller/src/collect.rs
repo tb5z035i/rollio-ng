@@ -33,6 +33,13 @@ pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
     let share_root = resolve_share_root()?;
     let state_dir = resolve_state_dir()?;
     let current_exe_dir = current_executable_dir()?;
+    // Capture the cwd of the user's `rollio` invocation up front so that
+    // relative paths in the config (e.g. storage `output_path = "./output"`)
+    // resolve to ${PWD}/output instead of being silently re-rooted under the
+    // children's working directory (`state_dir`, typically
+    // `~/.local/state/rollio`). We must read this before any chdir-like
+    // operation runs.
+    let invocation_cwd = std::env::current_dir()?;
     // Persisted configs no longer carry value_limits; refresh them from a
     // fresh `query --json` per device before runtime children are spawned.
     // The visualizer treats absent limits as a hard error, so any failure
@@ -49,6 +56,7 @@ pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
         share_root,
         state_dir,
         current_exe_dir,
+        invocation_cwd,
     )
 }
 
@@ -58,11 +66,13 @@ fn run_with_config(
     share_root: std::path::PathBuf,
     state_dir: std::path::PathBuf,
     current_exe_dir: std::path::PathBuf,
+    invocation_cwd: std::path::PathBuf,
 ) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root.as_path();
     let share_root = share_root.as_path();
     let child_working_dir = state_dir.as_path();
     let current_exe_dir = current_exe_dir.as_path();
+    let invocation_cwd = invocation_cwd.as_path();
     let poll_interval = Duration::from_millis(config.controller.child_poll_interval_ms);
     let shutdown_timeout =
         Duration::from_millis(config.controller.shutdown_timeout_ms).max(Duration::from_secs(30));
@@ -80,6 +90,7 @@ fn run_with_config(
         share_root,
         child_working_dir,
         current_exe_dir,
+        invocation_cwd,
     )?;
 
     let mut children = spawn_collect_children(
@@ -463,6 +474,7 @@ mod tests {
             &config,
             &workspace_root,
             &workspace_root,
+            Path::new("."),
             Path::new("."),
             Path::new("."),
         )

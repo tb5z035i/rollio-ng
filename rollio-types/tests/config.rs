@@ -529,3 +529,242 @@ fn schema_export_is_v2_and_includes_nested_sections() {
     assert!(section_ids.contains(&"devices.channels"));
     assert!(section_ids.contains(&"pairings"));
 }
+
+// -----------------------------------------------------------------------
+// Teleop policy validator tests (introduced with the three-policy redesign).
+// -----------------------------------------------------------------------
+
+fn parallel_pair_config_template() -> ProjectConfig {
+    let toml_text = r#"
+project_name = "parallel-test"
+mode = "teleop"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "lead"
+driver = "pseudo"
+id = "lead0"
+bus_root = "lead"
+
+[[devices.channels]]
+channel_type = "gripper"
+kind = "robot"
+enabled = true
+mode = "free-drive"
+dof = 1
+publish_states = ["parallel_position"]
+recorded_states = ["parallel_position"]
+
+[[devices]]
+name = "follow"
+driver = "pseudo"
+id = "follow0"
+bus_root = "follow"
+
+[[devices.channels]]
+channel_type = "gripper"
+kind = "robot"
+enabled = true
+mode = "command-following"
+dof = 1
+publish_states = ["parallel_position"]
+recorded_states = ["parallel_position"]
+
+[[pairings]]
+leader_device = "lead"
+leader_channel_type = "gripper"
+follower_device = "follow"
+follower_channel_type = "gripper"
+mapping = "parallel"
+leader_state = "parallel_position"
+follower_command = "parallel_position"
+joint_index_map = []
+joint_scales = [1.0]
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./output"
+
+[visualizer]
+port = 19090
+"#;
+    ProjectConfig::from_str(toml_text).expect("parallel template should parse")
+}
+
+#[test]
+fn parallel_pairing_requires_dof_one_and_parallel_position() {
+    let mut config = parallel_pair_config_template();
+
+    // Baseline: dof=1 + parallel_position both sides + ratio=1.0 validates.
+    config
+        .validate()
+        .expect("baseline parallel pair should validate");
+
+    // dof != 1 on the leader trips the dof-1 predicate.
+    config.devices[0].channels[0].dof = Some(2);
+    let err = config
+        .validate()
+        .expect_err("dof=2 leader must be rejected for parallel mapping");
+    assert!(
+        format!("{err}").contains("requires dof=1"),
+        "rejection should name the dof requirement, got: {err}",
+    );
+
+    // Restore dof + replace parallel_position with joint_position in
+    // publish_states: parallel mapping should reject because the leader
+    // no longer publishes the kind it requires.
+    config.devices[0].channels[0].dof = Some(1);
+    config.devices[0].channels[0].publish_states = vec![RobotStateKind::JointPosition];
+    config.devices[0].channels[0].recorded_states = vec![RobotStateKind::JointPosition];
+    let err = config
+        .validate()
+        .expect_err("missing parallel_position must be rejected");
+    assert!(
+        format!("{err}").to_lowercase().contains("parallelposition")
+            || format!("{err}").contains("parallel_position"),
+        "rejection should mention parallel_position, got: {err}",
+    );
+}
+
+#[test]
+fn parallel_pairing_rejects_zero_and_non_finite_ratio() {
+    let mut config = parallel_pair_config_template();
+
+    config.pairings[0].joint_scales = vec![0.0];
+    let err = config.validate().expect_err("ratio=0 must be rejected");
+    assert!(
+        format!("{err}").contains("non-zero"),
+        "ratio=0 rejection should mention non-zero, got: {err}",
+    );
+
+    config.pairings[0].joint_scales = vec![f64::NAN];
+    let err = config.validate().expect_err("ratio=NaN must be rejected");
+    assert!(
+        format!("{err}").contains("finite"),
+        "NaN rejection should mention finite, got: {err}",
+    );
+}
+
+fn direct_joint_pair_config_template() -> ProjectConfig {
+    let toml_text = r#"
+project_name = "direct-joint-test"
+mode = "teleop"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "lead"
+driver = "pseudo-a"
+id = "lead0"
+bus_root = "lead"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "free-drive"
+dof = 6
+publish_states = ["joint_position"]
+recorded_states = ["joint_position"]
+
+[[devices]]
+name = "follow"
+driver = "pseudo-b"
+id = "follow0"
+bus_root = "follow"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "command-following"
+dof = 6
+publish_states = ["joint_position"]
+recorded_states = ["joint_position"]
+
+[[pairings]]
+leader_device = "lead"
+leader_channel_type = "arm"
+follower_device = "follow"
+follower_channel_type = "arm"
+mapping = "direct-joint"
+leader_state = "joint_position"
+follower_command = "joint_position"
+joint_index_map = [0, 1, 2, 3, 4, 5]
+joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./output"
+
+[visualizer]
+port = 19090
+"#;
+    ProjectConfig::from_str(toml_text).expect("direct-joint template should parse")
+}
+
+#[test]
+fn direct_joint_requires_two_sided_whitelist() {
+    let mut config = direct_joint_pair_config_template();
+
+    // Without any whitelist entries the validator skips the whitelist
+    // check (loaded TOML can't carry the runtime field). Round-trip OK.
+    config
+        .validate()
+        .expect("baseline (no whitelist) should validate");
+
+    // Now opt the leader's `can_lead` in but leave the follower's
+    // `can_follow` empty -- expect the two-sided check to reject.
+    config.devices[0].channels[0]
+        .direct_joint_compatibility
+        .can_lead = vec![DirectJointCompatibilityPeer {
+        driver: "pseudo-b".into(),
+        channel_type: "arm".into(),
+    }];
+    let err = config
+        .validate()
+        .expect_err("one-sided whitelist must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("can_follow") && msg.contains("pseudo-b"),
+        "rejection should name the missing follower endorsement, got: {err}",
+    );
+
+    // Symmetric opt-in: the pair becomes valid again.
+    config.devices[1].channels[0]
+        .direct_joint_compatibility
+        .can_follow = vec![DirectJointCompatibilityPeer {
+        driver: "pseudo-a".into(),
+        channel_type: "arm".into(),
+    }];
+    config
+        .validate()
+        .expect("two-sided whitelist match should validate");
+
+    // Drop the leader endorsement: rejected again, this time naming
+    // the missing leader-side entry.
+    config.devices[0].channels[0]
+        .direct_joint_compatibility
+        .can_lead
+        .clear();
+    let err = config
+        .validate()
+        .expect_err("removing leader endorsement must re-reject");
+    assert!(
+        format!("{err}").contains("can_lead"),
+        "rejection should name the missing leader endorsement, got: {err}",
+    );
+}

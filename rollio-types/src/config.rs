@@ -152,8 +152,16 @@ impl RobotMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MappingStrategy {
+    /// Identity (or operator-supplied joint_index_map / joint_scales)
+    /// joint-position teleop. Requires both drivers to opt in via
+    /// `direct_joint_compatibility` and matching DOF.
     DirectJoint,
+    /// End-effector pose passthrough (FK on leader, IK on follower).
     Cartesian,
+    /// Single-DOF parallel-gripper position teleop with a configurable
+    /// linear scaling ratio stored as `joint_scales = [ratio]`. Both
+    /// channels must have `dof == 1`.
+    Parallel,
 }
 
 fn default_mapping() -> MappingStrategy {
@@ -1676,20 +1684,64 @@ impl ChannelPairingConfig {
         }
         match self.mapping {
             MappingStrategy::DirectJoint => {
-                if matches!(self.leader_state, RobotStateKind::EndEffectorPose)
-                    || matches!(self.follower_command, RobotCommandKind::EndPose)
+                // Hard predicate per teleop-policy redesign: leader publishes
+                // joint_position, follower accepts joint_position commands,
+                // DOFs match, and BOTH drivers must opt in via
+                // `direct_joint_compatibility`. Cross-vendor pairs are
+                // intentionally rejected here -- drivers own the safety
+                // story for joint-space teleop.
+                if self.leader_state != RobotStateKind::JointPosition {
+                    return Err(ConfigError::Validation(format!(
+                        "direct-joint mapping requires leader_state=joint_position (got {:?}) for {}:{} -> {}:{}",
+                        self.leader_state,
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
+                }
+                if self.follower_command != RobotCommandKind::JointPosition {
+                    return Err(ConfigError::Validation(format!(
+                        "direct-joint mapping requires follower_command=joint_position (got {:?}) for {}:{} -> {}:{}",
+                        self.follower_command,
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
+                }
+                // `supported_commands` is `#[serde(skip)]`: persisted
+                // configs don't carry it. Only enforce the predicate
+                // when the field has been populated (i.e. by the
+                // controller's runtime refresh of driver queries),
+                // otherwise trust the loaded config and let runtime
+                // surface the mismatch.
+                if !follower.supported_commands.is_empty()
+                    && !follower
+                        .supported_commands
+                        .contains(&RobotCommandKind::JointPosition)
                 {
-                    return Err(ConfigError::Validation(
-                        "direct-joint mapping does not allow end-effector pose commands".into(),
-                    ));
+                    return Err(ConfigError::Validation(format!(
+                        "direct-joint mapping: follower {}:{} does not advertise joint_position in supported_commands",
+                        self.follower_device, self.follower_channel_type,
+                    )));
                 }
                 self.validate_direct_joint_dof_and_index_map(leader, follower)?;
-                self.advise_on_direct_joint_compatibility(
-                    leader_device,
-                    leader,
-                    follower_device,
-                    follower,
-                );
+                // The whitelist check is also runtime-populated; skip
+                // when neither side carries any whitelist entries
+                // (e.g. parsed from TOML without a driver refresh) so
+                // standalone config tests can round-trip without
+                // surfacing a phantom rejection.
+                let whitelist_present = !leader.direct_joint_compatibility.can_lead.is_empty()
+                    || !follower.direct_joint_compatibility.can_follow.is_empty();
+                if whitelist_present {
+                    self.require_direct_joint_compatibility(
+                        leader_device,
+                        leader,
+                        follower_device,
+                        follower,
+                    )?;
+                }
             }
             MappingStrategy::Cartesian => {
                 if self.leader_state != RobotStateKind::EndEffectorPose
@@ -1700,10 +1752,97 @@ impl ChannelPairingConfig {
                             .into(),
                     ));
                 }
+                if !follower.supported_commands.is_empty()
+                    && !follower
+                        .supported_commands
+                        .contains(&RobotCommandKind::EndPose)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "cartesian mapping: follower {}:{} does not advertise end_pose in supported_commands",
+                        self.follower_device, self.follower_channel_type,
+                    )));
+                }
                 if !self.joint_index_map.is_empty() || !self.joint_scales.is_empty() {
                     return Err(ConfigError::Validation(
                         "cartesian mapping does not use joint_index_map or joint_scales".into(),
                     ));
+                }
+            }
+            MappingStrategy::Parallel => {
+                // Single-DOF parallel-gripper teleop. The mapping ratio
+                // lives in joint_scales[0] so the wire format stays
+                // compatible with the router's existing scaling code path.
+                if leader.dof != Some(1) || follower.dof != Some(1) {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping requires dof=1 on both sides for {}:{} -> {}:{} (got leader={:?}, follower={:?})",
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                        leader.dof,
+                        follower.dof,
+                    )));
+                }
+                if self.leader_state != RobotStateKind::ParallelPosition {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping requires leader_state=parallel_position (got {:?}) for {}:{} -> {}:{}",
+                        self.leader_state,
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
+                }
+                if !matches!(
+                    self.follower_command,
+                    RobotCommandKind::ParallelPosition | RobotCommandKind::ParallelMit
+                ) {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping requires follower_command in {{parallel_position, parallel_mit}} (got {:?}) for {}:{} -> {}:{}",
+                        self.follower_command,
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
+                }
+                if !follower.supported_commands.is_empty()
+                    && !follower
+                        .supported_commands
+                        .contains(&RobotCommandKind::ParallelPosition)
+                    && !follower
+                        .supported_commands
+                        .contains(&RobotCommandKind::ParallelMit)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping: follower {}:{} does not advertise parallel_position or parallel_mit in supported_commands",
+                        self.follower_device, self.follower_channel_type,
+                    )));
+                }
+                if !self.joint_index_map.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "parallel mapping does not use joint_index_map (ratio lives in joint_scales[0])".into(),
+                    ));
+                }
+                if self.joint_scales.len() != 1 {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping requires exactly one joint_scales entry (the ratio); got {} for {}:{} -> {}:{}",
+                        self.joint_scales.len(),
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
+                }
+                let ratio = self.joint_scales[0];
+                if !ratio.is_finite() || ratio == 0.0 {
+                    return Err(ConfigError::Validation(format!(
+                        "parallel mapping ratio must be finite and non-zero (got {ratio}) for {}:{} -> {}:{}",
+                        self.leader_device,
+                        self.leader_channel_type,
+                        self.follower_device,
+                        self.follower_channel_type,
+                    )));
                 }
             }
         }
@@ -1793,22 +1932,23 @@ impl ChannelPairingConfig {
         Ok(())
     }
 
-    /// Advisory check on the per-channel `direct_joint_compatibility` blob
-    /// each driver reports in its `query --json`. Used as an operator hint
-    /// only -- prints a stderr warning when neither side explicitly
-    /// endorses the pairing -- but does NOT block: the framework treats
-    /// the schema field as documentation about driver-vouched-for
-    /// pairings, not as an exhaustive whitelist. Cross-vendor pairings
-    /// are perfectly legal as long as the technical DOF / channel-shape
-    /// checks pass; drivers shouldn't have to know about every other
-    /// driver they could conceivably be paired with.
-    fn advise_on_direct_joint_compatibility(
+    /// Hard predicate on the per-channel `direct_joint_compatibility`
+    /// blob each driver reports in its `query --json`. BOTH directions
+    /// must opt in (leader's `can_lead` lists the follower peer, AND
+    /// follower's `can_follow` lists the leader peer); otherwise the
+    /// pairing is rejected. This is the safety story for joint-space
+    /// teleop: drivers vouch for the peer they accept, and the wizard
+    /// refuses pairings that haven't been declared. Operators wanting
+    /// cross-vendor direct-joint teleop must update both device
+    /// executables to advertise each other before the pairing will
+    /// validate.
+    fn require_direct_joint_compatibility(
         &self,
         leader_device: &BinaryDeviceConfig,
         leader_channel: &DeviceChannelConfigV2,
         follower_device: &BinaryDeviceConfig,
         follower_channel: &DeviceChannelConfigV2,
-    ) {
+    ) -> Result<(), ConfigError> {
         let leader_meta = &leader_channel.direct_joint_compatibility;
         let follower_meta = &follower_channel.direct_joint_compatibility;
         let leader_endorses = leader_meta.can_lead.iter().any(|peer| {
@@ -1818,23 +1958,34 @@ impl ChannelPairingConfig {
         let follower_endorses = follower_meta.can_follow.iter().any(|peer| {
             peer.driver == leader_device.driver && peer.channel_type == leader_channel.channel_type
         });
-        if leader_endorses || follower_endorses {
-            return;
+        if leader_endorses && follower_endorses {
+            return Ok(());
         }
-        if leader_meta.can_lead.is_empty() && follower_meta.can_follow.is_empty() {
-            // Neither driver populated the schema field at all; nothing
-            // useful to advise. Stay silent.
-            return;
+        let mut missing = Vec::new();
+        if !leader_endorses {
+            missing.push(format!(
+                "leader driver \"{}\" must list follower peer (driver=\"{}\", channel_type=\"{}\") in direct_joint_compatibility.can_lead",
+                leader_device.driver,
+                follower_device.driver,
+                follower_channel.channel_type,
+            ));
         }
-        eprintln!(
-            "rollio: pairing {}:{} -> {}:{}: drivers \"{}\" and \"{}\" did not advertise direct-joint compatibility with each other; pairing will rely on the joint-shape checks above",
+        if !follower_endorses {
+            missing.push(format!(
+                "follower driver \"{}\" must list leader peer (driver=\"{}\", channel_type=\"{}\") in direct_joint_compatibility.can_follow",
+                follower_device.driver,
+                leader_device.driver,
+                leader_channel.channel_type,
+            ));
+        }
+        Err(ConfigError::Validation(format!(
+            "direct-joint mapping rejects {}:{} -> {}:{}: {}",
             self.leader_device,
             self.leader_channel_type,
             self.follower_device,
             self.follower_channel_type,
-            leader_device.driver,
-            follower_device.driver,
-        );
+            missing.join("; "),
+        )))
     }
 }
 

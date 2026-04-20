@@ -71,6 +71,64 @@ parallel_mit_kp = [0.0]
 parallel_mit_kd = [0.0]
 
 [[devices]]
+name = "camera"
+executable = "rollio-device-v4l2"
+driver = "v4l2"
+id = "/dev/video0"
+bus_root = "camera"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+name = "camera"
+channel_label = "V4L2 Camera"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1280
+height = 960
+fps = 30
+pixel_format = "rgb24"
+native_pixel_format = "MJPG"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices]]
+name = "camera_2"
+executable = "rollio-device-v4l2"
+driver = "v4l2"
+id = "/dev/video2"
+bus_root = "camera_2"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+name = "camera_2"
+channel_label = "V4L2 Camera"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1280
+height = 960
+fps = 30
+pixel_format = "rgb24"
+native_pixel_format = "MJPG"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices]]
 name = "agx_nero"
 executable = "rollio-device-agx-nero"
 driver = "agx-nero"
@@ -135,6 +193,17 @@ parallel_mit_kd = [0.5]
 
 [[pairings]]
 leader_device = "airbot_play_2"
+leader_channel_type = "e2"
+follower_device = "agx_nero"
+follower_channel_type = "gripper"
+mapping = "parallel"
+leader_state = "parallel_position"
+follower_command = "parallel_mit"
+joint_index_map = []
+joint_scales = [1.7]
+
+[[pairings]]
+leader_device = "airbot_play_2"
 leader_channel_type = "arm"
 follower_device = "agx_nero"
 follower_channel_type = "arm"
@@ -143,17 +212,6 @@ leader_state = "end_effector_pose"
 follower_command = "end_pose"
 joint_index_map = []
 joint_scales = []
-
-[[pairings]]
-leader_device = "airbot_play_2"
-leader_channel_type = "e2"
-follower_device = "agx_nero"
-follower_channel_type = "gripper"
-mapping = "direct-joint"
-leader_state = "parallel_position"
-follower_command = "parallel_mit"
-joint_index_map = [0]
-joint_scales = [1.0]
 
 [encoder]
 video_codec = "h264"

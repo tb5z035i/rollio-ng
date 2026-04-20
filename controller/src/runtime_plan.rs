@@ -9,7 +9,41 @@ use rollio_types::config::{
 use std::error::Error;
 use std::ffi::OsString;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
+
+/// Resolve a user-facing path string from the project config against the
+/// invocation cwd of the controller. Absolute paths are returned unchanged;
+/// relative paths are joined onto `invocation_cwd` and lexically normalized
+/// (collapsing `.` / `..`) so that downstream children — which we spawn with
+/// a different cwd (`state_dir`) — see the path the user expected.
+pub(crate) fn resolve_invocation_relative_path(value: &str, invocation_cwd: &Path) -> String {
+    let path = Path::new(value);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        invocation_cwd.join(path)
+    };
+    normalize_lexical(&joined).to_string_lossy().into_owned()
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
 
 fn reserve_loopback_port() -> Result<u16, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -22,6 +56,7 @@ pub(crate) fn build_collect_specs(
     share_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs =
         build_preview_specs(config, workspace_root, child_working_dir, current_exe_dir)?;
@@ -62,6 +97,7 @@ pub(crate) fn build_collect_specs(
         workspace_root,
         child_working_dir,
         current_exe_dir,
+        invocation_cwd,
     )?);
 
     let mut ui_runtime_config = config.ui_runtime_config();
@@ -323,8 +359,16 @@ pub(crate) fn build_storage_spec(
     _workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
-    let inline_config = toml::to_string(config)?;
+    let mut config = config.clone();
+    if let Some(output_path) = config.output_path.as_ref() {
+        config.output_path = Some(resolve_invocation_relative_path(
+            output_path,
+            invocation_cwd,
+        ));
+    }
+    let inline_config = toml::to_string(&config)?;
     Ok(ChildSpec {
         id: "storage".into(),
         command: ResolvedCommand {
@@ -346,4 +390,84 @@ pub(crate) fn ui_browser_url(host: &str, port: u16) -> String {
         _ => host,
     };
     format!("http://{display_host}:{port}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rollio_types::config::{StorageBackend, StorageRuntimeConfig};
+
+    #[test]
+    fn resolve_invocation_relative_path_keeps_absolute_paths() {
+        let resolved = resolve_invocation_relative_path("/tmp/output", Path::new("/home/user"));
+        assert_eq!(resolved, "/tmp/output");
+    }
+
+    #[test]
+    fn resolve_invocation_relative_path_joins_relative_against_cwd_and_normalizes() {
+        let resolved = resolve_invocation_relative_path("./output", Path::new("/home/user/proj"));
+        assert_eq!(resolved, "/home/user/proj/output");
+
+        let nested =
+            resolve_invocation_relative_path("data/runs/./latest", Path::new("/srv/rollio"));
+        assert_eq!(nested, "/srv/rollio/data/runs/latest");
+
+        let parent = resolve_invocation_relative_path("../shared", Path::new("/srv/rollio/run"));
+        assert_eq!(parent, "/srv/rollio/shared");
+    }
+
+    #[test]
+    fn build_storage_spec_resolves_relative_output_path_against_invocation_cwd() {
+        let storage_config = StorageRuntimeConfig {
+            process_id: "storage".into(),
+            backend: StorageBackend::Local,
+            output_path: Some("./output".into()),
+            endpoint: None,
+            queue_size: 4,
+        };
+        let invocation_cwd = Path::new("/home/operator/session-2026-04-21");
+        let spec = build_storage_spec(
+            &storage_config,
+            Path::new("."),
+            Path::new("/var/lib/rollio/state"),
+            Path::new("."),
+            invocation_cwd,
+        )
+        .expect("storage spec should build");
+
+        let inline = spec.command.args[2].to_string_lossy();
+        assert!(
+            inline.contains("output_path = \"/home/operator/session-2026-04-21/output\""),
+            "expected absolute output_path in inline config, got: {inline}"
+        );
+        assert!(
+            !inline.contains("output_path = \"./output\""),
+            "relative output_path should be replaced, got: {inline}"
+        );
+    }
+
+    #[test]
+    fn build_storage_spec_preserves_absolute_output_path() {
+        let storage_config = StorageRuntimeConfig {
+            process_id: "storage".into(),
+            backend: StorageBackend::Local,
+            output_path: Some("/data/rollio/output".into()),
+            endpoint: None,
+            queue_size: 4,
+        };
+        let spec = build_storage_spec(
+            &storage_config,
+            Path::new("."),
+            Path::new("/var/lib/rollio/state"),
+            Path::new("."),
+            Path::new("/home/operator/anything"),
+        )
+        .expect("storage spec should build");
+
+        let inline = spec.command.args[2].to_string_lossy();
+        assert!(
+            inline.contains("output_path = \"/data/rollio/output\""),
+            "absolute output_path should be preserved, got: {inline}"
+        );
+    }
 }

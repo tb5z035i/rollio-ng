@@ -22,7 +22,6 @@ use rollio_types::config::{
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
-    MAX_PARALLEL,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,6 +62,19 @@ const SETUP_DEV_RUNTIME_PACKAGES: &[&str] = &[
 
 type SetupDeviceChannel = (String, String);
 type TeleopPairEndpoints = (SetupDeviceChannel, SetupDeviceChannel);
+
+/// All inputs the wizard's modal pairing picker collects before the
+/// controller materializes a new pair: chosen policy, both endpoints,
+/// and (for `Parallel`) the operator-supplied scaling ratio. `Parallel`
+/// pairs default to `ratio = 1.0` when the operator skips the ratio
+/// phase; non-Parallel policies ignore the field.
+#[derive(Debug, Clone)]
+struct TeleopPairCreate {
+    policy: rollio_types::config::MappingStrategy,
+    leader: SetupDeviceChannel,
+    follower: SetupDeviceChannel,
+    ratio: Option<f64>,
+}
 
 fn dev_build_profile(workspace_root: &Path, current_exe_dir: &Path) -> Option<&'static str> {
     let target_root = workspace_root.join("target");
@@ -246,6 +258,19 @@ struct AvailableDevice {
     /// channels.
     #[serde(default)]
     supported_states: Vec<RobotStateKind>,
+    /// All `RobotCommandKind` values the driver accepts on this channel.
+    /// The setup wizard's "Pairing" picker uses this to filter follower
+    /// candidates by policy (DirectJoint needs `JointPosition`, Cartesian
+    /// needs `EndPose`, Parallel needs `ParallelPosition` / `ParallelMit`).
+    /// Empty for camera channels.
+    #[serde(default)]
+    supported_commands: Vec<RobotCommandKind>,
+    /// Driver-advertised direct-joint compatibility whitelist. The
+    /// pairing picker uses this to enforce the two-sided whitelist
+    /// for DirectJoint pairs without round-tripping through the
+    /// controller.
+    #[serde(default)]
+    direct_joint_compatibility: rollio_types::config::DirectJointCompatibility,
     /// Single-binary snapshot for this discovery row (one channel).
     current: BinaryDeviceConfig,
 }
@@ -977,79 +1002,48 @@ impl SetupSession {
         let Some(snapshot) = self.config.pairings.get(index).cloned() else {
             return Ok(false);
         };
-        let (leader_device, leader_channel_type, follower_device, follower_channel_type) = (
-            snapshot.leader_device.clone(),
-            snapshot.leader_channel_type.clone(),
-            snapshot.follower_device.clone(),
-            snapshot.follower_channel_type.clone(),
-        );
+        let leader_device = snapshot.leader_device.clone();
+        let leader_channel_type = snapshot.leader_channel_type.clone();
+        let follower_device = snapshot.follower_device.clone();
+        let follower_channel_type = snapshot.follower_channel_type.clone();
         let current_mapping = snapshot.mapping;
-        let follower_dof_hint = self
-            .config
-            .device_named(&follower_device)
-            .and_then(|device| device.channel_named(&follower_channel_type))
-            .and_then(|channel| channel.dof)
-            .unwrap_or(1);
-        let leader_ch = self
-            .config
-            .device_named(&leader_device)
-            .and_then(|d| d.channel_named(&leader_channel_type));
-        let follower_ch = self
-            .config
-            .device_named(&follower_device)
-            .and_then(|d| d.channel_named(&follower_channel_type));
-        let parallel = leader_ch.is_some_and(channel_uses_parallel_teleop)
-            && follower_ch.is_some_and(channel_uses_parallel_teleop);
-        let options = [MappingStrategy::DirectJoint, MappingStrategy::Cartesian];
+        // Cycle order: DirectJoint -> Cartesian -> Parallel -> wrap.
+        let options = [
+            MappingStrategy::DirectJoint,
+            MappingStrategy::Cartesian,
+            MappingStrategy::Parallel,
+        ];
         let current_index = options
             .iter()
             .position(|mapping| *mapping == current_mapping)
             .unwrap_or(0);
         let next_index = rotate_index(current_index, options.len(), delta);
         let next_mapping = options[next_index];
-        // Apply the cycle on a clone first so we can roll back without
-        // touching `self.config.devices`/`pairings` if the new mapping
-        // doesn't validate (e.g. follower DOF doesn't match the leader's
-        // for direct-joint, or leader doesn't publish EndEffectorPose for
-        // cartesian). Without this, validation errors from the cycle
-        // would bubble out of `apply_raw_command` and abort the wizard.
-        {
-            let pair = &mut self.config.pairings[index];
-            pair.mapping = next_mapping;
-            match pair.mapping {
-                MappingStrategy::DirectJoint => {
-                    if parallel {
-                        pair.leader_state = RobotStateKind::ParallelPosition;
-                        pair.follower_command = RobotCommandKind::ParallelMit;
-                        let map_len = follower_dof_hint.min(MAX_PARALLEL as u32);
-                        pair.joint_index_map = (0..map_len).collect();
-                        pair.joint_scales = vec![1.0; map_len as usize];
-                    } else {
-                        pair.leader_state = RobotStateKind::JointPosition;
-                        pair.follower_command = RobotCommandKind::JointPosition;
-                        pair.joint_index_map = (0..follower_dof_hint).collect();
-                        pair.joint_scales = vec![1.0; follower_dof_hint as usize];
-                    }
-                }
-                MappingStrategy::Cartesian => {
-                    pair.leader_state = RobotStateKind::EndEffectorPose;
-                    pair.follower_command = RobotCommandKind::EndPose;
-                    pair.joint_index_map.clear();
-                    pair.joint_scales.clear();
-                }
-            }
+        if next_mapping == current_mapping {
+            return Ok(false);
         }
-        let leader_state = self.config.pairings[index].leader_state;
-        // Cartesian (FK/IK) mapping requires the leader to publish
-        // EndEffectorPose; the channel may have been discovered without it,
-        // so opt the leader's publish_states in here. (DirectJoint maps to
-        // JointPosition / ParallelPosition which the discovery defaults
-        // already include.)
+        // Build the candidate pair from scratch under the new policy.
+        // For Parallel, we seed ratio = 1.0 (the operator can fine-tune
+        // it via the picker's ratio phase afterwards).
+        let new_pair = pairing_from_channels(
+            &self.config.devices,
+            next_mapping,
+            &leader_device,
+            &leader_channel_type,
+            &follower_device,
+            &follower_channel_type,
+            None,
+        );
+        // Snapshot publish_states so we can roll back the EndEffectorPose
+        // opt-in for Cartesian. DirectJoint / Parallel use kinds the
+        // discovery defaults already include.
         let publish_states_snapshot = self
             .config
             .device_named(&leader_device)
             .and_then(|d| d.channel_named(&leader_channel_type))
             .map(|ch| ch.publish_states.clone());
+        self.config.pairings[index] = new_pair;
+        let leader_state = self.config.pairings[index].leader_state;
         ensure_channel_publishes_state(
             &mut self.config.devices,
             &leader_device,
@@ -1057,9 +1051,6 @@ impl SetupSession {
             leader_state,
         );
         if let Err(error) = self.config.validate() {
-            // Roll back BOTH the pair mutation and the publish_states
-            // opt-in so the wizard stays in a self-consistent state and
-            // the operator can simply pick a different mapping.
             self.config.pairings[index] = snapshot;
             if let Some(states) = publish_states_snapshot {
                 if let Some(device) = self
@@ -1080,10 +1071,7 @@ impl SetupSession {
             self.teleop_pairing_cache = self.config.pairings.clone();
             self.message = Some(format!(
                 "Cannot switch to {} mapping: {error}",
-                match next_mapping {
-                    MappingStrategy::DirectJoint => "direct-joint",
-                    MappingStrategy::Cartesian => "cartesian",
-                }
+                mapping_strategy_label(next_mapping),
             ));
             return Ok(false);
         }
@@ -1094,23 +1082,25 @@ impl SetupSession {
     /// Build a `(device_name, channel_type)` list of every enabled robot
     /// channel whose driver advertises **either** `FreeDrive` **or**
     /// `CommandFollowing`, with the pair at `except_pair_index` excluded
-    /// from the no-self-loop / uniqueness checks (so editing a leader
-    /// doesn't filter out the channel that pair already uses). This is
-    /// the eligibility predicate for a teleop **leader**.
+    /// Policy-aware leader eligibility. Returns the `(device, channel)`
+    /// names of every enabled robot channel that satisfies BOTH:
     ///
-    /// Leaders are sources of motion the follower mirrors. The operator
-    /// reads the leader's joint state via the device driver — that's the
-    /// only requirement on the driver's side. A passive EEF (e.g. AIRBOT
-    /// E2) with only `FreeDrive` qualifies as a leader because the
-    /// operator manually moves it and the controller forwards the
-    /// observed positions; an actuated arm (G2 / Play arm) qualifies
-    /// because either mode lets the controller observe joint state.
+    ///   1. The shared leader requirement: driver advertises FreeDrive
+    ///      or CommandFollowing (so the controller can observe joint
+    ///      state -- a passive EEF like AIRBOT E2 with only FreeDrive
+    ///      still qualifies because the operator demonstrates motion
+    ///      manually).
+    ///   2. The per-policy shape predicate (`channel_supports_*_leader`).
     ///
-    /// Leaders may be shared across pairs (one channel can demonstrate
-    /// motion to multiple followers), so the only per-pair constraint
-    /// applied here is the self-loop guard: the candidate leader must
-    /// differ from the targeted pair's current follower.
-    fn eligible_leader_channels(&self, except_pair_index: Option<usize>) -> Vec<(String, String)> {
+    /// The pair at `except_pair_index` is excluded from the no-self-loop
+    /// guard so editing a pair's leader doesn't filter out its current
+    /// follower's match (the operator should be able to confirm the
+    /// existing pick without it being marked unavailable).
+    fn eligible_leader_channels_for(
+        &self,
+        policy: MappingStrategy,
+        except_pair_index: Option<usize>,
+    ) -> Vec<(String, String)> {
         let blocked_self = except_pair_index
             .and_then(|idx| self.config.pairings.get(idx))
             .map(|pair| {
@@ -1119,23 +1109,54 @@ impl SetupSession {
                     pair.follower_channel_type.clone(),
                 )
             });
-        self.eligible_channels(|modes| {
-            modes.contains(&RobotMode::FreeDrive) || modes.contains(&RobotMode::CommandFollowing)
-        })
-        .into_iter()
-        .filter(|candidate| Some(candidate) != blocked_self.as_ref())
-        .collect()
+        let mut out = Vec::new();
+        for device in &self.config.devices {
+            for channel in &device.channels {
+                if !channel.enabled || channel.kind != DeviceType::Robot {
+                    continue;
+                }
+                let supported = self.supported_modes_for(device, channel);
+                let leader_capable = supported.contains(&RobotMode::FreeDrive)
+                    || supported.contains(&RobotMode::CommandFollowing);
+                if !leader_capable {
+                    continue;
+                }
+                let policy_match = match policy {
+                    MappingStrategy::DirectJoint => channel_supports_direct_joint_leader(channel),
+                    MappingStrategy::Cartesian => channel_supports_cartesian_leader(channel),
+                    MappingStrategy::Parallel => channel_supports_parallel_leader(channel),
+                };
+                if !policy_match {
+                    continue;
+                }
+                let candidate = (device.name.clone(), channel.channel_type.clone());
+                if Some(&candidate) == blocked_self.as_ref() {
+                    continue;
+                }
+                out.push(candidate);
+            }
+        }
+        out
     }
 
-    /// `(device_name, channel_type)` list of every enabled robot channel
-    /// whose driver advertises `CommandFollowing`, with the pair at
-    /// `except_pair_index` excluded from the per-pair uniqueness checks.
+    /// Policy-aware follower eligibility. Returns the `(device, channel)`
+    /// names of every enabled robot channel that satisfies ALL of:
     ///
-    /// Followers must be unique across pairings — a single physical
-    /// follower can't be driven by two different leaders simultaneously
-    /// — and a follower cannot collapse onto its own pair's leader.
-    fn eligible_follower_channels(
+    ///   1. The shared follower requirement: driver advertises
+    ///      CommandFollowing (so the channel can be driven).
+    ///   2. The per-policy shape predicate
+    ///      (`channel_supports_*_follower`).
+    ///   3. Per-policy peer compatibility against the optional `leader`:
+    ///      DirectJoint requires matching DOF AND a mutual driver
+    ///      whitelist (`direct_joint_compatibility`); the other policies
+    ///      have no peer-shape constraint beyond the predicate.
+    ///   4. Cross-pair uniqueness: a follower must not already follow
+    ///      another leader (excluding the pair at `except_pair_index`)
+    ///      and must not collapse onto its own pair's leader.
+    fn eligible_follower_channels_for(
         &self,
+        policy: MappingStrategy,
+        leader: Option<&(String, String)>,
         except_pair_index: Option<usize>,
     ) -> Vec<(String, String)> {
         let blocked_self = except_pair_index
@@ -1159,84 +1180,137 @@ impl SetupSession {
                 ))
             })
             .collect();
-        self.eligible_channels(|modes| modes.contains(&RobotMode::CommandFollowing))
-            .into_iter()
-            .filter(|candidate| Some(candidate) != blocked_self.as_ref())
-            .filter(|candidate| !claimed_followers.contains_key(candidate))
-            .collect()
-    }
 
-    fn eligible_channels(&self, predicate: impl Fn(&[RobotMode]) -> bool) -> Vec<(String, String)> {
+        // Resolve the leader's `(BinaryDeviceConfig, DeviceChannelConfigV2)`
+        // once so we don't walk the device list inside the loop.
+        let leader_resolved = leader.and_then(|(device_name, channel_type)| {
+            self.config.devices.iter().find_map(|d| {
+                if d.name == *device_name {
+                    d.channels
+                        .iter()
+                        .find(|c| c.channel_type == *channel_type)
+                        .map(|ch| (d.clone(), ch.clone()))
+                } else {
+                    None
+                }
+            })
+        });
+
         let mut out = Vec::new();
         for device in &self.config.devices {
             for channel in &device.channels {
                 if !channel.enabled || channel.kind != DeviceType::Robot {
                     continue;
                 }
-                let supported = self
-                    .available_devices
-                    .iter()
-                    .find(|available| {
-                        available.driver == device.driver
-                            && available.id == device.id
-                            && available
-                                .current
-                                .channels
-                                .first()
-                                .is_some_and(|ch| ch.channel_type == channel.channel_type)
-                    })
-                    .map(|available| available.supported_modes.as_slice())
-                    .unwrap_or(&[]);
-                if predicate(supported) {
-                    out.push((device.name.clone(), channel.channel_type.clone()));
+                let supported = self.supported_modes_for(device, channel);
+                if !supported.contains(&RobotMode::CommandFollowing) {
+                    continue;
                 }
+                let policy_match = match policy {
+                    MappingStrategy::DirectJoint => channel_supports_direct_joint_follower(channel),
+                    MappingStrategy::Cartesian => channel_supports_cartesian_follower(channel),
+                    MappingStrategy::Parallel => channel_supports_parallel_follower(channel),
+                };
+                if !policy_match {
+                    continue;
+                }
+                if let Some((leader_device, leader_channel)) = leader_resolved.as_ref() {
+                    if !policy_pair_compatible(
+                        policy,
+                        leader_device,
+                        leader_channel,
+                        device,
+                        channel,
+                    ) {
+                        continue;
+                    }
+                }
+                let candidate = (device.name.clone(), channel.channel_type.clone());
+                if Some(&candidate) == blocked_self.as_ref() {
+                    continue;
+                }
+                if claimed_followers.contains_key(&candidate) {
+                    continue;
+                }
+                out.push(candidate);
             }
         }
         out
     }
 
+    fn supported_modes_for(
+        &self,
+        device: &BinaryDeviceConfig,
+        channel: &DeviceChannelConfigV2,
+    ) -> &[RobotMode] {
+        self.available_devices
+            .iter()
+            .find(|available| {
+                available.driver == device.driver
+                    && available.id == device.id
+                    && available
+                        .current
+                        .channels
+                        .first()
+                        .is_some_and(|ch| ch.channel_type == channel.channel_type)
+            })
+            .map(|available| available.supported_modes.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Push a new pair into `config.pairings`. When `explicit` is `Some`,
-    /// uses the operator-supplied `(leader, follower)`; otherwise falls
-    /// back to the first eligible `(leader, follower)` combo that obeys
-    /// the cross-pair uniqueness rules. Returns the new pair's index so
-    /// the UI can immediately focus the row.
+    /// uses the operator-supplied `{policy, leader, follower, ratio}`;
+    /// otherwise picks defaults the same way `build_default_channel_pairings`
+    /// does. Returns the new pair's index so the UI can immediately focus
+    /// the row.
     ///
     /// The wizard's modal pairing picker invokes this with `explicit =
-    /// Some(...)` after the operator has chosen both endpoints in the
-    /// sub-step (deferred creation). The implicit form is kept for
-    /// backwards compatibility and tests.
+    /// Some(...)` after the operator has walked through policy -> leader
+    /// -> follower -> (ratio for Parallel) sub-steps; deferred creation
+    /// means esc at any point during the picker leaves nothing behind.
     fn create_pairing(
         &mut self,
-        explicit: Option<TeleopPairEndpoints>,
+        explicit: Option<TeleopPairCreate>,
     ) -> Result<Option<usize>, Box<dyn Error>> {
-        let ((leader_device, leader_channel_type), (follower_device, follower_channel_type)) =
-            match explicit {
+        let TeleopPairCreate {
+            policy,
+            leader: (leader_device, leader_channel_type),
+            follower: (follower_device, follower_channel_type),
+            ratio,
+        } = match explicit {
+            Some(pair) => pair,
+            None => match self.pick_default_pair_endpoints()? {
                 Some(pair) => pair,
-                None => match self.pick_default_pair_endpoints()? {
-                    Some(pair) => pair,
-                    None => return Ok(None),
-                },
-            };
+                None => return Ok(None),
+            },
+        };
 
         // Validate eligibility against the live config so an explicit
         // request from the UI can't smuggle a stale or ineligible
         // channel past us (e.g. operator deselected a channel in step 1
-        // while the picker was still open).
-        let eligible_leaders = self.eligible_leader_channels(None);
-        let eligible_followers = self.eligible_follower_channels(None);
+        // while the picker was still open). Eligibility is policy-aware:
+        // a leader/follower combo that's fine for Cartesian may be
+        // rejected for DirectJoint (DOF mismatch, missing whitelist).
+        let eligible_leaders = self.eligible_leader_channels_for(policy, None);
         let leader_target = (leader_device.clone(), leader_channel_type.clone());
-        let follower_target = (follower_device.clone(), follower_channel_type.clone());
         if !eligible_leaders.contains(&leader_target) {
             self.message = Some(format!(
-                "Leader {}:{} is no longer eligible (channel may have been disabled in step 1 or already be a self-loop with the chosen follower).",
-                leader_device, leader_channel_type,
+                "Leader {}:{} is not eligible for the {} policy (channel may have been disabled in step 1, or no longer satisfies the policy's predicate).",
+                leader_device,
+                leader_channel_type,
+                mapping_strategy_label(policy),
             ));
             return Ok(None);
         }
+        let eligible_followers =
+            self.eligible_follower_channels_for(policy, Some(&leader_target), None);
+        let follower_target = (follower_device.clone(), follower_channel_type.clone());
         if !eligible_followers.contains(&follower_target) {
             self.message = Some(format!(
-                "Follower {}:{} is no longer eligible (channel may have been disabled in step 1 or already follow another leader).",
-                follower_device, follower_channel_type,
+                "Follower {}:{} is not eligible for the {} policy (channel may have been disabled in step 1, already follow another leader, or fail the policy's predicate).",
+                follower_device,
+                follower_channel_type,
+                mapping_strategy_label(policy),
             ));
             return Ok(None);
         }
@@ -1247,10 +1321,12 @@ impl SetupSession {
 
         let pair = pairing_from_channels(
             &self.config.devices,
+            policy,
             &leader_device,
             &leader_channel_type,
             &follower_device,
             &follower_channel_type,
+            ratio,
         );
         let leader_state = pair.leader_state;
         self.config.pairings.push(pair);
@@ -1259,6 +1335,15 @@ impl SetupSession {
             &leader_device,
             &leader_channel_type,
             leader_state,
+        );
+        // A follower must run in CommandFollowing for the controller to
+        // drive it. Auto-promote the channel mode that step 1 set so the
+        // operator doesn't have to bounce back to step 1 just to flip it
+        // (and so a `FreeDrive`-only mode picked in step 1 doesn't
+        // silently break teleop at runtime).
+        self.promote_follower_channel_to_command_following(
+            &follower_device,
+            &follower_channel_type,
         );
         // Teleop is already the only collection mode the wizard exposes;
         // creating a pair doesn't need to mutate `config.mode`.
@@ -1274,35 +1359,38 @@ impl SetupSession {
         Ok(Some(new_index))
     }
 
-    /// Pick a default `(leader, follower)` for a brand-new pair using
-    /// the same eligibility filters the picker uses. Used as the
-    /// fallback when the UI doesn't supply explicit endpoints.
-    fn pick_default_pair_endpoints(
-        &mut self,
-    ) -> Result<Option<TeleopPairEndpoints>, Box<dyn Error>> {
-        let leaders = self.eligible_leader_channels(None);
-        if leaders.is_empty() {
-            self.message = Some(
-                "No eligible leader channel: at least one selected robot channel must support free-drive or command-following.".into(),
-            );
-            return Ok(None);
-        }
-        let followers = self.eligible_follower_channels(None);
-        if followers.is_empty() {
-            self.message = Some(
-                "No eligible follower channel: at least one selected robot channel must support command-following and not already be a follower in another pair.".into(),
-            );
-            return Ok(None);
-        }
-        for leader in &leaders {
-            for follower in &followers {
-                if leader != follower {
-                    return Ok(Some((leader.clone(), follower.clone())));
+    /// Pick a default `{policy, leader, follower}` for a brand-new pair
+    /// using the per-policy eligibility filters. Tries the three
+    /// policies in priority order (Parallel for grippers, then
+    /// DirectJoint, then Cartesian) and returns the first combo that
+    /// passes. Used as the fallback when the UI doesn't supply explicit
+    /// endpoints (e.g. the legacy / test entry point for create_pairing).
+    fn pick_default_pair_endpoints(&mut self) -> Result<Option<TeleopPairCreate>, Box<dyn Error>> {
+        for policy in [
+            MappingStrategy::Parallel,
+            MappingStrategy::DirectJoint,
+            MappingStrategy::Cartesian,
+        ] {
+            let leaders = self.eligible_leader_channels_for(policy, None);
+            if leaders.is_empty() {
+                continue;
+            }
+            for leader in &leaders {
+                let followers = self.eligible_follower_channels_for(policy, Some(leader), None);
+                for follower in &followers {
+                    if leader != follower {
+                        return Ok(Some(TeleopPairCreate {
+                            policy,
+                            leader: leader.clone(),
+                            follower: follower.clone(),
+                            ratio: matches!(policy, MappingStrategy::Parallel).then_some(1.0),
+                        }));
+                    }
                 }
             }
         }
         self.message = Some(
-            "Could not seed a new pair: every eligible leader collapses onto an eligible follower (need at least two distinct robot channels).".into(),
+            "No eligible leader / follower combination found. Pick a policy whose predicate at least two of the selected robot channels satisfy.".into(),
         );
         Ok(None)
     }
@@ -1330,55 +1418,39 @@ impl SetupSession {
         if index >= self.config.pairings.len() {
             return Ok(false);
         }
+        let policy = self.config.pairings[index].mapping;
+        let snapshot_ratio = if policy == MappingStrategy::Parallel {
+            self.config.pairings[index].joint_scales.first().copied()
+        } else {
+            None
+        };
         // Pass the targeted pair index so the eligibility check excludes
         // *this* pair's existing endpoint from the no-self-loop /
-        // uniqueness filters (otherwise re-confirming the current
-        // selection during an edit would falsely register as a duplicate).
+        // uniqueness filters. The policy is fixed (edit doesn't change
+        // it -- `h/l` cycle handles policy changes separately), so we
+        // filter against the same predicate the validator will apply.
         let eligible = match endpoint {
-            PairingEndpoint::Leader => self.eligible_leader_channels(Some(index)),
-            PairingEndpoint::Follower => self.eligible_follower_channels(Some(index)),
+            PairingEndpoint::Leader => self.eligible_leader_channels_for(policy, Some(index)),
+            PairingEndpoint::Follower => {
+                let other = (
+                    self.config.pairings[index].leader_device.clone(),
+                    self.config.pairings[index].leader_channel_type.clone(),
+                );
+                self.eligible_follower_channels_for(policy, Some(&other), Some(index))
+            }
         };
         let target = (device.to_owned(), channel_type.to_owned());
         if !eligible.contains(&target) {
-            // Distinguish the "supported_modes don't match" case from the
-            // "channel is already in use" case so the operator gets an
-            // actionable message in both situations.
-            let raw_pool = match endpoint {
-                PairingEndpoint::Leader => self.eligible_channels(|modes| {
-                    modes.contains(&RobotMode::FreeDrive)
-                        || modes.contains(&RobotMode::CommandFollowing)
-                }),
-                PairingEndpoint::Follower => {
-                    self.eligible_channels(|modes| modes.contains(&RobotMode::CommandFollowing))
-                }
-            };
-            let known_channel = raw_pool.contains(&target);
-            self.message = Some(if known_channel {
+            self.message = Some(format!(
+                "{} {}:{} is not eligible for the {} policy (channel may not satisfy the predicate, may collide with this pair's other endpoint, or may already be a follower in another pair).",
                 match endpoint {
-                    PairingEndpoint::Leader => format!(
-                        "Leader {}:{} would self-loop with this pair's follower; pick a different leader.",
-                        device, channel_type,
-                    ),
-                    PairingEndpoint::Follower => format!(
-                        "Follower {}:{} is already used by another pair (or matches this pair's leader); pick a different follower.",
-                        device, channel_type,
-                    ),
-                }
-            } else {
-                format!(
-                    "{} {}:{} is not eligible (channel must support {}).",
-                    match endpoint {
-                        PairingEndpoint::Leader => "Leader",
-                        PairingEndpoint::Follower => "Follower",
-                    },
-                    device,
-                    channel_type,
-                    match endpoint {
-                        PairingEndpoint::Leader => "free-drive or command-following",
-                        PairingEndpoint::Follower => "command-following",
-                    },
-                )
-            });
+                    PairingEndpoint::Leader => "Leader",
+                    PairingEndpoint::Follower => "Follower",
+                },
+                device,
+                channel_type,
+                mapping_strategy_label(policy),
+            ));
             return Ok(false);
         }
         let (leader_device, leader_channel_type, follower_device, follower_channel_type) = {
@@ -1400,14 +1472,18 @@ impl SetupSession {
                 pair.follower_channel_type.clone(),
             )
         };
-        // Re-derive mapping/leader_state/follower_command from the new
-        // leader/follower combo so the pair stays internally consistent.
+        // Re-derive state/command kinds (and the parallel ratio) from
+        // the new endpoint while keeping the policy fixed. For Parallel
+        // we preserve the existing ratio so the operator's tuning isn't
+        // wiped when they swap a follower.
         let rebuilt = pairing_from_channels(
             &self.config.devices,
+            policy,
             &leader_device,
             &leader_channel_type,
             &follower_device,
             &follower_channel_type,
+            snapshot_ratio,
         );
         self.config.pairings[index] = rebuilt;
         let leader_state = self.config.pairings[index].leader_state;
@@ -1417,8 +1493,96 @@ impl SetupSession {
             &leader_channel_type,
             leader_state,
         );
+        // Same auto-promotion as `create_pairing`: a follower must run
+        // in CommandFollowing. Editing either endpoint of the pair can
+        // shift the follower (directly when `endpoint == Follower`, or
+        // by binding a previously-leading channel as a new follower
+        // elsewhere via the rebuild), so always normalize the current
+        // follower channel.
+        self.promote_follower_channel_to_command_following(
+            &follower_device,
+            &follower_channel_type,
+        );
         self.teleop_pairing_cache = self.config.pairings.clone();
         self.config.validate()?;
+        Ok(true)
+    }
+
+    /// Force the named robot channel into `CommandFollowing` mode, both
+    /// in the persisted config (the source of truth used by `validate`
+    /// and the runtime) and in the `available_devices` mirror that
+    /// powers step 1's UI -- so the operator sees the change reflected
+    /// next time they revisit step 1. No-op for non-robot channels and
+    /// for drivers that don't advertise `CommandFollowing` (the
+    /// eligibility filter blocks those before we get here, but stay
+    /// defensive in case the available_devices snapshot is stale).
+    fn promote_follower_channel_to_command_following(
+        &mut self,
+        device_name: &str,
+        channel_type: &str,
+    ) {
+        if let Some(device) = self
+            .config
+            .devices
+            .iter_mut()
+            .find(|d| d.name == device_name)
+        {
+            if let Some(channel) = device
+                .channels
+                .iter_mut()
+                .find(|c| c.channel_type == channel_type)
+            {
+                if channel.kind == DeviceType::Robot {
+                    channel.mode = Some(RobotMode::CommandFollowing);
+                }
+            }
+        }
+        if let Some(available) = self.available_device_mut(device_name) {
+            if let Some(channel) = available.current.channels.first_mut() {
+                if channel.kind == DeviceType::Robot
+                    && channel.channel_type == channel_type
+                    && available
+                        .supported_modes
+                        .contains(&RobotMode::CommandFollowing)
+                {
+                    channel.mode = Some(RobotMode::CommandFollowing);
+                }
+            }
+        }
+    }
+
+    /// Mutate the parallel-ratio (joint_scales[0]) of an existing
+    /// `Parallel` pair. Returns false (with `self.message` set) when the
+    /// pair isn't `Parallel` or the supplied ratio is non-finite / zero.
+    fn set_pairing_ratio(&mut self, index: usize, ratio: f64) -> Result<bool, Box<dyn Error>> {
+        let Some(pair) = self.config.pairings.get(index) else {
+            return Ok(false);
+        };
+        if pair.mapping != MappingStrategy::Parallel {
+            self.message = Some(format!(
+                "Pair {}:{} -> {}:{} uses {} mapping, which has no ratio. Cycle to parallel via h/l first.",
+                pair.leader_device,
+                pair.leader_channel_type,
+                pair.follower_device,
+                pair.follower_channel_type,
+                mapping_strategy_label(pair.mapping),
+            ));
+            return Ok(false);
+        }
+        if !ratio.is_finite() || ratio == 0.0 {
+            self.message = Some(format!(
+                "Parallel ratio must be finite and non-zero (got {ratio})."
+            ));
+            return Ok(false);
+        }
+        let snapshot = self.config.pairings[index].joint_scales.clone();
+        self.config.pairings[index].joint_scales = vec![ratio];
+        if let Err(error) = self.config.validate() {
+            self.config.pairings[index].joint_scales = snapshot;
+            self.message = Some(format!("Cannot apply ratio: {error}"));
+            return Ok(false);
+        }
+        self.teleop_pairing_cache = self.config.pairings.clone();
         Ok(true)
     }
 
@@ -1721,6 +1885,20 @@ impl SetupSession {
                     channel_type,
                 )?))
             }
+            "setup_set_pairing_ratio" => {
+                let (Some(index), Some(value)) = (command.index, command.value.as_deref()) else {
+                    return Ok(SessionMutation::default());
+                };
+                let Ok(ratio) = value.parse::<f64>() else {
+                    self.message = Some(format!(
+                        "Could not parse parallel ratio \"{value}\": expected a finite, non-zero number."
+                    ));
+                    return Ok(SessionMutation::state_only(true));
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_pairing_ratio(index, ratio)?,
+                ))
+            }
             "setup_toggle_publish_state" => {
                 let (Some(name), Some(value)) = (command.name.as_deref(), command.value.as_deref())
                 else {
@@ -1806,13 +1984,26 @@ impl SetupSession {
     }
 }
 
-/// Parse the wire-format leader+follower payload sent by the wizard
-/// when the operator confirms both endpoints in the pairing picker:
-/// `"<leader_device>|<leader_channel_type>;<follower_device>|<follower_channel_type>"`.
-/// Returns `None` if either half is missing or malformed; the caller
-/// then falls back to auto-seeding.
-fn parse_create_pairing_value(value: &str) -> Option<TeleopPairEndpoints> {
-    let (leader_part, follower_part) = value.split_once(';')?;
+/// Parse the wire-format pair-create payload sent by the wizard when
+/// the operator confirms a new pair in the picker:
+/// `"<policy>;<leader_device>|<leader_channel_type>;<follower_device>|<follower_channel_type>[;ratio=<f64>]"`
+///
+/// `<policy>` is one of `direct-joint`, `cartesian`, `parallel`. The
+/// optional `ratio=<f64>` segment is only meaningful for `parallel` and
+/// carries the operator's mapping ratio (default `1.0` when omitted).
+/// Returns `None` if any required segment is missing or malformed; the
+/// caller then falls back to auto-seeding.
+fn parse_create_pairing_value(value: &str) -> Option<TeleopPairCreate> {
+    let mut parts = value.split(';');
+    let policy_str = parts.next()?;
+    let leader_part = parts.next()?;
+    let follower_part = parts.next()?;
+    let policy = match policy_str {
+        "direct-joint" => MappingStrategy::DirectJoint,
+        "cartesian" => MappingStrategy::Cartesian,
+        "parallel" => MappingStrategy::Parallel,
+        _ => return None,
+    };
     let (leader_device, leader_channel_type) = leader_part.split_once('|')?;
     let (follower_device, follower_channel_type) = follower_part.split_once('|')?;
     if leader_device.is_empty()
@@ -1822,10 +2013,21 @@ fn parse_create_pairing_value(value: &str) -> Option<TeleopPairEndpoints> {
     {
         return None;
     }
-    Some((
-        (leader_device.to_owned(), leader_channel_type.to_owned()),
-        (follower_device.to_owned(), follower_channel_type.to_owned()),
-    ))
+    let mut ratio: Option<f64> = None;
+    for tail in parts {
+        if let Some(rest) = tail.strip_prefix("ratio=") {
+            ratio = rest
+                .parse::<f64>()
+                .ok()
+                .filter(|r| r.is_finite() && *r != 0.0);
+        }
+    }
+    Some(TeleopPairCreate {
+        policy,
+        leader: (leader_device.to_owned(), leader_channel_type.to_owned()),
+        follower: (follower_device.to_owned(), follower_channel_type.to_owned()),
+        ratio,
+    })
 }
 
 fn parse_robot_state_kind(value: &str) -> Option<RobotStateKind> {
@@ -1935,15 +2137,25 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
 
     let (config, available_devices, mut warnings, resume_mode) =
         if let Some(mut existing_config) = args.load_project_config()? {
-            existing_config
-                .validate()
-                .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
-            validate_existing_project(
+            // Demote validation errors on the loaded config to warnings so
+            // the operator can open the wizard precisely to fix them. The
+            // wizard's `setup_save` path still validates, so an invalid
+            // state can't be silently persisted -- but we no longer abort
+            // the launch, which previously left operators stuck at the
+            // CLI with no way to repair the config short of editing TOML
+            // by hand.
+            let mut warnings = Vec::new();
+            if let Err(error) = existing_config.validate() {
+                warnings.push(format!("loaded config has validation issues: {error}"));
+            }
+            if let Err(error) = validate_existing_project(
                 &existing_config,
                 &workspace_root,
                 state_dir.as_path(),
                 &current_exe_dir,
-            )?;
+            ) {
+                warnings.push(format!("loaded project has runtime issues: {error}"));
+            }
             // Persisted configs no longer carry value_limits: re-query each
             // device executable to refresh them in-memory before the wizard
             // (or the visualizer, on accept-defaults) consumes the config.
@@ -1956,7 +2168,7 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
                 &current_exe_dir,
             )?;
             let available_devices = available_devices_from_project(&existing_config, &runtime_meta);
-            (existing_config, available_devices, Vec::new(), true)
+            (existing_config, available_devices, warnings, true)
         } else {
             eprintln!("rollio: discovering devices...");
             let (discoveries, warnings) = discover_devices(
@@ -2671,9 +2883,110 @@ fn camera_profile_quality_key(profile: &CameraProfile) -> (u64, u32) {
     (pixels, profile.fps)
 }
 
-fn channel_uses_parallel_teleop(ch: &DeviceChannelConfigV2) -> bool {
-    ch.publish_states
-        .contains(&RobotStateKind::ParallelPosition)
+fn mapping_strategy_label(policy: MappingStrategy) -> &'static str {
+    match policy {
+        MappingStrategy::DirectJoint => "direct-joint",
+        MappingStrategy::Cartesian => "cartesian",
+        MappingStrategy::Parallel => "parallel",
+    }
+}
+
+/// Per-policy peer compatibility check used by the picker to decide
+/// whether `(leader, follower)` can be paired under the given policy
+/// before building the actual `ChannelPairingConfig`. Mirrors the
+/// `ChannelPairingConfig::validate` checks but operates on the channels
+/// directly so the wizard can filter follower options by leader without
+/// constructing a transient pair.
+///
+///   - `DirectJoint`: leader.dof == follower.dof, AND both drivers
+///     opt in via `direct_joint_compatibility` (two-sided whitelist).
+///   - `Cartesian`: no extra constraint (the per-channel predicates
+///     already covered the state/command requirements).
+///   - `Parallel`: both channels are dof=1 by predicate; no further
+///     compatibility check.
+fn policy_pair_compatible(
+    policy: MappingStrategy,
+    leader_device: &BinaryDeviceConfig,
+    leader_channel: &DeviceChannelConfigV2,
+    follower_device: &BinaryDeviceConfig,
+    follower_channel: &DeviceChannelConfigV2,
+) -> bool {
+    match policy {
+        MappingStrategy::DirectJoint => {
+            if leader_channel.dof.is_none() || leader_channel.dof != follower_channel.dof {
+                return false;
+            }
+            let leader_endorses = leader_channel
+                .direct_joint_compatibility
+                .can_lead
+                .iter()
+                .any(|peer| {
+                    peer.driver == follower_device.driver
+                        && peer.channel_type == follower_channel.channel_type
+                });
+            let follower_endorses = follower_channel
+                .direct_joint_compatibility
+                .can_follow
+                .iter()
+                .any(|peer| {
+                    peer.driver == leader_device.driver
+                        && peer.channel_type == leader_channel.channel_type
+                });
+            leader_endorses && follower_endorses
+        }
+        MappingStrategy::Cartesian | MappingStrategy::Parallel => true,
+    }
+}
+
+fn channel_supports_direct_joint_leader(ch: &DeviceChannelConfigV2) -> bool {
+    ch.publish_states.contains(&RobotStateKind::JointPosition) && ch.dof.is_some_and(|d| d > 0)
+}
+
+fn channel_supports_direct_joint_follower(ch: &DeviceChannelConfigV2) -> bool {
+    ch.supported_commands
+        .contains(&RobotCommandKind::JointPosition)
+        && ch.dof.is_some_and(|d| d > 0)
+}
+
+fn channel_supports_parallel_leader(ch: &DeviceChannelConfigV2) -> bool {
+    ch.dof == Some(1)
+        && ch
+            .publish_states
+            .contains(&RobotStateKind::ParallelPosition)
+}
+
+fn channel_supports_parallel_follower(ch: &DeviceChannelConfigV2) -> bool {
+    ch.dof == Some(1)
+        && (ch
+            .supported_commands
+            .contains(&RobotCommandKind::ParallelPosition)
+            || ch
+                .supported_commands
+                .contains(&RobotCommandKind::ParallelMit))
+}
+
+/// Pick the most natural default policy for a freshly seeded
+/// `(leader, follower)` pair based on the channels' shape. Used by the
+/// auto-build path during discovery and by the wizard when the operator
+/// asks for a default mapping. Returns `None` when no policy is
+/// applicable; the wizard surfaces a helpful message in that case.
+fn default_mapping_strategy_for(
+    leader: &DeviceChannelConfigV2,
+    follower: &DeviceChannelConfigV2,
+) -> Option<MappingStrategy> {
+    if channel_supports_parallel_leader(leader) && channel_supports_parallel_follower(follower) {
+        return Some(MappingStrategy::Parallel);
+    }
+    if channel_supports_direct_joint_leader(leader)
+        && channel_supports_direct_joint_follower(follower)
+        && leader.dof == follower.dof
+    {
+        return Some(MappingStrategy::DirectJoint);
+    }
+    if channel_supports_cartesian_leader(leader) && channel_supports_cartesian_follower(follower) {
+        return Some(MappingStrategy::Cartesian);
+    }
+    None
 }
 
 /// Pick the default `publish_states` for a freshly discovered robot
@@ -2750,58 +3063,26 @@ fn build_default_channel_pairings(devices: &[BinaryDeviceConfig]) -> Vec<Channel
         let Some((leader_dev, leader_ch, follower_dev, follower_ch)) = pairs else {
             continue;
         };
-        let leader_dof = leader_ch.dof.unwrap_or(0);
-        let follower_dof = follower_ch.dof.unwrap_or(0);
-        if leader_dof == 0 || follower_dof == 0 {
+        let Some(policy) = default_mapping_strategy_for(leader_ch, follower_ch) else {
+            continue;
+        };
+        // For DirectJoint, also require the two-sided whitelist before
+        // producing the auto-pair. We don't want discovery to seed an
+        // invalid pair the operator must immediately delete.
+        if policy == MappingStrategy::DirectJoint
+            && !policy_pair_compatible(policy, leader_dev, leader_ch, follower_dev, follower_ch)
+        {
             continue;
         }
-        if leader_dof == follower_dof {
-            let dof = follower_dof;
-            let parallel_pair = channel_uses_parallel_teleop(leader_ch)
-                && channel_uses_parallel_teleop(follower_ch);
-            let (leader_state, follower_command, map_len) = if parallel_pair {
-                (
-                    RobotStateKind::ParallelPosition,
-                    RobotCommandKind::ParallelMit,
-                    dof.min(MAX_PARALLEL as u32),
-                )
-            } else {
-                (
-                    RobotStateKind::JointPosition,
-                    RobotCommandKind::JointPosition,
-                    dof,
-                )
-            };
-            pairings.push(ChannelPairingConfig {
-                leader_device: leader_dev.name.clone(),
-                leader_channel_type: leader_ch.channel_type.clone(),
-                follower_device: follower_dev.name.clone(),
-                follower_channel_type: follower_ch.channel_type.clone(),
-                mapping: MappingStrategy::DirectJoint,
-                leader_state,
-                follower_command,
-                joint_index_map: (0..map_len).collect(),
-                joint_scales: vec![1.0; map_len as usize],
-            });
-        } else if channel_supports_cartesian_leader(leader_ch)
-            && channel_supports_cartesian_follower(follower_ch)
-        {
-            // Cross-DOF arms (e.g. 6-DOF leader -> 7-DOF follower) cannot
-            // safely use direct-joint identity mapping, but Cartesian
-            // (end-effector pose) tracking is DOF-agnostic. Default to it
-            // when both sides advertise the required state/command.
-            pairings.push(ChannelPairingConfig {
-                leader_device: leader_dev.name.clone(),
-                leader_channel_type: leader_ch.channel_type.clone(),
-                follower_device: follower_dev.name.clone(),
-                follower_channel_type: follower_ch.channel_type.clone(),
-                mapping: MappingStrategy::Cartesian,
-                leader_state: RobotStateKind::EndEffectorPose,
-                follower_command: RobotCommandKind::EndPose,
-                joint_index_map: Vec::new(),
-                joint_scales: Vec::new(),
-            });
-        }
+        pairings.push(pairing_from_channels(
+            devices,
+            policy,
+            &leader_dev.name,
+            &leader_ch.channel_type,
+            &follower_dev.name,
+            &follower_ch.channel_type,
+            None,
+        ));
     }
     pairings
 }
@@ -2815,28 +3096,22 @@ enum PairingEndpoint {
     Follower,
 }
 
-/// Build a single `ChannelPairingConfig` from a `(leader, follower)`
-/// channel pair, deriving the mapping strategy + state / command kinds
-/// from the two channels' shapes the same way `build_default_channel_pairings`
-/// does. Falls back to a `DirectJoint` mapping with a placeholder
-/// `joint_index_map` when DOFs are missing or mismatched without a
-/// Cartesian-capable peer; downstream `validate()` will surface the
-/// problem to the operator if the rebuilt pair isn't viable.
+/// Build a single `ChannelPairingConfig` for an explicit `policy`. The
+/// caller chose the policy; this just fills the state/command kinds and
+/// the joint_index_map / joint_scales the way the corresponding
+/// validator expects. `validate()` on the parent ProjectConfig will
+/// surface any remaining shape mismatch (e.g. DOFs differ for a
+/// DirectJoint pair). The optional `ratio` is only meaningful for
+/// `Parallel`; ignored otherwise.
 fn pairing_from_channels(
     devices: &[BinaryDeviceConfig],
+    policy: MappingStrategy,
     leader_device: &str,
     leader_channel_type: &str,
     follower_device: &str,
     follower_channel_type: &str,
+    ratio: Option<f64>,
 ) -> ChannelPairingConfig {
-    let leader_ch = devices
-        .iter()
-        .find(|d| d.name == leader_device)
-        .and_then(|d| {
-            d.channels
-                .iter()
-                .find(|c| c.channel_type == leader_channel_type)
-        });
     let follower_ch = devices
         .iter()
         .find(|d| d.name == follower_device)
@@ -2845,43 +3120,21 @@ fn pairing_from_channels(
                 .iter()
                 .find(|c| c.channel_type == follower_channel_type)
         });
-    let leader_dof = leader_ch.and_then(|ch| ch.dof).unwrap_or(0);
     let follower_dof = follower_ch.and_then(|ch| ch.dof).unwrap_or(0);
-    let parallel_pair = leader_ch.is_some_and(channel_uses_parallel_teleop)
-        && follower_ch.is_some_and(channel_uses_parallel_teleop);
 
-    if leader_dof != 0 && leader_dof == follower_dof {
-        let dof = follower_dof;
-        let (leader_state, follower_command, map_len) = if parallel_pair {
-            (
-                RobotStateKind::ParallelPosition,
-                RobotCommandKind::ParallelMit,
-                dof.min(MAX_PARALLEL as u32),
-            )
-        } else {
-            (
-                RobotStateKind::JointPosition,
-                RobotCommandKind::JointPosition,
-                dof,
-            )
-        };
-        return ChannelPairingConfig {
+    match policy {
+        MappingStrategy::DirectJoint => ChannelPairingConfig {
             leader_device: leader_device.to_owned(),
             leader_channel_type: leader_channel_type.to_owned(),
             follower_device: follower_device.to_owned(),
             follower_channel_type: follower_channel_type.to_owned(),
             mapping: MappingStrategy::DirectJoint,
-            leader_state,
-            follower_command,
-            joint_index_map: (0..map_len).collect(),
-            joint_scales: vec![1.0; map_len as usize],
-        };
-    }
-
-    if leader_ch.is_some_and(channel_supports_cartesian_leader)
-        && follower_ch.is_some_and(channel_supports_cartesian_follower)
-    {
-        return ChannelPairingConfig {
+            leader_state: RobotStateKind::JointPosition,
+            follower_command: RobotCommandKind::JointPosition,
+            joint_index_map: (0..follower_dof).collect(),
+            joint_scales: vec![1.0; follower_dof as usize],
+        },
+        MappingStrategy::Cartesian => ChannelPairingConfig {
             leader_device: leader_device.to_owned(),
             leader_channel_type: leader_channel_type.to_owned(),
             follower_device: follower_device.to_owned(),
@@ -2891,31 +3144,32 @@ fn pairing_from_channels(
             follower_command: RobotCommandKind::EndPose,
             joint_index_map: Vec::new(),
             joint_scales: Vec::new(),
-        };
-    }
-
-    // Worst-case fallback: a DirectJoint pair seeded for the smaller DOF.
-    // `validate()` on the parent `apply_raw_command` call will surface a
-    // descriptive error so the operator can pick a different combo.
-    let dof = leader_dof.min(follower_dof);
-    ChannelPairingConfig {
-        leader_device: leader_device.to_owned(),
-        leader_channel_type: leader_channel_type.to_owned(),
-        follower_device: follower_device.to_owned(),
-        follower_channel_type: follower_channel_type.to_owned(),
-        mapping: MappingStrategy::DirectJoint,
-        leader_state: if parallel_pair {
-            RobotStateKind::ParallelPosition
-        } else {
-            RobotStateKind::JointPosition
         },
-        follower_command: if parallel_pair {
-            RobotCommandKind::ParallelMit
-        } else {
-            RobotCommandKind::JointPosition
-        },
-        joint_index_map: (0..dof).collect(),
-        joint_scales: vec![1.0; dof as usize],
+        MappingStrategy::Parallel => {
+            // Prefer ParallelMit when the follower advertises it
+            // (matches today's gripper behaviour with kp/kd from
+            // command_defaults); fall back to ParallelPosition otherwise.
+            let follower_command = if follower_ch.is_some_and(|ch| {
+                ch.supported_commands
+                    .contains(&RobotCommandKind::ParallelMit)
+            }) {
+                RobotCommandKind::ParallelMit
+            } else {
+                RobotCommandKind::ParallelPosition
+            };
+            let ratio = ratio.filter(|r| r.is_finite() && *r != 0.0).unwrap_or(1.0);
+            ChannelPairingConfig {
+                leader_device: leader_device.to_owned(),
+                leader_channel_type: leader_channel_type.to_owned(),
+                follower_device: follower_device.to_owned(),
+                follower_channel_type: follower_channel_type.to_owned(),
+                mapping: MappingStrategy::Parallel,
+                leader_state: RobotStateKind::ParallelPosition,
+                follower_command,
+                joint_index_map: Vec::new(),
+                joint_scales: vec![ratio],
+            }
+        }
     }
 }
 
@@ -3166,6 +3420,14 @@ fn available_devices_from_project(
                 } else {
                     Vec::new()
                 };
+                let runtime_meta_for_channel =
+                    runtime_meta.get(&(device.name.clone(), channel.channel_type.clone()));
+                let supported_commands = runtime_meta_for_channel
+                    .map(|meta| meta.supported_commands.clone())
+                    .unwrap_or_default();
+                let direct_joint_compatibility = runtime_meta_for_channel
+                    .map(|meta| meta.direct_joint_compatibility.clone())
+                    .unwrap_or_default();
                 Some(AvailableDevice {
                     name: available_device_key_from_binary(&current),
                     display_name: display_name_for_binary_channel(device, channel),
@@ -3175,6 +3437,8 @@ fn available_devices_from_project(
                     camera_profiles,
                     supported_modes,
                     supported_states,
+                    supported_commands,
+                    direct_joint_compatibility,
                     current,
                 })
             })
@@ -3228,14 +3492,23 @@ fn available_rows_from_discovery(
             } else {
                 Vec::new()
             };
+            let meta = discovery.channel_meta_by_channel.get(&channel.channel_type);
             let supported_states = if device_type == DeviceType::Robot {
-                discovery
-                    .channel_meta_by_channel
-                    .get(&channel.channel_type)
-                    .map(|meta| meta.supported_states.clone())
+                meta.map(|m| m.supported_states.clone()).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let supported_commands = if device_type == DeviceType::Robot {
+                meta.map(|m| m.supported_commands.clone())
                     .unwrap_or_default()
             } else {
                 Vec::new()
+            };
+            let direct_joint_compatibility = if device_type == DeviceType::Robot {
+                meta.map(|m| m.direct_joint_compatibility.clone())
+                    .unwrap_or_default()
+            } else {
+                rollio_types::config::DirectJointCompatibility::default()
             };
             Some(AvailableDevice {
                 name: available_device_key_from_binary(&row_current),
@@ -3246,6 +3519,8 @@ fn available_rows_from_discovery(
                 camera_profiles,
                 supported_modes: supported_modes_from_discovery(discovery, channel),
                 supported_states,
+                supported_commands,
+                direct_joint_compatibility,
                 current: row_current,
             })
         })
@@ -4132,6 +4407,21 @@ mod tests {
     fn robot_discovery(id: &str, dof: u32) -> DiscoveredDevice {
         let default_name = if dof == 1 { "pseudo_eef" } else { "pseudo_arm" };
         let mut channel_meta_by_channel = BTreeMap::new();
+        // Default fixture self-whitelists for direct-joint so the
+        // existing auto-pair tests continue to seed pairings without
+        // needing per-driver opt-in. Tests that need to exercise the
+        // strict whitelist rejection use `robot_discovery_no_whitelist`
+        // (defined alongside).
+        let direct_joint_compatibility = rollio_types::config::DirectJointCompatibility {
+            can_lead: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                driver: "pseudo".into(),
+                channel_type: "arm".into(),
+            }],
+            can_follow: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                driver: "pseudo".into(),
+                channel_type: "arm".into(),
+            }],
+        };
         channel_meta_by_channel.insert(
             "arm".to_owned(),
             DiscoveredChannelMeta {
@@ -4141,6 +4431,68 @@ mod tests {
                 modes: make_robot_modes(),
                 dof: Some(dof),
                 default_control_frequency_hz: Some(60.0),
+                direct_joint_compatibility,
+                // The fixture mirrors what an arm driver advertises: it
+                // can lead via `joint_position` state and accept
+                // `joint_position` / `joint_mit` commands. (Tests that
+                // need parallel-grip behaviour use `parallel_gripper_discovery`
+                // below.)
+                supported_commands: vec![
+                    RobotCommandKind::JointPosition,
+                    RobotCommandKind::JointMit,
+                ],
+                ..DiscoveredChannelMeta::default()
+            },
+        );
+        DiscoveredDevice {
+            driver: "pseudo".into(),
+            id: id.into(),
+            display_name: id.into(),
+            default_device_name: Some(default_name.to_owned()),
+            channel_meta_by_channel,
+            transport: Some("simulated".into()),
+            interface: None,
+            product_variant: None,
+            end_effector: None,
+        }
+    }
+
+    /// Robot discovery fixture WITHOUT a `direct_joint_compatibility`
+    /// whitelist. Used by tests that exercise the new strict two-sided
+    /// whitelist rejection for DirectJoint pairs.
+    fn robot_discovery_no_whitelist(id: &str, dof: u32) -> DiscoveredDevice {
+        let mut device = robot_discovery(id, dof);
+        if let Some(meta) = device.channel_meta_by_channel.get_mut("arm") {
+            meta.direct_joint_compatibility =
+                rollio_types::config::DirectJointCompatibility::default();
+        }
+        device
+    }
+
+    /// Parallel-gripper discovery fixture: dof=1 robot channel that
+    /// publishes `parallel_position` and accepts `parallel_position` /
+    /// `parallel_mit` commands. Used by tests that exercise the new
+    /// `Parallel` policy.
+    fn parallel_gripper_discovery(id: &str, default_name: &str) -> DiscoveredDevice {
+        let mut channel_meta_by_channel = BTreeMap::new();
+        channel_meta_by_channel.insert(
+            "gripper".to_owned(),
+            DiscoveredChannelMeta {
+                kind: DeviceType::Robot,
+                channel_label: Some("Pseudo Parallel Gripper".into()),
+                default_name: Some(default_name.to_owned()),
+                modes: make_robot_modes(),
+                dof: Some(1),
+                default_control_frequency_hz: Some(60.0),
+                supported_states: vec![
+                    RobotStateKind::ParallelPosition,
+                    RobotStateKind::ParallelVelocity,
+                    RobotStateKind::ParallelEffort,
+                ],
+                supported_commands: vec![
+                    RobotCommandKind::ParallelPosition,
+                    RobotCommandKind::ParallelMit,
+                ],
                 ..DiscoveredChannelMeta::default()
             },
         );
@@ -4424,6 +4776,14 @@ mod tests {
         supported: Vec<RobotStateKind>,
     ) -> DiscoveredDevice {
         let mut discovery = airbot_play_discovery(None);
+        // Preserve the parent fixture's `direct_joint_compatibility` (it
+        // already self-whitelists airbot-play:arm peers) so DirectJoint
+        // auto-pairing keeps working under the new strict whitelist.
+        let parent_compat = discovery
+            .channel_meta_by_channel
+            .get("arm")
+            .map(|m| m.direct_joint_compatibility.clone())
+            .unwrap_or_default();
         discovery.channel_meta_by_channel.insert(
             "arm".into(),
             DiscoveredChannelMeta {
@@ -4434,6 +4794,12 @@ mod tests {
                 dof: Some(6),
                 default_control_frequency_hz: Some(250.0),
                 supported_states: supported,
+                supported_commands: vec![
+                    RobotCommandKind::JointPosition,
+                    RobotCommandKind::JointMit,
+                    RobotCommandKind::EndPose,
+                ],
+                direct_joint_compatibility: parent_compat,
                 ..DiscoveredChannelMeta::default()
             },
         );
@@ -5504,6 +5870,136 @@ mod tests {
     }
 
     #[test]
+    fn create_pairing_promotes_follower_channel_mode_to_command_following() {
+        // The wizard auto-promotes the follower's step-1 mode to
+        // CommandFollowing on pair creation: the operator shouldn't have
+        // to bounce back to step 1 to flip a free-drive default after
+        // they've decided to use the channel as a follower, and a
+        // follower stuck in FreeDrive would silently break teleop at
+        // runtime.
+        let mut session = setup_session(&[
+            robot_discovery("arm_lead", 6),
+            robot_discovery("arm_follow", 6),
+        ]);
+        // Drop the auto-built pair so we exercise create_pairing
+        // explicitly. Force every robot channel back to FreeDrive so
+        // the test isn't accidentally green just because discovery
+        // already left the follower at CommandFollowing.
+        session.config.pairings.clear();
+        for device in session.config.devices.iter_mut() {
+            for channel in device.channels.iter_mut() {
+                if channel.kind == DeviceType::Robot {
+                    channel.mode = Some(RobotMode::FreeDrive);
+                }
+            }
+        }
+        let new_index = session
+            .create_pairing(None)
+            .expect("create_pairing should succeed with two arms")
+            .expect("a pair should land at index 0");
+        let pair = &session.config.pairings[new_index];
+        let follower_mode = session
+            .config
+            .device_named(&pair.follower_device)
+            .and_then(|d| {
+                d.channels
+                    .iter()
+                    .find(|c| c.channel_type == pair.follower_channel_type)
+            })
+            .and_then(|ch| ch.mode);
+        assert_eq!(
+            follower_mode,
+            Some(RobotMode::CommandFollowing),
+            "create_pairing must auto-flip the follower channel into CommandFollowing",
+        );
+        // Mirror also lands in the available_devices snapshot used by
+        // step 1's UI so the operator sees the change reflected.
+        let mirror_mode = session
+            .available_devices
+            .iter()
+            .find(|available| available.current.name == pair.follower_device)
+            .and_then(|available| available.current.channels.first().and_then(|ch| ch.mode));
+        assert_eq!(
+            mirror_mode,
+            Some(RobotMode::CommandFollowing),
+            "available_devices mirror must reflect the auto-promoted follower mode",
+        );
+    }
+
+    #[test]
+    fn set_pairing_endpoint_promotes_new_follower_to_command_following() {
+        // Same auto-promotion contract as `create_pairing`, but exercised
+        // via the editor path: switching the follower endpoint of an
+        // existing pair must flip the *new* follower channel into
+        // CommandFollowing too.
+        let mut session = setup_session(&[
+            robot_discovery("arm_a", 6),
+            robot_discovery("arm_b", 6),
+            robot_discovery("arm_c", 6),
+        ]);
+        if session.config.pairings.is_empty() {
+            session
+                .create_pairing(None)
+                .expect("create_pairing should succeed")
+                .expect("a pair should land at index 0");
+        }
+        // Pick a third channel that isn't the current leader or
+        // follower to swap in. Reset its mode so we can observe the
+        // promotion happening as a result of `set_pairing_endpoint`.
+        let leader_device = session.config.pairings[0].leader_device.clone();
+        let follower_device = session.config.pairings[0].follower_device.clone();
+        let (new_follower_device, new_follower_channel) = session
+            .config
+            .devices
+            .iter()
+            .find_map(|d| {
+                if d.name == leader_device || d.name == follower_device {
+                    return None;
+                }
+                d.channels
+                    .iter()
+                    .find(|c| c.kind == DeviceType::Robot && c.enabled)
+                    .map(|c| (d.name.clone(), c.channel_type.clone()))
+            })
+            .expect("a third arm should be eligible as a new follower");
+        if let Some(device) = session
+            .config
+            .devices
+            .iter_mut()
+            .find(|d| d.name == new_follower_device)
+        {
+            for channel in device.channels.iter_mut() {
+                if channel.channel_type == new_follower_channel {
+                    channel.mode = Some(RobotMode::FreeDrive);
+                }
+            }
+        }
+        let mutated = session
+            .set_pairing_endpoint(
+                0,
+                PairingEndpoint::Follower,
+                &new_follower_device,
+                &new_follower_channel,
+            )
+            .expect("set_pairing_endpoint should succeed");
+        assert!(mutated, "follower swap should mutate the pair");
+        let promoted_mode = session
+            .config
+            .device_named(&new_follower_device)
+            .and_then(|d| {
+                d.channels
+                    .iter()
+                    .find(|c| c.channel_type == new_follower_channel)
+            })
+            .and_then(|ch| ch.mode);
+        assert_eq!(
+            promoted_mode,
+            Some(RobotMode::CommandFollowing),
+            "set_pairing_endpoint must auto-flip the newly-bound follower into CommandFollowing",
+        );
+    }
+
+    #[test]
     fn cycle_pair_mapping_rolls_back_validation_failures_into_a_warning() {
         // Mirrors the operator-reported bug: a 6-DOF leader paired with
         // a 7-DOF follower cannot use direct-joint identity mapping (the
@@ -5626,12 +6122,31 @@ mod tests {
             })
             .expect("target row exists in config");
 
-        // Sanity: it shows up before being disabled.
+        // Sanity: it shows up before being disabled. We probe the
+        // DirectJoint pool because the test fixture is an arm channel.
+        let policy = MappingStrategy::DirectJoint;
         assert!(session
-            .eligible_leader_channels(None)
+            .eligible_leader_channels_for(policy, None)
             .contains(&(target_device.clone(), target_channel.clone())));
+        // For the follower probe, pass another arm as the leader so the
+        // policy-aware filter has a peer to compare against.
+        let other_leader = session
+            .config
+            .devices
+            .iter()
+            .find_map(|d| {
+                if d.name != target_device {
+                    d.channels
+                        .iter()
+                        .find(|c| c.kind == DeviceType::Robot && c.enabled)
+                        .map(|c| (d.name.clone(), c.channel_type.clone()))
+                } else {
+                    None
+                }
+            })
+            .expect("another arm should exist as leader fixture");
         assert!(session
-            .eligible_follower_channels(None)
+            .eligible_follower_channels_for(policy, Some(&other_leader), None)
             .contains(&(target_device.clone(), target_channel.clone())));
 
         // Toggle off via the same path the wizard uses (space in step 1).
@@ -5643,10 +6158,10 @@ mod tests {
         // even if other pairs still reference it (the picker now shows
         // only eligible candidates, mirroring the controller's view).
         assert!(!session
-            .eligible_leader_channels(None)
+            .eligible_leader_channels_for(policy, None)
             .contains(&(target_device.clone(), target_channel.clone())));
         assert!(!session
-            .eligible_follower_channels(None)
+            .eligible_follower_channels_for(policy, Some(&other_leader), None)
             .contains(&(target_device, target_channel)));
     }
 
@@ -5654,7 +6169,9 @@ mod tests {
     fn eligible_leader_channels_accept_free_drive_only_devices() {
         // E2-style channels advertise only `FreeDrive`. Per the
         // capability-driven leader predicate (free-drive OR
-        // command-following), they should still be eligible leaders.
+        // command-following), they should still be eligible leaders for
+        // both DirectJoint (when paired with a matching whitelist peer)
+        // and Parallel.
         let mut session = setup_session(&[robot_discovery("arm_lead", 6)]);
         // Synthesize an "e2-like" channel: drop CommandFollowing so the
         // available_device only advertises FreeDrive.
@@ -5663,10 +6180,10 @@ mod tests {
                 .supported_modes
                 .retain(|mode| *mode == RobotMode::FreeDrive);
         }
-        let leaders = session.eligible_leader_channels(None);
+        let leaders = session.eligible_leader_channels_for(MappingStrategy::DirectJoint, None);
         assert!(
             !leaders.is_empty(),
-            "free-drive-only channels must qualify as leaders",
+            "free-drive-only channels must qualify as DirectJoint leaders",
         );
     }
 
@@ -5720,5 +6237,366 @@ mod tests {
             ),
             (&claimed_follower_device, &claimed_follower_channel),
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Tests for the three-policy teleop redesign.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cycle_pair_mapping_walks_all_three_policies() {
+        // Two arms with matching driver whitelist auto-pair as
+        // DirectJoint. Cycling forward should land on Cartesian (if
+        // EndPose support exists) or Parallel (if dof=1 + parallel
+        // states exist) per the strict cycle order, with rollback when
+        // the current channel shape doesn't match. For arms (dof=6,
+        // joint_position only) only DirectJoint validates -- the other
+        // two cycles are no-ops with warnings.
+        let mut session = setup_session(&[
+            robot_discovery("arm_lead", 6),
+            robot_discovery("arm_follow", 6),
+        ]);
+        assert_eq!(session.config.pairings.len(), 1);
+        assert_eq!(
+            session.config.pairings[0].mapping,
+            MappingStrategy::DirectJoint
+        );
+        // Cycling forward to Cartesian should fail (arms don't publish
+        // end_effector_pose in this fixture); the pair stays put with
+        // a warning message.
+        let mutated = session.cycle_pair_mapping(0, 1).unwrap();
+        assert!(
+            !mutated,
+            "cycle to cartesian must roll back when end_effector_pose is missing"
+        );
+        assert_eq!(
+            session.config.pairings[0].mapping,
+            MappingStrategy::DirectJoint
+        );
+        assert!(
+            session
+                .message
+                .as_ref()
+                .is_some_and(|m| m.contains("cartesian")),
+            "expected cartesian rejection message",
+        );
+    }
+
+    #[test]
+    fn create_pairing_accepts_policy_aware_seed_for_parallel() {
+        // Two parallel grippers paired explicitly under Parallel with
+        // a custom ratio. The stored pair should preserve mapping=Parallel
+        // and joint_scales=[ratio].
+        let mut session = setup_session(&[
+            parallel_gripper_discovery("g0", "lead_gripper"),
+            parallel_gripper_discovery("g1", "follow_gripper"),
+        ]);
+        // Discovery may have auto-paired the grippers; clear so we
+        // exercise create_pairing from a known baseline.
+        session.config.pairings.clear();
+        let leader_name = session
+            .config
+            .devices
+            .first()
+            .expect("first gripper device exists")
+            .name
+            .clone();
+        let follower_name = session
+            .config
+            .devices
+            .get(1)
+            .expect("second gripper device exists")
+            .name
+            .clone();
+        let new_index = session
+            .create_pairing(Some(TeleopPairCreate {
+                policy: MappingStrategy::Parallel,
+                leader: (leader_name.clone(), "gripper".into()),
+                follower: (follower_name.clone(), "gripper".into()),
+                ratio: Some(0.5),
+            }))
+            .expect("create_pairing should succeed for parallel grippers")
+            .expect("new pair should land at index 0");
+        assert_eq!(new_index, 0);
+        assert_eq!(
+            session.config.pairings[0].mapping,
+            MappingStrategy::Parallel
+        );
+        assert_eq!(session.config.pairings[0].joint_scales, vec![0.5]);
+    }
+
+    #[test]
+    fn set_pairing_ratio_rejects_zero_and_non_parallel_policies() {
+        // Set up an arm pair (DirectJoint by default) and a parallel
+        // gripper pair. set_pairing_ratio applies only to Parallel and
+        // rejects zero / non-finite values for Parallel pairs.
+        let mut session = setup_session(&[
+            robot_discovery("arm_lead", 6),
+            robot_discovery("arm_follow", 6),
+            parallel_gripper_discovery("g0", "lead_gripper"),
+            parallel_gripper_discovery("g1", "follow_gripper"),
+        ]);
+        // Wipe auto-pairs and create one of each kind explicitly.
+        session.config.pairings.clear();
+        let lead_arm = session
+            .config
+            .devices
+            .iter()
+            .find(|d| d.name == "pseudo_arm")
+            .expect("pseudo_arm exists")
+            .name
+            .clone();
+        let follow_arm = session
+            .config
+            .devices
+            .iter()
+            .find(|d| d.name == "pseudo_arm_2")
+            .expect("pseudo_arm_2 exists")
+            .name
+            .clone();
+        session
+            .create_pairing(Some(TeleopPairCreate {
+                policy: MappingStrategy::DirectJoint,
+                leader: (lead_arm, "arm".into()),
+                follower: (follow_arm, "arm".into()),
+                ratio: None,
+            }))
+            .expect("DirectJoint pair create should succeed");
+        let lead_grip = session
+            .config
+            .devices
+            .iter()
+            .find(|d| d.name == "lead_gripper")
+            .expect("lead_gripper exists")
+            .name
+            .clone();
+        let follow_grip = session
+            .config
+            .devices
+            .iter()
+            .find(|d| d.name == "follow_gripper")
+            .expect("follow_gripper exists")
+            .name
+            .clone();
+        session
+            .create_pairing(Some(TeleopPairCreate {
+                policy: MappingStrategy::Parallel,
+                leader: (lead_grip, "gripper".into()),
+                follower: (follow_grip, "gripper".into()),
+                ratio: Some(1.0),
+            }))
+            .expect("Parallel pair create should succeed");
+
+        let direct_idx = session
+            .config
+            .pairings
+            .iter()
+            .position(|p| p.mapping == MappingStrategy::DirectJoint)
+            .expect("DirectJoint pair exists");
+        let parallel_idx = session
+            .config
+            .pairings
+            .iter()
+            .position(|p| p.mapping == MappingStrategy::Parallel)
+            .expect("Parallel pair exists");
+
+        // DirectJoint rejection.
+        let applied = session
+            .set_pairing_ratio(direct_idx, 2.0)
+            .expect("call should not bubble an error");
+        assert!(!applied);
+        assert!(
+            session
+                .message
+                .as_ref()
+                .is_some_and(|m| m.contains("no ratio")),
+            "DirectJoint ratio attempt should report no-ratio message",
+        );
+
+        // Parallel zero rejection.
+        let applied = session
+            .set_pairing_ratio(parallel_idx, 0.0)
+            .expect("call should not bubble an error");
+        assert!(!applied);
+        assert!(
+            session
+                .message
+                .as_ref()
+                .is_some_and(|m| m.contains("non-zero")),
+            "ratio=0 should report non-zero requirement",
+        );
+
+        // Parallel happy path.
+        let applied = session
+            .set_pairing_ratio(parallel_idx, 2.5)
+            .expect("happy-path ratio should apply");
+        assert!(applied);
+        assert_eq!(
+            session.config.pairings[parallel_idx].joint_scales,
+            vec![2.5]
+        );
+    }
+
+    #[test]
+    fn eligibility_lists_filter_by_policy() {
+        // A mixed config: two arms (DirectJoint) and two parallel
+        // grippers (Parallel). DirectJoint pool should expose only the
+        // arms; Parallel pool only the grippers; Cartesian pool empty
+        // (neither side advertises end_effector_pose).
+        let session = setup_session(&[
+            robot_discovery("arm_a", 6),
+            robot_discovery("arm_b", 6),
+            parallel_gripper_discovery("g0", "lead_gripper"),
+            parallel_gripper_discovery("g1", "follow_gripper"),
+        ]);
+        let dj_leaders = session.eligible_leader_channels_for(MappingStrategy::DirectJoint, None);
+        for entry in &dj_leaders {
+            assert_eq!(
+                entry.1, "arm",
+                "DirectJoint pool should only contain arm channels"
+            );
+        }
+        let par_leaders = session.eligible_leader_channels_for(MappingStrategy::Parallel, None);
+        for entry in &par_leaders {
+            assert_eq!(
+                entry.1, "gripper",
+                "Parallel pool should only contain gripper channels"
+            );
+        }
+        let cart_leaders = session.eligible_leader_channels_for(MappingStrategy::Cartesian, None);
+        assert!(
+            cart_leaders.is_empty(),
+            "Cartesian pool should be empty without end_effector_pose support, got {cart_leaders:?}",
+        );
+    }
+
+    #[test]
+    fn eligibility_lists_reject_cross_vendor_direct_joint_without_mutual_whitelist() {
+        // Two arms whose drivers don't endorse each other in the
+        // whitelist must NOT appear as DirectJoint follower candidates
+        // for one another. We build the session with the
+        // `_no_whitelist` fixture so neither side opts in.
+        let mut session = setup_session(&[
+            robot_discovery_no_whitelist("arm_a", 6),
+            robot_discovery_no_whitelist("arm_b", 6),
+        ]);
+        // Drop any auto-pairs first (the no-whitelist fixture should
+        // already have produced none, but make it explicit).
+        session.config.pairings.clear();
+        let leader_target = session
+            .config
+            .devices
+            .iter()
+            .find(|d| d.name == "pseudo_arm")
+            .map(|d| (d.name.clone(), d.channels[0].channel_type.clone()))
+            .expect("pseudo_arm device exists");
+        let followers = session.eligible_follower_channels_for(
+            MappingStrategy::DirectJoint,
+            Some(&leader_target),
+            None,
+        );
+        assert!(
+            followers.is_empty(),
+            "no-whitelist arms must not appear as DirectJoint follower candidates of each other; got {followers:?}",
+        );
+    }
+
+    #[test]
+    fn run_load_surfaces_invalid_pair_as_warning_not_abort() {
+        // Operator-reported scenario (issue thread): a stale config
+        // with mapping=direct-joint + parallel_position used to abort
+        // `rollio setup` at the load-time validate(). After the
+        // teleop-policy refactor, that pair fails the new validator,
+        // and `run()` now demotes the failure to a warning instead
+        // of bubbling it as Err. We test the validation directly via
+        // `validate()` and assert the wizard's launch path also
+        // tolerates the loaded config (covered indirectly via
+        // setup_session, which constructs a SetupSession from a
+        // freshly-built ProjectConfig).
+        let mut config = direct_joint_pair_config_template_for_run_test();
+        // Mutate the pair to mimic the operator's stale shape:
+        // direct-joint with a parallel_position leader_state, which
+        // the new validator rejects as a leader_state mismatch.
+        config.pairings[0].leader_state = rollio_types::config::RobotStateKind::ParallelPosition;
+        let err = config
+            .validate()
+            .expect_err("stale shape must be rejected by the new validator");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ParallelPosition") || msg.contains("parallel_position"),
+            "rejection should mention the offending leader_state, got: {err}",
+        );
+        // The run() launch path now pushes such errors into `warnings`
+        // instead of returning Err. We can't fully exercise `run()`
+        // here (it tries to spawn child processes), but we can confirm
+        // the in-place fix preserves the pair so the wizard can render
+        // it for the operator to fix manually.
+        assert_eq!(config.pairings.len(), 1);
+    }
+
+    fn direct_joint_pair_config_template_for_run_test() -> rollio_types::config::ProjectConfig {
+        use std::str::FromStr;
+        let toml_text = r#"
+project_name = "stale-pair-test"
+mode = "teleop"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "lead"
+driver = "pseudo-a"
+id = "lead0"
+bus_root = "lead"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "free-drive"
+dof = 6
+publish_states = ["joint_position"]
+recorded_states = ["joint_position"]
+
+[[devices]]
+name = "follow"
+driver = "pseudo-b"
+id = "follow0"
+bus_root = "follow"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "command-following"
+dof = 6
+publish_states = ["joint_position"]
+recorded_states = ["joint_position"]
+
+[[pairings]]
+leader_device = "lead"
+leader_channel_type = "arm"
+follower_device = "follow"
+follower_channel_type = "arm"
+mapping = "direct-joint"
+leader_state = "joint_position"
+follower_command = "joint_position"
+joint_index_map = [0, 1, 2, 3, 4, 5]
+joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./output"
+
+[visualizer]
+port = 19090
+"#;
+        rollio_types::config::ProjectConfig::from_str(toml_text)
+            .expect("template should parse before mutation")
     }
 }

@@ -49,33 +49,58 @@ type PreviewAction =
   | { kind: "jump"; label: string; targetStep: PreviewJumpStep }
   | { kind: "save"; label: string };
 
-/** Two-phase modal picker state for the pairing step. While non-null, the
- *  global key handler hijacks j/k/enter/esc to scroll/commit/cancel the
- *  picker rather than acting on the underlying detail row.
+/** The three teleop policies a pair can use. Mirrors
+ *  `MappingStrategy` on the controller side. */
+type PolicyKind = "direct-joint" | "cartesian" | "parallel";
+
+/** Modal picker state for the pairing step. While non-null, the global
+ *  key handler hijacks j/k/enter/esc to scroll/commit/cancel the picker
+ *  rather than acting on the underlying detail row.
  *
- *  - `kind`: `"edit"` mutates an existing pair via setup_set_pairing_*;
- *    `"create"` defers any controller mutation until the operator
- *    confirms BOTH endpoints, then sends a single setup_create_pairing.
- *    Esc in `"create"` mode silently drops the draft — no pair is born.
+ *  - `kind`: `"edit"` mutates an existing pair via setup_set_pairing_*
+ *    as each phase commits; `"create"` defers any controller mutation
+ *    until the operator confirms ALL phases, then sends a single
+ *    setup_create_pairing. Esc in `"create"` mode silently drops the
+ *    draft -- no pair is born.
  *  - `index`: target pair (edit only).
- *  - `draftLeader`: leader confirmed in the first phase of a `"create"`
- *    draft, carried forward into the follower phase.
- *  - `phase`: which side of the pair we're picking next.
- *  - `cursor`: highlighted row in the candidate list.
+ *  - `policy`: in edit mode this is the pair's existing policy
+ *    (immutable here -- `h/l` cycles policy separately); in create mode
+ *    it's locked in after the operator confirms the policy phase.
+ *  - `draftLeader` / `draftFollower`: endpoints confirmed in earlier
+ *    create-mode phases, carried into the follower / ratio phases.
+ *  - `phase`: which sub-step is active. Phase progressions:
+ *      create -> policy -> leader -> follower -> (ratio for Parallel) -> commit
+ *      edit   -> leader -> follower -> (ratio for Parallel) -> commit
+ *  - `cursor`: highlighted row in the candidate list (or selected
+ *    policy index in the policy phase).
+ *  - `ratioText`: text input buffer during the ratio phase. Seeded from
+ *    `pair.joint_scales[0]` for edits.
  */
 type PairingDraft =
   | {
       kind: "edit";
       index: number;
-      phase: "leader" | "follower";
+      policy: PolicyKind;
+      phase: "leader" | "follower" | "ratio";
       cursor: number;
+      ratioText?: string;
     }
   | {
       kind: "create";
-      phase: "leader" | "follower";
+      phase: "policy" | "leader" | "follower" | "ratio";
       cursor: number;
+      policy?: PolicyKind;
       draftLeader?: PairChannelOption;
+      draftFollower?: PairChannelOption;
+      ratioText?: string;
     };
+
+/** Picker policy options in fixed display / cycle order. */
+const POLICY_OPTIONS: { policy: PolicyKind; label: string }[] = [
+  { policy: "direct-joint", label: "Direct Joint" },
+  { policy: "cartesian", label: "Cartesian" },
+  { policy: "parallel", label: "Parallel" },
+];
 
 /** One toggleable row in the "States" sub-step: a single (channel, state)
  *  pair across every selected robot channel. */
@@ -208,36 +233,36 @@ export function SetupApp({
   );
   const stateRows = useMemo(() => buildStateRows(setupState), [setupState]);
   // Picker option lists are computed against the *targeted* pair (edit
-  // mode only) so the no-self-loop and follower-uniqueness rules behave
-  // correctly when the operator re-picks an existing pair's endpoint
-  // (the pair's own current values shouldn't filter themselves out).
-  // For create mode the picker has no pair yet — pass `undefined` so the
-  // candidate set reflects the full live pairing graph.
+  // mode only) AND the selected policy. For create mode the picker has
+  // no pair yet -- pass undefined so the candidate set reflects the
+  // full live pairing graph.
   const pickerExceptIndex =
     pairingDraft?.kind === "edit" ? pairingDraft.index : undefined;
-  // Leader options are independent of the picked leader (the create-mode
-  // follower phase exclude-self check is applied below at render-time).
+  const pickerPolicy: PolicyKind | undefined =
+    pairingDraft?.kind === "edit"
+      ? pairingDraft.policy
+      : pairingDraft?.policy;
+  const pickerLeaderHint =
+    pairingDraft?.kind === "create" ? pairingDraft.draftLeader : undefined;
   const leaderOptions = useMemo(
-    () => eligibleLeaderOptions(setupState, pickerExceptIndex),
-    [pickerExceptIndex, setupState],
+    () =>
+      pickerPolicy
+        ? eligibleLeaderOptions(setupState, pickerPolicy, pickerExceptIndex)
+        : [],
+    [pickerExceptIndex, pickerPolicy, setupState],
   );
-  const baseFollowerOptions = useMemo(
-    () => eligibleFollowerOptions(setupState, pickerExceptIndex),
-    [pickerExceptIndex, setupState],
+  const followerOptions = useMemo(
+    () =>
+      pickerPolicy
+        ? eligibleFollowerOptions(
+            setupState,
+            pickerPolicy,
+            pickerLeaderHint,
+            pickerExceptIndex,
+          )
+        : [],
+    [pickerExceptIndex, pickerLeaderHint, pickerPolicy, setupState],
   );
-  // In create mode's follower phase, additionally exclude the leader the
-  // operator just picked so the picker can't suggest a self-loop.
-  const followerOptions = useMemo(() => {
-    if (pairingDraft?.kind !== "create" || !pairingDraft.draftLeader) {
-      return baseFollowerOptions;
-    }
-    const leader = pairingDraft.draftLeader;
-    return baseFollowerOptions.filter(
-      (option) =>
-        option.deviceName !== leader.deviceName ||
-        option.channelType !== leader.channelType,
-    );
-  }, [baseFollowerOptions, pairingDraft]);
   const focusableCount = useMemo(() => {
     switch (setupState?.step) {
       case "devices":
@@ -246,9 +271,8 @@ export function SetupApp({
         return stateRows.length;
       case "pairing":
         // +1 for the trailing virtual `[+ new pair]` row so the operator
-        // can focus it and press `m` to create a new pair (keeping the
-        // create flow visible/discoverable instead of buried behind a
-        // bare keystroke).
+        // can focus it and press Enter to start the create flow (keeping
+        // the create flow visible/discoverable).
         return setupState.config.pairings.length + 1;
       case "storage":
         return settingsFields.length;
@@ -438,27 +462,113 @@ export function SetupApp({
       // Pairing picker hijacks all navigation / commit / cancel keys while
       // open; the underlying focus list and step navigation stay frozen.
       if (pairingDraft !== null && setupState.step === "pairing") {
-        const options =
-          pairingDraft.phase === "leader" ? leaderOptions : followerOptions;
         const normalizedPicker = input.toLowerCase();
-        // Accept several "cancel" inputs because some terminals/OSes
-        // delay or swallow the bare `\x1b` byte that Ink reads as
-        // `key.escape`. `q` and `m` (m toggles back the picker the same
-        // key opened it with) are reliable fallbacks in any terminal.
-        if (
+
+        // Cancel keys: esc, raw escape byte, q. Any of them drops the
+        // picker. In create mode this discards the entire draft
+        // (nothing was sent to the controller yet); in edit mode any
+        // already-committed leader/follower stays applied.
+        const isCancel =
           key.escape ||
           input === "\u001b" ||
-          normalizedPicker === "q" ||
-          normalizedPicker === "m"
-        ) {
+          normalizedPicker === "q";
+        if (isCancel) {
           setPairingDraft(null);
           return;
         }
+
+        // Ratio phase: text input for the parallel-mapping scaling
+        // factor. Allow digits / `.` / `-` / backspace; Enter commits.
+        if (pairingDraft.phase === "ratio") {
+          if (key.return) {
+            const ratioText = (pairingDraft.ratioText ?? "").trim();
+            const ratio = parseFloat(ratioText);
+            if (!Number.isFinite(ratio) || ratio === 0) {
+              // Don't commit an unusable ratio; leave the buffer alone
+              // so the operator can correct it.
+              return;
+            }
+            if (pairingDraft.kind === "edit") {
+              sendControl(
+                encodeSetupCommand("setup_set_pairing_ratio", {
+                  index: pairingDraft.index,
+                  value: ratioText,
+                }),
+              );
+              setPairingDraft(null);
+            } else if (pairingDraft.draftLeader && pairingDraft.draftFollower) {
+              const leader = pairingDraft.draftLeader;
+              const follower = pairingDraft.draftFollower;
+              sendControl(
+                encodeSetupCommand("setup_create_pairing", {
+                  value: `parallel;${leader.deviceName}|${leader.channelType};${follower.deviceName}|${follower.channelType};ratio=${ratioText}`,
+                }),
+              );
+              setPairingDraft(null);
+            }
+            return;
+          }
+          if (key.backspace || key.delete) {
+            setPairingDraft((draft) =>
+              draft === null
+                ? draft
+                : {
+                    ...draft,
+                    ratioText: (draft.ratioText ?? "").slice(0, -1),
+                  },
+            );
+            return;
+          }
+          // Restrict the buffer to digits / dot / minus.
+          if (input.length > 0 && /^[\d.\-]+$/.test(input)) {
+            setPairingDraft((draft) =>
+              draft === null
+                ? draft
+                : { ...draft, ratioText: (draft.ratioText ?? "") + input },
+            );
+          }
+          return;
+        }
+
+        // Policy phase (create mode only): scroll the 3-option list,
+        // commit on Enter to advance to the leader phase.
+        if (pairingDraft.kind === "create" && pairingDraft.phase === "policy") {
+          const len = POLICY_OPTIONS.length;
+          if (key.upArrow || normalizedPicker === "k") {
+            setPairingDraft((draft) =>
+              draft === null || draft.kind !== "create"
+                ? draft
+                : { ...draft, cursor: (draft.cursor + len - 1) % len },
+            );
+            return;
+          }
+          if (key.downArrow || normalizedPicker === "j") {
+            setPairingDraft((draft) =>
+              draft === null || draft.kind !== "create"
+                ? draft
+                : { ...draft, cursor: (draft.cursor + 1) % len },
+            );
+            return;
+          }
+          if (key.return) {
+            const policy = POLICY_OPTIONS[pairingDraft.cursor]!.policy;
+            setPairingDraft({
+              kind: "create",
+              phase: "leader",
+              cursor: 0,
+              policy,
+            });
+            return;
+          }
+          return;
+        }
+
+        // Leader / follower phase: scroll the candidate list (which
+        // `leaderOptions` / `followerOptions` already filtered against
+        // the picker policy + targeted pair).
+        const options =
+          pairingDraft.phase === "leader" ? leaderOptions : followerOptions;
         if (options.length === 0) {
-          // No candidates available. The escape-fallback keys above are
-          // already handled; here we additionally accept Enter as a
-          // synonym for "close" so the operator can dismiss the empty
-          // picker without remembering the cancel keys.
           if (key.return) {
             setPairingDraft(null);
           }
@@ -498,40 +608,77 @@ export function SetupApp({
             );
             if (pairingDraft.phase === "leader") {
               // Advance to the follower phase. `eligibleFollowerOptions`
-              // already excludes the targeted pair's leader, so the
-              // cursor can simply land on the first option.
+              // already excludes the targeted pair's leader.
               setPairingDraft({
                 kind: "edit",
                 index: pairingDraft.index,
+                policy: pairingDraft.policy,
                 phase: "follower",
                 cursor: 0,
+              });
+            } else if (pairingDraft.policy === "parallel") {
+              // Parallel pairs gain a ratio editor at the end. Seed the
+              // text buffer from the existing pair's ratio (joint_scales[0])
+              // so the operator can tweak instead of retype.
+              const existingRatio =
+                setupState.config.pairings[pairingDraft.index]?.joint_scales[0];
+              const ratioText = existingRatio != null ? String(existingRatio) : "1.0";
+              setPairingDraft({
+                kind: "edit",
+                index: pairingDraft.index,
+                policy: pairingDraft.policy,
+                phase: "ratio",
+                cursor: 0,
+                ratioText,
               });
             } else {
               setPairingDraft(null);
             }
-          } else {
-            // Create mode: hold the operator's picks UI-side until both
-            // are confirmed, then send a single setup_create_pairing.
-            // This way, esc at any point silently drops the draft —
-            // nothing is created on the controller.
+          } else if (pairingDraft.kind === "create") {
+            // Create mode: hold the operator's picks UI-side until ALL
+            // phases are confirmed (including ratio for Parallel),
+            // then send a single setup_create_pairing. esc at any
+            // point silently drops the draft.
+            if (!pairingDraft.policy) {
+              return;
+            }
             if (pairingDraft.phase === "leader") {
               setPairingDraft({
                 kind: "create",
                 phase: "follower",
                 cursor: 0,
+                policy: pairingDraft.policy,
                 draftLeader: choice,
               });
-            } else if (pairingDraft.draftLeader) {
-              const leader = pairingDraft.draftLeader;
-              sendControl(
-                encodeSetupCommand("setup_create_pairing", {
-                  value: `${leader.deviceName}|${leader.channelType};${choice.deviceName}|${choice.channelType}`,
-                }),
-              );
-              setPairingDraft(null);
-            } else {
-              // Defensive: missing leader during follower phase → restart.
-              setPairingDraft({ kind: "create", phase: "leader", cursor: 0 });
+            } else if (pairingDraft.phase === "follower") {
+              if (!pairingDraft.draftLeader) {
+                setPairingDraft({
+                  kind: "create",
+                  phase: "leader",
+                  cursor: 0,
+                  policy: pairingDraft.policy,
+                });
+                return;
+              }
+              if (pairingDraft.policy === "parallel") {
+                setPairingDraft({
+                  kind: "create",
+                  phase: "ratio",
+                  cursor: 0,
+                  policy: pairingDraft.policy,
+                  draftLeader: pairingDraft.draftLeader,
+                  draftFollower: choice,
+                  ratioText: "1.0",
+                });
+              } else {
+                const leader = pairingDraft.draftLeader;
+                sendControl(
+                  encodeSetupCommand("setup_create_pairing", {
+                    value: `${pairingDraft.policy};${leader.deviceName}|${leader.channelType};${choice.deviceName}|${choice.channelType}`,
+                  }),
+                );
+                setPairingDraft(null);
+              }
             }
           }
           return;
@@ -594,46 +741,6 @@ export function SetupApp({
       if (setupState.step === "pairing") {
         const pairCount = setupState.config.pairings.length;
         const onNewPairRow = focusedIndex === pairCount;
-        if (normalizedInput === "m") {
-          // `m` always opens the picker. On an existing pair it edits
-          // that pair (mutations apply immediately on the controller).
-          // On the virtual `[+ new pair]` row it opens a *create* draft
-          // — the operator's leader/follower selections are held UI-side
-          // until BOTH are confirmed, at which point a single
-          // `setup_create_pairing` lands the new pair on the controller.
-          // Esc at any point during create-mode silently drops the draft,
-          // so no half-baked pair is ever born.
-          if (onNewPairRow) {
-            setPairingDraft({
-              kind: "create",
-              phase: "leader",
-              cursor: 0,
-            });
-            return;
-          }
-          const focusedPair = setupState.config.pairings[focusedIndex];
-          if (focusedPair) {
-            // Re-derive leader options against the focused pair so the
-            // cursor lands on the pair's current leader (the memoized
-            // `leaderOptions` still uses the previous picker context,
-            // i.e. `undefined` here).
-            const optionsForPair = eligibleLeaderOptions(setupState, focusedIndex);
-            setPairingDraft({
-              kind: "edit",
-              index: focusedIndex,
-              phase: "leader",
-              cursor: Math.max(
-                0,
-                optionsForPair.findIndex(
-                  (option) =>
-                    option.deviceName === focusedPair.leader_device &&
-                    option.channelType === focusedPair.leader_channel_type,
-                ),
-              ),
-            });
-          }
-          return;
-        }
         if (normalizedInput === "d" || key.delete || key.backspace) {
           // `d` only deletes existing pairs; on the virtual new-pair
           // row it's a no-op (there's nothing to delete yet).
@@ -647,6 +754,46 @@ export function SetupApp({
       }
 
       if (key.return) {
+        if (setupState.step === "pairing") {
+          const pairCount = setupState.config.pairings.length;
+          const onNewPairRow = focusedIndex === pairCount;
+          // On `[+ new pair]`, Enter opens create flow (policy phase).
+          // On an existing pair, Enter opens edit (leader phase); policy
+          // is changed with h/l separately.
+          if (onNewPairRow) {
+            setPairingDraft({
+              kind: "create",
+              phase: "policy",
+              cursor: 0,
+            });
+            return;
+          }
+          const focusedPair = setupState.config.pairings[focusedIndex];
+          if (focusedPair) {
+            const policy = focusedPair.mapping;
+            const optionsForPair = eligibleLeaderOptions(
+              setupState,
+              policy,
+              focusedIndex,
+            );
+            setPairingDraft({
+              kind: "edit",
+              index: focusedIndex,
+              policy,
+              phase: "leader",
+              cursor: Math.max(
+                0,
+                optionsForPair.findIndex(
+                  (option) =>
+                    option.deviceName === focusedPair.leader_device &&
+                    option.channelType === focusedPair.leader_channel_type,
+                ),
+              ),
+            });
+          }
+          return;
+        }
+
         if (setupState.step === "storage") {
           const field = settingsFields[focusedIndex];
           if (!field) {
@@ -751,6 +898,12 @@ export function SetupApp({
       }
 
       if (setupState.step === "pairing") {
+        // h/l (or [/]) cycles policy on the focused existing pair.
+        // No-op on the virtual `[+ new pair]` row -- the operator
+        // chooses policy via Enter -> policy phase there instead.
+        if (focusedIndex >= setupState.config.pairings.length) {
+          return;
+        }
         sendControl(
           encodeSetupCommand("setup_cycle_pair_mapping", {
             index: focusedIndex,
@@ -1006,112 +1159,226 @@ type PairChannelOption = {
   label: string;
 };
 
-function buildPairOptions(
-  setupState: SetupStateMessage | null,
-  predicate: (modes: SetupAvailableDevice["supported_modes"]) => boolean,
-): PairChannelOption[] {
+/** Per-channel snapshot of everything the picker needs to filter by
+ *  policy: the configured channel itself, the driver's runtime modes,
+ *  the driver's supported_commands, and the direct-joint whitelist. */
+type ChannelSnapshot = {
+  device: SetupBinaryDeviceConfig;
+  channel: SetupDeviceChannelV2;
+  modes: SetupAvailableDevice["supported_modes"];
+  supportedCommands: string[];
+  whitelist: {
+    canLead: { driver: string; channel_type: string }[];
+    canFollow: { driver: string; channel_type: string }[];
+  };
+  option: PairChannelOption;
+};
+
+function collectChannelSnapshots(setupState: SetupStateMessage | null): ChannelSnapshot[] {
   if (!setupState) return [];
-  const modesByKey = new Map<string, SetupAvailableDevice["supported_modes"]>();
+  const lookupByKey = new Map<string, SetupAvailableDevice>();
   for (const available of setupState.available_devices) {
     if (available.device_type !== "robot") continue;
     const ch = available.current.channels[0];
     if (!ch) continue;
-    modesByKey.set(
+    lookupByKey.set(
       `${available.driver}|${available.id}|${ch.channel_type}`,
-      available.supported_modes,
+      available,
     );
   }
-  const out: PairChannelOption[] = [];
+  const out: ChannelSnapshot[] = [];
   for (const device of setupState.config.devices) {
     for (const channel of device.channels) {
-      if (channel.kind !== "robot" || channel.enabled === false) {
-        continue;
-      }
-      const supported =
-        modesByKey.get(`${device.driver}|${device.id}|${channel.channel_type}`) ?? [];
-      if (!predicate(supported)) continue;
+      if (channel.kind !== "robot" || channel.enabled === false) continue;
+      const available = lookupByKey.get(
+        `${device.driver}|${device.id}|${channel.channel_type}`,
+      );
       const displayName = (channel.name?.trim() || channel.channel_type) ?? channel.channel_type;
       out.push({
-        deviceName: device.name,
-        channelType: channel.channel_type,
-        displayName,
-        label: `${displayName}/${channel.channel_type}`,
+        device,
+        channel,
+        modes: available?.supported_modes ?? [],
+        supportedCommands: available?.supported_commands ?? [],
+        whitelist: {
+          canLead: available?.direct_joint_compatibility?.can_lead ?? [],
+          canFollow: available?.direct_joint_compatibility?.can_follow ?? [],
+        },
+        option: {
+          deviceName: device.name,
+          channelType: channel.channel_type,
+          displayName,
+          label: `${displayName}/${channel.channel_type}`,
+        },
       });
     }
   }
   return out;
 }
 
-/** Channels that may serve as the leader for the pair at
- *  `exceptPairIndex` (or for a brand-new pair when omitted). Mirrors the
- *  controller-side `SetupSession::eligible_leader_channels` so the picker
- *  never shows an option the controller would later reject. The leader
- *  must support `free-drive` OR `command-following` (either mode lets
- *  the controller observe joint state, which is all the leader needs to
- *  do); passive EEFs that only advertise free-drive (e.g. AIRBOT E2)
- *  qualify because the operator manually moves them and the controller
- *  forwards the observed positions. Leaders may be shared across pairs,
- *  so the only per-pair constraint is the no-self-loop guard against the
- *  targeted pair's current follower. */
+function isLeaderModeCapable(modes: SetupAvailableDevice["supported_modes"]): boolean {
+  return modes.includes("free-drive") || modes.includes("command-following");
+}
+
+function isFollowerModeCapable(modes: SetupAvailableDevice["supported_modes"]): boolean {
+  return modes.includes("command-following");
+}
+
+/** Per-policy leader predicate. Mirrors the controller's
+ *  `channel_supports_*_leader` family: DirectJoint needs joint_position
+ *  in publish_states + dof > 0; Cartesian needs end_effector_pose in
+ *  publish_states; Parallel needs parallel_position + dof == 1. */
+function leaderPolicyPredicate(
+  policy: PolicyKind,
+  channel: SetupDeviceChannelV2,
+): boolean {
+  switch (policy) {
+    case "direct-joint":
+      return (
+        (channel.publish_states ?? []).includes("joint_position") &&
+        (channel.dof ?? 0) > 0
+      );
+    case "cartesian":
+      return (channel.publish_states ?? []).includes("end_effector_pose");
+    case "parallel":
+      return (
+        channel.dof === 1 &&
+        (channel.publish_states ?? []).includes("parallel_position")
+      );
+  }
+}
+
+/** Per-policy follower predicate. Mirrors the controller's
+ *  `channel_supports_*_follower` family. */
+function followerPolicyPredicate(
+  policy: PolicyKind,
+  channel: SetupDeviceChannelV2,
+  supportedCommands: string[],
+): boolean {
+  switch (policy) {
+    case "direct-joint":
+      return supportedCommands.includes("joint_position") && (channel.dof ?? 0) > 0;
+    case "cartesian":
+      return supportedCommands.includes("end_pose");
+    case "parallel":
+      return (
+        channel.dof === 1 &&
+        (supportedCommands.includes("parallel_position") ||
+          supportedCommands.includes("parallel_mit"))
+      );
+  }
+}
+
+/** Per-policy peer compatibility check (DirectJoint requires matching
+ *  DOF and the two-sided whitelist; the others have no peer constraint
+ *  beyond the per-side predicates). Mirrors the controller-side
+ *  `policy_pair_compatible`. */
+function policyPairCompatible(
+  policy: PolicyKind,
+  leader: ChannelSnapshot,
+  follower: ChannelSnapshot,
+): boolean {
+  if (policy !== "direct-joint") return true;
+  if (leader.channel.dof == null || leader.channel.dof !== follower.channel.dof) {
+    return false;
+  }
+  const leaderEndorses = leader.whitelist.canLead.some(
+    (peer) =>
+      peer.driver === follower.device.driver &&
+      peer.channel_type === follower.channel.channel_type,
+  );
+  const followerEndorses = follower.whitelist.canFollow.some(
+    (peer) =>
+      peer.driver === leader.device.driver &&
+      peer.channel_type === leader.channel.channel_type,
+  );
+  return leaderEndorses && followerEndorses;
+}
+
+/** Channels that may serve as the leader for the targeted pair under
+ *  the given policy. Mirrors the controller-side
+ *  `eligible_leader_channels_for` so the picker never shows an option
+ *  the controller would later reject. */
 function eligibleLeaderOptions(
   setupState: SetupStateMessage | null,
+  policy: PolicyKind,
   exceptPairIndex?: number,
 ): PairChannelOption[] {
-  const all = buildPairOptions(setupState, (modes) =>
-    modes.includes("free-drive") || modes.includes("command-following"),
-  );
+  const snapshots = collectChannelSnapshots(setupState);
   const targetedPair =
     exceptPairIndex !== undefined
       ? setupState?.config.pairings[exceptPairIndex]
       : undefined;
-  return all.filter((option) => {
-    if (
-      targetedPair &&
-      option.deviceName === targetedPair.follower_device &&
-      option.channelType === targetedPair.follower_channel_type
-    ) {
-      return false;
-    }
-    return true;
-  });
+  return snapshots
+    .filter(
+      (snapshot) =>
+        isLeaderModeCapable(snapshot.modes) &&
+        leaderPolicyPredicate(policy, snapshot.channel),
+    )
+    .filter((snapshot) => {
+      // No-self-loop guard against the targeted pair's current
+      // follower (so editing a pair's leader doesn't accidentally
+      // produce leader == follower).
+      if (
+        targetedPair &&
+        snapshot.option.deviceName === targetedPair.follower_device &&
+        snapshot.option.channelType === targetedPair.follower_channel_type
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map((snapshot) => snapshot.option);
 }
 
-/** Channels that may serve as the follower for the pair at
- *  `exceptPairIndex` (or for a brand-new pair when omitted). Mirrors the
- *  controller-side `SetupSession::eligible_follower_channels`. The
- *  follower must support `command-following` and, additionally, must not
- *  already be a follower in another pair (each follower can only follow
- *  one leader at a time) and must not collapse onto its own pair's
- *  leader. */
+/** Channels that may serve as the follower for the targeted pair under
+ *  the given policy with the given (optional) leader. Mirrors the
+ *  controller-side `eligible_follower_channels_for`. */
 function eligibleFollowerOptions(
   setupState: SetupStateMessage | null,
+  policy: PolicyKind,
+  leader?: PairChannelOption,
   exceptPairIndex?: number,
 ): PairChannelOption[] {
-  const all = buildPairOptions(setupState, (modes) =>
-    modes.includes("command-following"),
-  );
-  if (!setupState) return all;
-  const targetedPair =
-    exceptPairIndex !== undefined
-      ? setupState.config.pairings[exceptPairIndex]
-      : undefined;
+  if (!setupState) return [];
+  const snapshots = collectChannelSnapshots(setupState);
+  const leaderSnapshot = leader
+    ? snapshots.find(
+        (s) =>
+          s.option.deviceName === leader.deviceName &&
+          s.option.channelType === leader.channelType,
+      )
+    : undefined;
   const claimedFollowers = new Set<string>();
   setupState.config.pairings.forEach((pair, idx) => {
     if (idx === exceptPairIndex) return;
     claimedFollowers.add(`${pair.follower_device}|${pair.follower_channel_type}`);
   });
-  return all.filter((option) => {
-    const key = `${option.deviceName}|${option.channelType}`;
-    if (claimedFollowers.has(key)) return false;
-    if (
-      targetedPair &&
-      option.deviceName === targetedPair.leader_device &&
-      option.channelType === targetedPair.leader_channel_type
-    ) {
-      return false;
-    }
-    return true;
-  });
+  const targetedPair =
+    exceptPairIndex !== undefined
+      ? setupState.config.pairings[exceptPairIndex]
+      : undefined;
+  return snapshots
+    .filter(
+      (snapshot) =>
+        isFollowerModeCapable(snapshot.modes) &&
+        followerPolicyPredicate(policy, snapshot.channel, snapshot.supportedCommands),
+    )
+    .filter((snapshot) => {
+      if (leaderSnapshot && !policyPairCompatible(policy, leaderSnapshot, snapshot)) {
+        return false;
+      }
+      const key = `${snapshot.option.deviceName}|${snapshot.option.channelType}`;
+      if (claimedFollowers.has(key)) return false;
+      if (
+        targetedPair &&
+        snapshot.option.deviceName === targetedPair.leader_device &&
+        snapshot.option.channelType === targetedPair.leader_channel_type
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .map((snapshot) => snapshot.option);
 }
 
 function buildPreviewActions(setupState: SetupStateMessage | null): PreviewAction[] {
@@ -1337,12 +1604,12 @@ function buildDetailLines(
       // The new-pair row sits at index = pairCount and is always
       // present, so the create flow stays discoverable even when the
       // pairing list is empty. `d` is intentionally a no-op on this row
-      // (see m-key handler) — there's nothing to delete.
+      // — there's nothing to delete.
       const newPairFocused = focusedIndex === pairCount;
       const pairLines: DetailLine[] = [
         textLine(
           "pairing-title",
-          "Manage teleoperation pairs. m: edit (or create on the new-pair row), d: delete.",
+          "Manage teleoperation pairs. enter: create / edit, d: delete.",
           { color: "cyan", bold: true },
         ),
         ...setupState.config.pairings.map((pair, index) =>
@@ -1363,14 +1630,11 @@ function buildDetailLines(
             bold: newPairFocused,
             color: "cyan",
           }),
-          textSegment("  press m to create + edit", { color: "gray" }),
+          textSegment("  press Enter to create / edit", { color: "gray" }),
         ]),
       ];
       const pickerLines = pairingDraft
-        ? buildPairingPickerLines(
-            pairingDraft,
-            pairingDraft.phase === "leader" ? leaderOptions : followerOptions,
-          )
+        ? buildPairingPickerLines(pairingDraft, leaderOptions, followerOptions)
         : [];
       return [...pairLines, ...pickerLines, ...warningLines, ...messageLines];
     }
@@ -1445,37 +1709,106 @@ function buildDetailLines(
 
 function buildPairingPickerLines(
   draft: PairingDraft,
-  options: PairChannelOption[],
+  leaderOptions: PairChannelOption[],
+  followerOptions: PairChannelOption[],
 ): DetailLine[] {
-  const phaseLabel = draft.phase === "leader" ? "leader" : "follower";
-  const eligibilityHint =
-    draft.phase === "leader"
-      ? "channels that support free-drive or command-following"
-      : "channels that support command-following";
+  const modeBadge = draft.kind === "create" ? "[new pair] " : "[edit pair] ";
+  const policy: PolicyKind | undefined =
+    draft.kind === "edit" ? draft.policy : draft.policy;
+  const policyLabel = policy
+    ? POLICY_OPTIONS.find((p) => p.policy === policy)?.label ?? policy
+    : "(pending)";
+
+  // Policy phase (create only): scroll the three policies.
+  if (draft.kind === "create" && draft.phase === "policy") {
+    const lines: DetailLine[] = [
+      buildDetailLine("pairing-picker-header", [
+        textSegment(modeBadge, { color: "magenta", bold: true }),
+        textSegment("Pick policy ", { color: "magenta", bold: true }),
+        textSegment("(j/k: Pick  enter: Confirm  esc / q: Cancel)", {
+          color: "cyan",
+        }),
+      ]),
+    ];
+    POLICY_OPTIONS.forEach((option, index) => {
+      const focused = index === draft.cursor;
+      lines.push(
+        buildDetailLine(`pairing-picker-policy:${option.policy}`, [
+          focusPrefix(focused),
+          textSegment(option.label, { bold: focused }),
+          textSegment(`  (${option.policy})`, { color: "gray" }),
+        ]),
+      );
+    });
+    return lines;
+  }
+
+  // Ratio phase (parallel only): editable text buffer.
+  if (draft.phase === "ratio") {
+    const ratioText = draft.ratioText ?? "";
+    const draftLeader =
+      draft.kind === "create" ? draft.draftLeader : undefined;
+    const draftFollower =
+      draft.kind === "create" ? draft.draftFollower : undefined;
+    const summary =
+      draft.kind === "create" && draftLeader && draftFollower
+        ? `${draftLeader.label} -> ${draftFollower.label}`
+        : draft.kind === "edit"
+          ? "(editing existing parallel pair)"
+          : "";
+    const ratioParsed = parseFloat(ratioText);
+    const ratioInvalid = !Number.isFinite(ratioParsed) || ratioParsed === 0;
+    return [
+      buildDetailLine("pairing-picker-header", [
+        textSegment(modeBadge, { color: "magenta", bold: true }),
+        textSegment("Set parallel ratio ", { color: "magenta", bold: true }),
+        textSegment(`(${summary})`, { color: "gray" }),
+        textSegment(
+          "  [type: Digits / . / -  backspace: Delete  enter: Confirm  esc / q: Cancel]",
+          { color: "cyan" },
+        ),
+      ]),
+      buildDetailLine("pairing-picker-ratio", [
+        textSegment("ratio = ", { color: "magenta", bold: true }),
+        textSegment(`${ratioText}|`, {
+          color: ratioInvalid ? "yellow" : "green",
+          bold: true,
+        }),
+        ratioInvalid
+          ? textSegment("  (must be a finite, non-zero number)", { color: "yellow" })
+          : textSegment("  (press Enter to apply)", { color: "gray" }),
+      ]),
+    ];
+  }
+
+  // Leader / follower phase: scroll the candidate list filtered by policy.
+  // The earlier returns handled "policy" / "ratio"; narrow here.
+  const phase: "leader" | "follower" =
+    draft.phase === "leader" ? "leader" : "follower";
+  const phaseLabel = phase;
+  const eligibilityHint = describePolicyPhaseHint(policy, phase);
   const headerColor = draft.phase === "leader" ? "magenta" : "cyan";
-  const modeBadge =
-    draft.kind === "create" ? "[new pair] " : "[edit pair] ";
-  // In create mode's follower phase, surface the leader the operator
-  // already locked in so they can confirm context before picking.
   const draftSummary =
     draft.kind === "create" && draft.draftLeader
-      ? ` — leader: ${draft.draftLeader.label}`
+      ? ` -- leader: ${draft.draftLeader.label}`
       : "";
+  const options = phase === "leader" ? leaderOptions : followerOptions;
   if (options.length === 0) {
     return [
       buildDetailLine("pairing-picker-header", [
         textSegment(modeBadge, { color: headerColor, bold: true }),
-        textSegment(`Pick ${phaseLabel}: `, { color: headerColor, bold: true }),
-        textSegment(`(no eligible channels — ${eligibilityHint})`, { color: "yellow" }),
-        draftSummary
-          ? textSegment(draftSummary, { color: "gray" })
-          : null,
+        textSegment(`Pick ${phaseLabel} `, { color: headerColor, bold: true }),
+        textSegment(`(policy: ${policyLabel})`, { color: "gray" }),
+        textSegment(`  (no eligible channels: ${eligibilityHint})`, {
+          color: "yellow",
+        }),
+        draftSummary ? textSegment(draftSummary, { color: "gray" }) : null,
       ].filter((span): span is DetailSpan => span !== null)),
       textLine(
         "pairing-picker-cancel",
         draft.kind === "create"
-          ? "Press esc / m / q to drop the new-pair draft (nothing is saved); revisit step 1 to enable a compatible channel."
-          : "Press esc / m / q to close the picker; revisit step 1 to enable a compatible channel.",
+          ? "Press esc / q to drop the new-pair draft; revisit step 1 / pick a different policy."
+          : "Press esc / q to close the picker; revisit step 1 / pick a different policy.",
         { color: "gray" },
       ),
     ];
@@ -1484,12 +1817,12 @@ function buildPairingPickerLines(
     buildDetailLine("pairing-picker-header", [
       textSegment(modeBadge, { color: headerColor, bold: true }),
       textSegment(`Pick ${phaseLabel} `, { color: headerColor, bold: true }),
-      textSegment(`(${eligibilityHint})`, { color: "gray" }),
-      draftSummary
-        ? textSegment(draftSummary, { color: "gray" })
-        : null,
+      textSegment(`(policy: ${policyLabel}; ${eligibilityHint})`, {
+        color: "gray",
+      }),
+      draftSummary ? textSegment(draftSummary, { color: "gray" }) : null,
       textSegment(
-        "  [j/k: Move  enter: Select  esc / m / q: Cancel]",
+        "  [j/k: Move  enter: Select  esc / q: Cancel]",
         { color: "cyan" },
       ),
     ].filter((span): span is DetailSpan => span !== null)),
@@ -1504,6 +1837,31 @@ function buildPairingPickerLines(
     );
   });
   return lines;
+}
+
+function describePolicyPhaseHint(
+  policy: PolicyKind | undefined,
+  phase: "leader" | "follower",
+): string {
+  if (!policy) return "policy pending";
+  if (phase === "leader") {
+    switch (policy) {
+      case "direct-joint":
+        return "leader publishes joint_position; dof > 0";
+      case "cartesian":
+        return "leader publishes end_effector_pose";
+      case "parallel":
+        return "leader publishes parallel_position; dof == 1";
+    }
+  }
+  switch (policy) {
+    case "direct-joint":
+      return "follower accepts joint_position; matching dof; mutual whitelist";
+    case "cartesian":
+      return "follower accepts end_pose";
+    case "parallel":
+      return "follower accepts parallel_position or parallel_mit; dof == 1";
+  }
 }
 
 function stateRowLine(
@@ -1901,12 +2259,27 @@ function buildSetupKeyHints({
   }
 
   if (pairingDraft !== null && setupState?.step === "pairing") {
+    if (pairingDraft.phase === "ratio") {
+      // Ratio phase: text input.
+      return [
+        { key: "type", label: "Digits / . / -" },
+        { key: "backspace", label: "Delete" },
+        { key: "enter", label: "Confirm ratio" },
+        { key: "esc / q", label: "Cancel" },
+      ];
+    }
+    if (pairingDraft.kind === "create" && pairingDraft.phase === "policy") {
+      return [
+        { key: "j/k", label: "Pick policy" },
+        { key: "enter", label: "Confirm" },
+        { key: "esc / q", label: "Cancel" },
+      ];
+    }
     return [
       { key: "j/k", label: "Move" },
       { key: "enter", label: "Select" },
-      // `m` and `q` are accepted as cancel-fallbacks because some
-      // terminals delay the bare escape byte that drives `key.escape`.
-      { key: "esc / m / q", label: "Cancel" },
+      // `q` is accepted as a cancel fallback when escape is delayed.
+      { key: "esc / q", label: "Cancel" },
     ];
   }
 
@@ -1939,9 +2312,9 @@ function buildSetupKeyHints({
     case "pairing":
       return [
         { key: "j/k", label: "Switch Focus" },
-        { key: "m", label: "New / Edit Pair" },
+        { key: "enter", label: "Create / Edit Pair" },
         { key: "d", label: "Delete Pair" },
-        { key: "[/]", label: "Cycle Mapping" },
+        { key: "h/l or [/]", label: "Cycle Policy" },
         ...navTail,
       ];
     case "storage":
