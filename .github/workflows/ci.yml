@@ -28,6 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            patch \
             nasm \
             pkg-config \
             libavcodec-dev \
@@ -38,6 +39,9 @@ jobs:
             libeigen3-dev \
             libboost-filesystem-dev \
             libboost-serialization-dev
+
+      - name: Patch vendored Pinocchio (airbot_play_rust static link)
+        run: make apply-airbot-pinocchio-patch
 
       - name: cargo fmt (check)
         run: cargo +nightly fmt --all -- --check
@@ -150,6 +154,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            patch \
             build-essential \
             dpkg-dev \
             file \

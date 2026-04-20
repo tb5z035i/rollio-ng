@@ -1,4 +1,5 @@
 .PHONY: all build test clean fmt lint smoke-pseudo package package-all package-deps wheel
+.PHONY: apply-airbot-pinocchio-patch
 .PHONY: rust cpp ui python
 .PHONY: rust-build rust-test rust-fmt rust-lint
 .PHONY: cpp-build cpp-test ui-build ui-install ui-test ui-bench-ascii
@@ -33,16 +34,30 @@ lint: rust-lint python-lint
 
 rust: rust-build
 
-rust-build:
+# airbot_play_rust builds vendored Pinocchio; without this patch the libs are
+# shared-only, rollio-device-airbot-play links libpinocchio_*.so, and
+# dpkg-shlibdeps fails when packing the deb. The patch lives in the submodule;
+# see third_party/airbot-play-rust/README.md.
+AIRBOT_PINOCCHIO_PATCH := third_party/airbot-play-rust/patches/pinocchio-static-build.patch
+AIRBOT_PINOCCHIO_DIR := third_party/airbot-play-rust/third_party/pinocchio
+
+apply-airbot-pinocchio-patch:
+	@test -f "$(AIRBOT_PINOCCHIO_PATCH)" || (echo "missing $(AIRBOT_PINOCCHIO_PATCH)" >&2; exit 1)
+	@test -d "$(AIRBOT_PINOCCHIO_DIR)" || (echo "missing $(AIRBOT_PINOCCHIO_DIR); run git submodule update --init --recursive" >&2; exit 1)
+	@if ! grep -Fq 'option(BUILD_SHARED_LIBS "Build Pinocchio libraries as shared objects" ON)' "$(AIRBOT_PINOCCHIO_DIR)/CMakeLists.txt"; then \
+		patch --batch -d "$(AIRBOT_PINOCCHIO_DIR)" -p1 < "$(AIRBOT_PINOCCHIO_PATCH)"; \
+	fi
+
+rust-build: apply-airbot-pinocchio-patch
 	cargo build --workspace $(CARGO_BUILD_ARGS)
 
-rust-test:
+rust-test: apply-airbot-pinocchio-patch
 	cargo test --workspace
 
 rust-fmt:
 	cargo fmt --all
 
-rust-lint:
+rust-lint: apply-airbot-pinocchio-patch
 	cargo clippy --workspace -- -D warnings
 
 # ── C++ ──────────────────────────────────────────────────────────────
@@ -109,7 +124,7 @@ wheel:
 package-deps:
 	sudo apt-get update
 	sudo apt-get install -y --no-install-recommends \
-	  build-essential dpkg-dev \
+	  patch build-essential dpkg-dev \
 	  cmake pkg-config nasm clang libclang-dev llvm-dev \
 	  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
 	  liburdfdom-dev \
