@@ -9,6 +9,9 @@
 CARGO_BUILD_ARGS ?= --release
 CARGO_RUN_ARGS ?= $(CARGO_BUILD_ARGS)
 
+# C++: parallel compile jobs for `cmake --build` (override: make cpp-build CMAKE_BUILD_JOBS=8).
+CMAKE_BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 4)
+
 all: build
 
 # ── Aggregate targets ────────────────────────────────────────────────
@@ -83,7 +86,7 @@ cpp: cpp-build
 
 cpp-build:
 	cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
-	cmake --build cameras/build
+	cmake --build cameras/build -j $(CMAKE_BUILD_JOBS)
 
 cpp-test: cpp-build
 	ctest --test-dir cameras/build --output-on-failure
