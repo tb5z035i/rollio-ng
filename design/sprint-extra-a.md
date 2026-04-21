@@ -238,22 +238,22 @@ profile = { width = 1280, height = 720, fps = 30, pixel_format = "rgb24" }
 
 ```text
 Camera frames:
-CameraFrameHeader { timestamp_ms, ... } + [u8]
+CameraFrameHeader { timestamp_us, ... } + [u8]
 
 Joint vectors:
-JointVector15 { timestamp_ms, len, values[15] }
+JointVector15 { timestamp_us, len, values[15] }
 
 Parallel vectors:
-ParallelVector2 { timestamp_ms, len, values[2] }
+ParallelVector2 { timestamp_us, len, values[2] }
 
 Pose:
-Pose7 { timestamp_ms, xyz_xyzw[7] }
+Pose7 { timestamp_us, xyz_xyzw[7] }
 
 Joint MIT command:
-JointMitCommand15 { timestamp_ms, len, position[15], velocity[15], effort[15], kp[15], kd[15] }
+JointMitCommand15 { timestamp_us, len, position[15], velocity[15], effort[15], kp[15], kd[15] }
 
 Parallel MIT command:
-ParallelMitCommand2 { timestamp_ms, len, position[2], velocity[2], effort[2], kp[2], kd[2] }
+ParallelMitCommand2 { timestamp_us, len, position[2], velocity[2], effort[2], kp[2], kd[2] }
 ```
 
 ### 4. Framework-side pairing config

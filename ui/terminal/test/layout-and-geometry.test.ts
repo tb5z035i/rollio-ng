@@ -32,11 +32,13 @@ test("resolveCameraNames appends unexpected active streams", () => {
   );
 });
 
-test(`resolveCameraNames caps the preview row at ${MAX_PREVIEW_CAMERAS} channels`, () => {
-  const configured = ["cam_a", "cam_b", "cam_c", "cam_d", "cam_e"];
+test(`resolveCameraNames returns every configured channel even when more than ${MAX_PREVIEW_CAMERAS} are configured (overflow wraps to a second row in LivePreviewPanels, not a silent drop)`, () => {
+  const configured = Array.from(
+    { length: MAX_PREVIEW_CAMERAS + 2 },
+    (_, i) => `cam_${i}`,
+  );
   const names = resolveCameraNames(configured, []);
-  assert.equal(names.length, MAX_PREVIEW_CAMERAS);
-  assert.deepEqual(names, configured.slice(0, MAX_PREVIEW_CAMERAS));
+  assert.deepEqual(names, configured);
 });
 
 test("describeCameraPreviewRaster keeps each tile within the 16:10 visual aspect envelope", () => {

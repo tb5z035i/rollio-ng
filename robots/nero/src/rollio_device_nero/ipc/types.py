@@ -51,12 +51,12 @@ CONTROL_EVENT_MODE_SWITCH: int = 5
 class JointVector15(ctypes.Structure):
     """Mirror of Rust `JointVector15` (`repr(C)`).
 
-    Layout: `u64 timestamp_ms` (0..8), `u32 len` (8..12), 4-byte padding,
+    Layout: `u64 timestamp_us` (0..8), `u32 len` (8..12), 4-byte padding,
     `f64[15] values` (16..136). Total 136 bytes, alignment 8.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * MAX_DOF),
     ]
@@ -66,9 +66,9 @@ class JointVector15(ctypes.Structure):
         return "JointVector15"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> JointVector15:
+    def from_values(cls, timestamp_us: int, values: list[float]) -> JointVector15:
         msg = cls()
-        msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
+        msg.timestamp_us = int(timestamp_us) & 0xFFFFFFFFFFFFFFFF
         n = min(len(values), MAX_DOF)
         msg.len = n
         for i in range(n):
@@ -79,12 +79,12 @@ class JointVector15(ctypes.Structure):
 class JointMitCommand15(ctypes.Structure):
     """Mirror of Rust `JointMitCommand15` (`repr(C)`).
 
-    Layout: `u64 timestamp_ms`, `u32 len`, 4-byte padding, then five
+    Layout: `u64 timestamp_us`, `u32 len`, 4-byte padding, then five
     `f64[15]` arrays (position, velocity, effort, kp, kd). Total 616 bytes.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("position", ctypes.c_double * MAX_DOF),
         ("velocity", ctypes.c_double * MAX_DOF),
@@ -101,12 +101,12 @@ class JointMitCommand15(ctypes.Structure):
 class Pose7(ctypes.Structure):
     """Mirror of Rust `Pose7` (`repr(C)`).
 
-    Layout: `u64 timestamp_ms` (0..8), `f64[7] values` (8..64). Total 64 bytes.
+    Layout: `u64 timestamp_us` (0..8), `f64[7] values` (8..64). Total 64 bytes.
     Values are `[x, y, z, qx, qy, qz, qw]` with the quaternion in xyzw order.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("values", ctypes.c_double * MAX_POSE),
     ]
 
@@ -115,9 +115,9 @@ class Pose7(ctypes.Structure):
         return "Pose7"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> Pose7:
+    def from_values(cls, timestamp_us: int, values: list[float]) -> Pose7:
         msg = cls()
-        msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
+        msg.timestamp_us = int(timestamp_us) & 0xFFFFFFFFFFFFFFFF
         for i in range(min(len(values), MAX_POSE)):
             msg.values[i] = float(values[i])
         return msg
@@ -126,12 +126,12 @@ class Pose7(ctypes.Structure):
 class ParallelVector2(ctypes.Structure):
     """Mirror of Rust `ParallelVector2` (`repr(C)`).
 
-    Layout: `u64 timestamp_ms`, `u32 len`, 4-byte padding, `f64[2] values`.
+    Layout: `u64 timestamp_us`, `u32 len`, 4-byte padding, `f64[2] values`.
     Total 32 bytes.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * MAX_PARALLEL),
     ]
@@ -141,9 +141,9 @@ class ParallelVector2(ctypes.Structure):
         return "ParallelVector2"
 
     @classmethod
-    def from_values(cls, timestamp_ms: int, values: list[float]) -> ParallelVector2:
+    def from_values(cls, timestamp_us: int, values: list[float]) -> ParallelVector2:
         msg = cls()
-        msg.timestamp_ms = int(timestamp_ms) & 0xFFFFFFFFFFFFFFFF
+        msg.timestamp_us = int(timestamp_us) & 0xFFFFFFFFFFFFFFFF
         n = min(len(values), MAX_PARALLEL)
         msg.len = n
         for i in range(n):
@@ -154,12 +154,12 @@ class ParallelVector2(ctypes.Structure):
 class ParallelMitCommand2(ctypes.Structure):
     """Mirror of Rust `ParallelMitCommand2` (`repr(C)`).
 
-    Layout: `u64 timestamp_ms`, `u32 len`, 4-byte padding, then five
+    Layout: `u64 timestamp_us`, `u32 len`, 4-byte padding, then five
     `f64[2]` arrays (position, velocity, effort, kp, kd). Total 96 bytes.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("position", ctypes.c_double * MAX_PARALLEL),
         ("velocity", ctypes.c_double * MAX_PARALLEL),
@@ -202,12 +202,44 @@ class DeviceChannelMode(ctypes.Structure):
         return msg
 
 
-class _ControlEventPayload(ctypes.Union):
-    """Anonymous union of Rust `ControlEvent` payloads (all `u32`)."""
+class _ControlEventRecording(ctypes.Structure):
+    """`RecordingStart` / `RecordingStop` payload — episode_index + 8-byte us.
+
+    The trailing `_pad` field exists so the payload is exactly 16 bytes
+    (matching the Rust `repr(C)` layout for the `(u32, u64)` variant after
+    8-byte alignment of the `u64`).
+    """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
         ("episode_index", ctypes.c_uint32),
-        ("target_mode", ctypes.c_uint32),
+        ("_pad", ctypes.c_uint32),
+        ("controller_ts_us", ctypes.c_uint64),
+    ]
+
+
+class _ControlEventEpisode(ctypes.Structure):
+    """Single-`u32` payload variants (`EpisodeKeep`/`EpisodeDiscard`/`ModeSwitch`)."""
+
+    _fields_: ClassVar[list[tuple[str, type]]] = [
+        ("episode_index", ctypes.c_uint32),
+        ("_pad", ctypes.c_uint32 * 3),
+    ]
+
+
+class _ControlEventPayload(ctypes.Union):
+    """Anonymous union of Rust `ControlEvent` payloads.
+
+    With `RecordingStart` / `RecordingStop` carrying `(u32, u64)`, the
+    union's overall size is 16 bytes (not 4 like before). Smaller variants
+    are padded so every member of the union is the same size.
+    """
+
+    _fields_: ClassVar[list[tuple[str, type]]] = [
+        ("recording_start", _ControlEventRecording),
+        ("recording_stop", _ControlEventRecording),
+        ("episode_keep", _ControlEventEpisode),
+        ("episode_discard", _ControlEventEpisode),
+        ("mode_switch", _ControlEventEpisode),
     ]
 
 
@@ -215,13 +247,21 @@ class ControlEvent(ctypes.Structure):
     """Mirror of Rust `#[repr(C)] enum ControlEvent` (tag + payload union).
 
     For `repr(C)` enums with at least one variant carrying data, Rust lays
-    them out as `struct { tag: c_int; payload: union<...> }`. Every variant
-    we care about either carries no data (`Shutdown`) or a single `u32`, so
-    the union collapses to a 4-byte u32. Total size 8, alignment 4.
+    them out as `struct { tag: c_int; payload: union<...> }`. The largest
+    variant is `RecordingStart { episode_index: u32, controller_ts_us: u64 }`
+    which forces 8-byte alignment, so the layout is:
+
+        offset  size  field
+        0       4     tag (i32)
+        4       4     padding
+        8       16    payload union
+
+    Total 24 bytes, alignment 8.
     """
 
     _fields_: ClassVar[list[tuple[str, type]]] = [
         ("tag", ctypes.c_int32),
+        ("_tag_padding", ctypes.c_uint32),
         ("payload", _ControlEventPayload),
     ]
 

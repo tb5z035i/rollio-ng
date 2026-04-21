@@ -2148,15 +2148,19 @@ pub const DEFAULT_TELEOP_SYNC_MAX_STEP_RAD: f64 = 0.005;
 /// switches modes.
 pub const DEFAULT_TELEOP_SYNC_COMPLETE_THRESHOLD_RAD: f64 = 0.05;
 
-/// Maximum number of camera channels exposed to the live preview pipeline.
+/// Maximum number of camera tiles rendered side-by-side in **one** preview
+/// row.
 ///
-/// The visualizer subscribes to at most this many camera channels and the
-/// terminal / web UIs render at most this many tiles. Configuring more
-/// camera channels keeps them in the recording pipeline (encoder + assembler
-/// still subscribe to every enabled channel) but the visual feedback area
-/// stays compact and bounded so each tile keeps the requested 16:10 box
-/// without becoming unreadably small. Encoded as a `u32` for trivial FFI
-/// compatibility with the C++ camera drivers.
+/// Configuring more camera channels still keeps every channel in the
+/// recording pipeline AND in the live preview — the visualizer subscribes
+/// to all enabled cameras and the UIs render every channel — but tiles
+/// wrap onto additional rows once a row already holds this many tiles.
+/// This keeps each tile wide enough to honour the requested 16:10 box
+/// without shrinking below the readability threshold, while no longer
+/// silently hiding extra channels from the operator.
+///
+/// Encoded as a `u32` for trivial FFI compatibility with the C++ camera
+/// drivers.
 pub const MAX_PREVIEW_CAMERAS: usize = 3;
 
 impl TeleopRuntimeConfigV2 {
@@ -2657,15 +2661,13 @@ impl ProjectConfig {
     }
 
     pub fn visualizer_runtime_config_v2(&self) -> VisualizerRuntimeConfigV2 {
-        // Cap preview camera sources at MAX_PREVIEW_CAMERAS so the per-tile
-        // raster stays large enough to honour the 16:10 box constraint. The
-        // encoder / assembler runtime configs are unaffected, so every
-        // enabled camera is still recorded — only the live preview tiles
-        // shrink to a bounded set.
+        // Subscribe to every enabled camera so the operator can see all
+        // configured streams in the live preview. `MAX_PREVIEW_CAMERAS`
+        // applies to layout (max tiles per row) — overflow wraps onto a
+        // second row in the UI rather than being silently dropped.
         let camera_sources = self
             .resolved_camera_channels()
             .into_iter()
-            .take(MAX_PREVIEW_CAMERAS)
             .map(|camera| VisualizerCameraSourceConfig {
                 channel_id: camera.channel_id,
                 frame_topic: camera.frame_topic,

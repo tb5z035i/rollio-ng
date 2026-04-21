@@ -3,6 +3,7 @@ use iceoryx2::prelude::*;
 use rollio_bus::{
     channel_command_service_name, channel_frames_service_name, channel_mode_control_service_name,
     channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
+    STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, DeviceQueryChannel,
@@ -99,6 +100,12 @@ struct RobotRuntime {
     current_positions: [f64; rollio_types::messages::MAX_DOF],
     target_positions: [f64; rollio_types::messages::MAX_DOF],
     previous_positions: [f64; rollio_types::messages::MAX_DOF],
+    /// Phase 7: wall-clock timestamp captured the instant the simulated
+    /// state values were updated (i.e. the pseudo equivalent of
+    /// "sensor-feedback receipt time"). Read by `publish_robot_states` so
+    /// the published `timestamp_us` reflects when the values were
+    /// produced, not when the iceoryx2 publish call happened.
+    current_state_timestamp_us: u64,
     next_tick: Instant,
     started_at: Instant,
 }
@@ -294,10 +301,10 @@ fn publish_camera_frame(camera: &mut CameraRuntime) -> Result<(), Box<dyn Error>
         camera.height,
         camera.frame_index,
     );
-    let timestamp_ms = unix_timestamp_ms();
+    let timestamp_us = unix_timestamp_us();
     let mut sample = camera.publisher.loan_slice_uninit(camera.frame.len())?;
     *sample.user_header_mut() = CameraFrameHeader {
-        timestamp_ms,
+        timestamp_us,
         width: camera.width,
         height: camera.height,
         pixel_format: PixelFormat::Rgb24,
@@ -369,9 +376,17 @@ fn publish_robot_states(robot: &mut RobotRuntime) -> Result<(), Box<dyn Error>> 
         update_command_following_state(robot);
     } else if robot.mode != RobotMode::Disabled {
         update_free_drive_state(robot);
+    } else {
+        // Disabled mode does not call any `update_*_state`, so the previous
+        // tick's timestamp would be reused. Refresh it so each emitted
+        // frame still carries a meaningful "produced now" instant.
+        robot.current_state_timestamp_us = unix_timestamp_us();
     }
 
-    let timestamp_ms = unix_timestamp_ms();
+    // Phase 7: prefer the timestamp captured inside `update_*_state` so
+    // the published value reflects when the simulated state was produced
+    // instead of when iceoryx2 actually accepted the publish.
+    let timestamp_us = robot.current_state_timestamp_us;
     let positions = robot.current_positions;
     let mut velocities = [0.0f64; rollio_types::messages::MAX_DOF];
     let mut efforts = [0.0f64; rollio_types::messages::MAX_DOF];
@@ -396,11 +411,11 @@ fn publish_robot_states(robot: &mut RobotRuntime) -> Result<(), Box<dyn Error>> 
     }
     robot.previous_positions = positions;
 
-    let joint_positions = JointVector15::from_slice(timestamp_ms, &positions[..robot.dof]);
-    let joint_velocities = JointVector15::from_slice(timestamp_ms, &velocities[..robot.dof]);
-    let joint_efforts = JointVector15::from_slice(timestamp_ms, &efforts[..robot.dof]);
+    let joint_positions = JointVector15::from_slice(timestamp_us, &positions[..robot.dof]);
+    let joint_velocities = JointVector15::from_slice(timestamp_us, &velocities[..robot.dof]);
+    let joint_efforts = JointVector15::from_slice(timestamp_us, &efforts[..robot.dof]);
     let ee_pose = Pose7 {
-        timestamp_ms,
+        timestamp_us,
         values: [
             positions[0],
             positions.get(1).copied().unwrap_or_default(),
@@ -445,6 +460,7 @@ fn run_robot_channel(
     let shutdown_subscriber = open_shutdown_subscriber(&node)?;
     let mode_subscriber = open_channel_mode_subscriber(&node, &bus_root, &channel.channel_type)?;
     let mode_info_publisher = open_channel_mode_publisher(&node, &bus_root, &channel.channel_type)?;
+    // Apply the shared state-buffer caps (see `rollio_bus::STATE_BUFFER`).
     let mut state_publishers = Vec::new();
     for state_kind in &channel.publish_states {
         let topic: ServiceName =
@@ -456,6 +472,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<JointVector15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointPosition(
                     service.publisher_builder().create()?,
@@ -465,6 +486,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<JointVector15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointVelocity(
                     service.publisher_builder().create()?,
@@ -474,6 +500,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<JointVector15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointEffort(
                     service.publisher_builder().create()?,
@@ -483,6 +514,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<Pose7>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::EndEffectorPose(
                     service.publisher_builder().create()?,
@@ -506,6 +542,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<JointVector15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 command_subscribers.push(CommandSubscriber::JointPosition(
                     service.subscriber_builder().create()?,
@@ -515,6 +556,11 @@ fn run_robot_channel(
                 let service = node
                     .service_builder(&topic)
                     .publish_subscribe::<JointMitCommand15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 command_subscribers.push(CommandSubscriber::JointMit(
                     service.subscriber_builder().create()?,
@@ -535,6 +581,7 @@ fn run_robot_channel(
         current_positions: [0.0; rollio_types::messages::MAX_DOF],
         target_positions: [0.0; rollio_types::messages::MAX_DOF],
         previous_positions: [0.0; rollio_types::messages::MAX_DOF],
+        current_state_timestamp_us: 0,
         next_tick: Instant::now(),
         started_at: Instant::now(),
     };
@@ -595,6 +642,10 @@ fn update_free_drive_state(robot: &mut RobotRuntime) {
         *position =
             (elapsed_secs * frequency * std::f64::consts::TAU + joint_idx as f64 * 0.4).sin();
     }
+    // Phase 7: stamp at the moment we computed the new state values, not
+    // at publish time. For the pseudo driver this is the closest analogue
+    // to a real robot's sensor-feedback receipt timestamp.
+    robot.current_state_timestamp_us = unix_timestamp_us();
 }
 
 fn update_command_following_state(robot: &mut RobotRuntime) {
@@ -604,6 +655,7 @@ fn update_command_following_state(robot: &mut RobotRuntime) {
         let error = robot.target_positions[joint_idx] - robot.current_positions[joint_idx];
         robot.current_positions[joint_idx] += error * alpha;
     }
+    robot.current_state_timestamp_us = unix_timestamp_us();
 }
 
 fn drain_shutdown_events(subscriber: &ShutdownSubscriber) -> Result<bool, Box<dyn Error>> {
@@ -865,11 +917,11 @@ fn kind_name(kind: DeviceType) -> &'static str {
     }
 }
 
-fn unix_timestamp_ms() -> u64 {
+fn unix_timestamp_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_micros() as u64
 }
 
 fn generate_color_bars(buf: &mut [u8], width: u32, height: u32, frame_index: u64) {

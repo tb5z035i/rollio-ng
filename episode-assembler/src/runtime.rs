@@ -1,11 +1,14 @@
 use crate::dataset::{
     action_key, observation_key, remove_episode_artifacts, stage_episode, ActionSample,
-    EpisodeAssemblyInput, ObservationSample,
+    EpisodeAssemblyInput, ObservationSample, StagedEpisode,
 };
 use clap::Args;
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
-use rollio_bus::{CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, VIDEO_READY_SERVICE};
+use rollio_bus::{
+    CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, STATE_BUFFER, STATE_MAX_NODES,
+    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, VIDEO_READY_SERVICE,
+};
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
     EncodedHandoffMode, EpisodeFormat, RobotCommandKind, RobotStateKind,
@@ -17,6 +20,8 @@ use rollio_types::messages::{
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Args)]
@@ -56,23 +61,23 @@ enum ActionSubscriberKind {
 #[derive(Debug, Clone)]
 struct PendingEpisode {
     episode_index: u32,
-    start_time_ns: u64,
-    stop_time_ns: Option<u64>,
+    start_time_us: u64,
+    stop_time_us: Option<u64>,
     keep_requested: bool,
-    ready_wait_started_ns: Option<u64>,
+    ready_wait_started_us: Option<u64>,
     observation_samples: BTreeMap<String, Vec<ObservationSample>>,
     action_samples: BTreeMap<String, Vec<ActionSample>>,
     video_paths: BTreeMap<String, PathBuf>,
 }
 
 impl PendingEpisode {
-    fn new(episode_index: u32, start_time_ns: u64) -> Self {
+    fn new(episode_index: u32, start_time_us: u64) -> Self {
         Self {
             episode_index,
-            start_time_ns,
-            stop_time_ns: None,
+            start_time_us,
+            stop_time_us: None,
             keep_requested: false,
-            ready_wait_started_ns: None,
+            ready_wait_started_us: None,
             observation_samples: BTreeMap::new(),
             action_samples: BTreeMap::new(),
             video_paths: BTreeMap::new(),
@@ -82,8 +87,8 @@ impl PendingEpisode {
     fn as_assembly_input(&self) -> EpisodeAssemblyInput {
         EpisodeAssemblyInput {
             episode_index: self.episode_index,
-            start_time_ns: self.start_time_ns,
-            stop_time_ns: self.stop_time_ns.unwrap_or(self.start_time_ns),
+            start_time_us: self.start_time_us,
+            stop_time_us: self.stop_time_us.unwrap_or(self.start_time_us),
             observation_samples: self.observation_samples.clone(),
             action_samples: self.action_samples.clone(),
             video_paths: self.video_paths.clone(),
@@ -115,17 +120,23 @@ impl EpisodeManager {
 
     fn on_control_event(&mut self, event: ControlEvent) -> bool {
         match event {
-            ControlEvent::RecordingStart { episode_index } => {
+            ControlEvent::RecordingStart {
+                episode_index,
+                controller_ts_us,
+            } => {
                 self.episodes.insert(
                     episode_index,
-                    PendingEpisode::new(episode_index, unix_timestamp_ns()),
+                    PendingEpisode::new(episode_index, controller_ts_us),
                 );
                 self.active_episode_index = Some(episode_index);
                 false
             }
-            ControlEvent::RecordingStop { episode_index } => {
+            ControlEvent::RecordingStop {
+                episode_index,
+                controller_ts_us,
+            } => {
                 if let Some(episode) = self.episodes.get_mut(&episode_index) {
-                    episode.stop_time_ns = Some(unix_timestamp_ns());
+                    episode.stop_time_us = Some(controller_ts_us);
                 }
                 if self.active_episode_index == Some(episode_index) {
                     self.active_episode_index = None;
@@ -135,7 +146,7 @@ impl EpisodeManager {
             ControlEvent::EpisodeKeep { episode_index } => {
                 if let Some(episode) = self.episodes.get_mut(&episode_index) {
                     episode.keep_requested = true;
-                    episode.ready_wait_started_ns = Some(unix_timestamp_ns());
+                    episode.ready_wait_started_us = Some(unix_timestamp_us());
                 }
                 false
             }
@@ -157,7 +168,7 @@ impl EpisodeManager {
         &mut self,
         channel_id: &str,
         state_kind: RobotStateKind,
-        timestamp_ms: u64,
+        timestamp_us: u64,
         values: Vec<f64>,
     ) {
         let Some(episode_index) = self.active_episode_index else {
@@ -171,7 +182,7 @@ impl EpisodeManager {
             .entry(observation_key(channel_id, state_kind))
             .or_default()
             .push(ObservationSample {
-                timestamp_ns: timestamp_ms.saturating_mul(1_000_000),
+                timestamp_us,
                 values,
             });
     }
@@ -180,7 +191,7 @@ impl EpisodeManager {
         &mut self,
         channel_id: &str,
         command_kind: RobotCommandKind,
-        timestamp_ms: u64,
+        timestamp_us: u64,
         values: Vec<f64>,
     ) {
         let Some(episode_index) = self.active_episode_index else {
@@ -194,7 +205,7 @@ impl EpisodeManager {
             .entry(action_key(channel_id, command_kind))
             .or_default()
             .push(ActionSample {
-                timestamp_ns: timestamp_ms.saturating_mul(1_000_000),
+                timestamp_us,
                 values,
             });
     }
@@ -219,24 +230,21 @@ impl EpisodeManager {
             .insert(channel_id.clone(), PathBuf::from(ready.file_path.as_str()));
     }
 
-    fn ready_and_timed_out_episode_indices(&self, now_ns: u64) -> (Vec<u32>, Vec<u32>) {
+    fn ready_and_timed_out_episode_indices(&self, now_us: u64) -> (Vec<u32>, Vec<u32>) {
         let mut ready = Vec::new();
         let mut timed_out = Vec::new();
-        let timeout_ns = self
-            .config
-            .missing_video_timeout_ms
-            .saturating_mul(1_000_000);
+        let timeout_us = self.config.missing_video_timeout_ms.saturating_mul(1_000);
 
         for (episode_index, episode) in &self.episodes {
-            if !episode.keep_requested || episode.stop_time_ns.is_none() {
+            if !episode.keep_requested || episode.stop_time_us.is_none() {
                 continue;
             }
             if episode.video_paths.len() == self.config.cameras.len() {
                 ready.push(*episode_index);
                 continue;
             }
-            if let Some(wait_started_ns) = episode.ready_wait_started_ns {
-                if now_ns.saturating_sub(wait_started_ns) > timeout_ns {
+            if let Some(wait_started_us) = episode.ready_wait_started_us {
+                if now_us.saturating_sub(wait_started_us) > timeout_us {
                     timed_out.push(*episode_index);
                 }
             }
@@ -245,13 +253,21 @@ impl EpisodeManager {
         (ready, timed_out)
     }
 
-    fn publish_ready_episodes(
+    /// Hand off ready / timed-out episodes to the staging worker.
+    ///
+    /// Staging (parquet write + raw dump + video file moves) used to run
+    /// inline on the main loop, which blocked the iceoryx2 subscriber drain
+    /// for the full duration. With Phase 6b that work moves to a dedicated
+    /// `rollio-assembler-worker` thread (see `spawn_stage_worker`) so the
+    /// 250 Hz state subscribers keep getting drained even while a heavy
+    /// stage is in flight.
+    fn dispatch_ready_episodes(
         &mut self,
-        publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeReady, ()>,
+        worker: &mpsc::Sender<WorkerCommand>,
     ) -> Result<bool, Box<dyn Error>> {
-        let now_ns = unix_timestamp_ns();
+        let now_us = unix_timestamp_us();
         let (ready_episode_indices, timed_out_episode_indices) =
-            self.ready_and_timed_out_episode_indices(now_ns);
+            self.ready_and_timed_out_episode_indices(now_us);
         let mut changed = false;
 
         for episode_index in timed_out_episode_indices {
@@ -269,16 +285,77 @@ impl EpisodeManager {
             let Some(episode) = self.episodes.remove(&episode_index) else {
                 continue;
             };
-            let staged = stage_episode(&self.config, &episode.as_assembly_input())?;
-            publisher.send_copy(EpisodeReady {
-                episode_index: staged.episode_index,
-                staging_dir: FixedString256::new(&staged.staging_dir.to_string_lossy()),
-            })?;
+            worker
+                .send(WorkerCommand::Stage(episode.as_assembly_input()))
+                .map_err(|error| -> Box<dyn Error> {
+                    format!("episode assembler worker disconnected: {error}").into()
+                })?;
             changed = true;
         }
 
         Ok(changed)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Staging worker
+// ---------------------------------------------------------------------------
+
+enum WorkerCommand {
+    Stage(EpisodeAssemblyInput),
+    Shutdown,
+}
+
+enum WorkerEvent {
+    Staged(StagedEpisode),
+    Error(String),
+    ShutdownComplete,
+}
+
+/// Handles returned by `spawn_stage_worker`: the command channel into the
+/// worker, the event channel out of it, and the thread join handle.
+type StageWorkerHandles = (
+    mpsc::Sender<WorkerCommand>,
+    mpsc::Receiver<WorkerEvent>,
+    thread::JoinHandle<()>,
+);
+
+/// Spawn the dedicated staging thread.
+///
+/// The main loop sends `WorkerCommand::Stage(...)` for every episode that
+/// should be persisted (or `WorkerCommand::Shutdown` on a clean exit) and
+/// receives `WorkerEvent::Staged(...)` so it can publish `EpisodeReady`
+/// without ever calling the synchronous `stage_episode` itself.
+fn spawn_stage_worker(
+    config: AssemblerRuntimeConfigV2,
+) -> Result<StageWorkerHandles, Box<dyn Error>> {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCommand>();
+    let (evt_tx, evt_rx) = mpsc::channel::<WorkerEvent>();
+    let handle = thread::Builder::new()
+        .name("rollio-assembler-worker".into())
+        .spawn(move || stage_worker_main(config, cmd_rx, evt_tx))?;
+    Ok((cmd_tx, evt_rx, handle))
+}
+
+fn stage_worker_main(
+    config: AssemblerRuntimeConfigV2,
+    cmd_rx: mpsc::Receiver<WorkerCommand>,
+    evt_tx: mpsc::Sender<WorkerEvent>,
+) {
+    while let Ok(cmd) = cmd_rx.recv() {
+        match cmd {
+            WorkerCommand::Stage(input) => match stage_episode(&config, &input) {
+                Ok(staged) => {
+                    let _ = evt_tx.send(WorkerEvent::Staged(staged));
+                }
+                Err(error) => {
+                    let _ = evt_tx.send(WorkerEvent::Error(error.to_string()));
+                }
+            },
+            WorkerCommand::Shutdown => break,
+        }
+    }
+    let _ = evt_tx.send(WorkerEvent::ShutdownComplete);
 }
 
 pub fn run(args: RunArgs) -> Result<(), Box<dyn Error>> {
@@ -312,27 +389,74 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let episode_ready_publisher = create_episode_ready_publisher(&node)?;
     let observation_subscribers = create_observation_subscribers(&node, &config)?;
     let action_subscribers = create_action_subscribers(&node, &config)?;
+
+    // Phase 6b: stage_episode + raw-dump persistence runs on a dedicated
+    // worker thread. The main loop never blocks on disk I/O, so it can
+    // keep draining the 250 Hz state subscribers as fast as iceoryx2 lets
+    // it.
+    let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone())?;
     let mut manager = EpisodeManager::new(config);
 
-    loop {
+    let mut shutdown_requested = false;
+    'main_loop: loop {
         let mut made_progress = false;
         if drain_control_events(&control_subscriber, &mut manager)? {
-            break;
+            shutdown_requested = true;
         }
         made_progress |= drain_video_ready(&video_ready_subscriber, &mut manager)?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
-        made_progress |= manager.publish_ready_episodes(&episode_ready_publisher)?;
+        made_progress |= manager.dispatch_ready_episodes(&worker_tx)?;
+
+        // Drain any worker-completion events ASAP so EpisodeReady is
+        // published promptly.
+        while let Ok(event) = worker_rx.try_recv() {
+            match event {
+                WorkerEvent::Staged(staged) => {
+                    episode_ready_publisher.send_copy(EpisodeReady {
+                        episode_index: staged.episode_index,
+                        staging_dir: FixedString256::new(&staged.staging_dir.to_string_lossy()),
+                    })?;
+                    made_progress = true;
+                }
+                WorkerEvent::Error(message) => {
+                    eprintln!(
+                        "rollio-episode-assembler: staging worker error: {}",
+                        message
+                    );
+                }
+                WorkerEvent::ShutdownComplete => {
+                    break 'main_loop;
+                }
+            }
+        }
+
+        if shutdown_requested && manager.episodes.is_empty() {
+            // No more outstanding work — request worker shutdown and drain
+            // the final ShutdownComplete event before exiting.
+            let _ = worker_tx.send(WorkerCommand::Shutdown);
+            shutdown_requested = false;
+        }
 
         if made_progress {
             continue;
         }
 
-        match node.wait(Duration::from_millis(10)) {
+        // 2 ms idle wait keeps the maximum sample-loss window well under
+        // the `STATE_BUFFER` ring depth (~4 s at 250 Hz). With 1024-slot
+        // buffers and a 2 ms wakeup, the assembler tolerates pathological
+        // worker stalls of up to ~4 s before any 250 Hz publisher would
+        // overwrite an unread sample.
+        match node.wait(Duration::from_millis(2)) {
             Ok(()) => {}
             Err(NodeWaitFailure::Interrupt | NodeWaitFailure::TerminationRequest) => break,
         }
     }
+
+    // Best-effort worker join. If the worker is still busy at shutdown,
+    // dropping the sender lets it observe the channel close and exit.
+    drop(worker_tx);
+    let _ = worker_handle.join();
 
     Ok(())
 }
@@ -385,6 +509,11 @@ fn create_observation_subscribers(
     node: &Node<ipc::Service>,
     config: &AssemblerRuntimeConfigV2,
 ) -> Result<Vec<ObservationSubscriber>, Box<dyn Error>> {
+    // The assembler is the consumer side of the loss-point-A fix: every
+    // state subscription is opened with the same `STATE_BUFFER` ring depth
+    // the producers ask for. iceoryx2's `open_or_create` requires both
+    // sides to agree on these caps, so this MUST stay in sync with the
+    // robot drivers' service builders.
     config
         .observations
         .iter()
@@ -395,6 +524,11 @@ fn create_observation_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<Pose7>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ObservationSubscriberKind::Pose7(service.subscriber_builder().create()?)
                 }
@@ -404,6 +538,11 @@ fn create_observation_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<ParallelVector2>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ObservationSubscriberKind::ParallelVector2(
                         service.subscriber_builder().create()?,
@@ -413,6 +552,11 @@ fn create_observation_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<JointVector15>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ObservationSubscriberKind::JointVector15(service.subscriber_builder().create()?)
                 }
@@ -439,6 +583,11 @@ fn create_action_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<JointVector15>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ActionSubscriberKind::JointVector15(service.subscriber_builder().create()?)
                 }
@@ -446,6 +595,11 @@ fn create_action_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<JointMitCommand15>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ActionSubscriberKind::JointMitCommand15(service.subscriber_builder().create()?)
                 }
@@ -453,6 +607,11 @@ fn create_action_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<ParallelVector2>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ActionSubscriberKind::ParallelVector2(service.subscriber_builder().create()?)
                 }
@@ -460,6 +619,11 @@ fn create_action_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<ParallelMitCommand2>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ActionSubscriberKind::ParallelMitCommand2(
                         service.subscriber_builder().create()?,
@@ -469,6 +633,11 @@ fn create_action_subscribers(
                     let service = node
                         .service_builder(&service_name)
                         .publish_subscribe::<Pose7>()
+                        .subscriber_max_buffer_size(STATE_BUFFER)
+                        .history_size(STATE_BUFFER)
+                        .max_publishers(STATE_MAX_PUBLISHERS)
+                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                        .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
                     ActionSubscriberKind::Pose7(service.subscriber_builder().create()?)
                 }
@@ -524,7 +693,7 @@ fn drain_observations(
                 manager.on_observation(
                     &observation.config.channel_id,
                     observation.config.state_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -537,7 +706,7 @@ fn drain_observations(
                 manager.on_observation(
                     &observation.config.channel_id,
                     observation.config.state_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -550,7 +719,7 @@ fn drain_observations(
                 manager.on_observation(
                     &observation.config.channel_id,
                     observation.config.state_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values.to_vec(),
                 );
                 changed = true;
@@ -575,7 +744,7 @@ fn drain_actions(
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -588,7 +757,7 @@ fn drain_actions(
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.position[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -601,7 +770,7 @@ fn drain_actions(
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -614,7 +783,7 @@ fn drain_actions(
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.position[..payload.len as usize].to_vec(),
                 );
                 changed = true;
@@ -627,7 +796,7 @@ fn drain_actions(
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_ms,
+                    payload.timestamp_us,
                     payload.values.to_vec(),
                 );
                 changed = true;
@@ -637,9 +806,9 @@ fn drain_actions(
     Ok(changed)
 }
 
-fn unix_timestamp_ns() -> u64 {
+fn unix_timestamp_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as u64
+        .as_micros() as u64
 }

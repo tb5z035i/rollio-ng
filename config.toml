@@ -1,5 +1,6 @@
 project_name = "default"
 mode = "teleop"
+pairings = []
 
 [episode]
 format = "lerobot-v2.1"
@@ -7,20 +8,20 @@ fps = 30
 chunk_size = 1000
 
 [[devices]]
-name = "airbot_play_2"
+name = "airbot_play"
 executable = "rollio-device-airbot-play"
 driver = "airbot-play"
-id = "PZ25C02402000244"
-bus_root = "airbot_play_2"
-end_effector = "E2B"
-interface = "can1"
+id = "PZ31C02507000380"
+bus_root = "airbot_play"
+end_effector = "G2"
+interface = "can0"
 transport = "can"
 
 [[devices.channels]]
 channel_type = "arm"
 kind = "robot"
 enabled = true
-name = "airbot_play_arm_2"
+name = "airbot_play_arm"
 channel_label = "AIRBOT Play"
 mode = "free-drive"
 dof = 6
@@ -45,11 +46,11 @@ parallel_mit_kp = []
 parallel_mit_kd = []
 
 [[devices.channels]]
-channel_type = "e2"
+channel_type = "g2"
 kind = "robot"
 enabled = true
-name = "airbot_e2"
-channel_label = "AIRBOT E2"
+name = "airbot_g2"
+channel_label = "AIRBOT G2"
 mode = "free-drive"
 dof = 1
 publish_states = [
@@ -67,8 +68,78 @@ control_frequency_hz = 250.0
 [devices.channels.command_defaults]
 joint_mit_kp = []
 joint_mit_kd = []
-parallel_mit_kp = [0.0]
-parallel_mit_kd = [0.0]
+parallel_mit_kp = [10.0]
+parallel_mit_kd = [0.5]
+
+[[devices]]
+name = "realsense"
+executable = "rollio-device-realsense"
+driver = "realsense"
+id = "332322071743"
+bus_root = "realsense"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+name = "realsense_rgb"
+channel_label = "Intel RealSense RGB"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 848
+height = 480
+fps = 60
+pixel_format = "rgb24"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices.channels]]
+channel_type = "depth"
+kind = "camera"
+enabled = true
+name = "realsense_depth"
+channel_label = "Intel RealSense Depth"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 848
+height = 480
+fps = 60
+pixel_format = "depth16"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices.channels]]
+channel_type = "infrared"
+kind = "camera"
+enabled = false
+name = "realsense_ir"
+channel_label = "Intel RealSense Infrared"
+publish_states = []
+recorded_states = []
+
+[devices.channels.profile]
+width = 1280
+height = 800
+fps = 30
+pixel_format = "gray8"
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
 
 [[devices]]
 name = "camera"
@@ -87,11 +158,11 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 1280
-height = 960
+width = 640
+height = 480
 fps = 30
 pixel_format = "rgb24"
-native_pixel_format = "MJPG"
+native_pixel_format = "YUYV"
 
 [devices.channels.command_defaults]
 joint_mit_kp = []
@@ -116,102 +187,17 @@ publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 1280
-height = 960
+width = 640
+height = 480
 fps = 30
 pixel_format = "rgb24"
-native_pixel_format = "MJPG"
+native_pixel_format = "YUYV"
 
 [devices.channels.command_defaults]
 joint_mit_kp = []
 joint_mit_kd = []
 parallel_mit_kp = []
 parallel_mit_kd = []
-
-[[devices]]
-name = "agx_nero"
-executable = "rollio-device-agx-nero"
-driver = "agx-nero"
-id = "can2"
-bus_root = "agx_nero"
-interface = "can2"
-transport = "can"
-
-[[devices.channels]]
-channel_type = "arm"
-kind = "robot"
-enabled = true
-name = "agx_nero_arm"
-channel_label = "AGX Nero"
-mode = "command-following"
-dof = 7
-publish_states = [
-    "joint_position",
-    "joint_velocity",
-    "joint_effort",
-    "end_effector_pose",
-]
-recorded_states = [
-    "joint_position",
-    "joint_velocity",
-    "joint_effort",
-    "end_effector_pose",
-]
-control_frequency_hz = 250.0
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices.channels]]
-channel_type = "gripper"
-kind = "robot"
-enabled = true
-name = "agx_nero_gripper"
-channel_label = "AGX Nero gripper"
-mode = "command-following"
-dof = 1
-publish_states = [
-    "parallel_position",
-    "parallel_velocity",
-    "parallel_effort",
-]
-recorded_states = [
-    "parallel_position",
-    "parallel_velocity",
-    "parallel_effort",
-]
-control_frequency_hz = 250.0
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = [1.0]
-parallel_mit_kd = [0.5]
-
-[[pairings]]
-leader_device = "airbot_play_2"
-leader_channel_type = "e2"
-follower_device = "agx_nero"
-follower_channel_type = "gripper"
-mapping = "parallel"
-leader_state = "parallel_position"
-follower_command = "parallel_mit"
-joint_index_map = []
-joint_scales = [1.7]
-
-[[pairings]]
-leader_device = "airbot_play_2"
-leader_channel_type = "arm"
-follower_device = "agx_nero"
-follower_channel_type = "arm"
-mapping = "cartesian"
-leader_state = "end_effector_pose"
-follower_command = "end_pose"
-joint_index_map = []
-joint_scales = []
 
 [encoder]
 video_codec = "h264"

@@ -289,7 +289,7 @@ impl DeviceChannelMode {
 #[type_name("JointVector15")]
 #[repr(C)]
 pub struct JointVector15 {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub len: u32,
     pub values: [f64; MAX_DOF],
 }
@@ -297,7 +297,7 @@ pub struct JointVector15 {
 impl Default for JointVector15 {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             len: 0,
             values: [0.0; MAX_DOF],
         }
@@ -305,9 +305,9 @@ impl Default for JointVector15 {
 }
 
 impl JointVector15 {
-    pub fn from_slice(timestamp_ms: u64, values: &[f64]) -> Self {
+    pub fn from_slice(timestamp_us: u64, values: &[f64]) -> Self {
         let mut payload = Self {
-            timestamp_ms,
+            timestamp_us,
             len: values.len().min(MAX_DOF) as u32,
             ..Self::default()
         };
@@ -320,7 +320,7 @@ impl JointVector15 {
 #[type_name("ParallelVector2")]
 #[repr(C)]
 pub struct ParallelVector2 {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub len: u32,
     pub values: [f64; MAX_PARALLEL],
 }
@@ -328,7 +328,7 @@ pub struct ParallelVector2 {
 impl Default for ParallelVector2 {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             len: 0,
             values: [0.0; MAX_PARALLEL],
         }
@@ -336,9 +336,9 @@ impl Default for ParallelVector2 {
 }
 
 impl ParallelVector2 {
-    pub fn from_slice(timestamp_ms: u64, values: &[f64]) -> Self {
+    pub fn from_slice(timestamp_us: u64, values: &[f64]) -> Self {
         let mut payload = Self {
-            timestamp_ms,
+            timestamp_us,
             len: values.len().min(MAX_PARALLEL) as u32,
             ..Self::default()
         };
@@ -351,14 +351,14 @@ impl ParallelVector2 {
 #[type_name("Pose7")]
 #[repr(C)]
 pub struct Pose7 {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub values: [f64; 7],
 }
 
 impl Default for Pose7 {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             values: [0.0; 7],
         }
     }
@@ -368,7 +368,7 @@ impl Default for Pose7 {
 #[type_name("JointMitCommand15")]
 #[repr(C)]
 pub struct JointMitCommand15 {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub len: u32,
     pub position: [f64; MAX_DOF],
     pub velocity: [f64; MAX_DOF],
@@ -380,7 +380,7 @@ pub struct JointMitCommand15 {
 impl Default for JointMitCommand15 {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             len: 0,
             position: [0.0; MAX_DOF],
             velocity: [0.0; MAX_DOF],
@@ -395,7 +395,7 @@ impl Default for JointMitCommand15 {
 #[type_name("ParallelMitCommand2")]
 #[repr(C)]
 pub struct ParallelMitCommand2 {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub len: u32,
     pub position: [f64; MAX_PARALLEL],
     pub velocity: [f64; MAX_PARALLEL],
@@ -407,7 +407,7 @@ pub struct ParallelMitCommand2 {
 impl Default for ParallelMitCommand2 {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             len: 0,
             position: [0.0; MAX_PARALLEL],
             velocity: [0.0; MAX_PARALLEL],
@@ -429,7 +429,7 @@ impl Default for ParallelMitCommand2 {
 #[type_name("CameraFrameHeader")]
 #[repr(C)]
 pub struct CameraFrameHeader {
-    pub timestamp_ms: u64,
+    pub timestamp_us: u64,
     pub width: u32,
     pub height: u32,
     pub pixel_format: PixelFormat,
@@ -439,7 +439,7 @@ pub struct CameraFrameHeader {
 impl Default for CameraFrameHeader {
     fn default() -> Self {
         Self {
-            timestamp_ms: 0,
+            timestamp_us: 0,
             width: 0,
             height: 0,
             pixel_format: PixelFormat::Rgb24,
@@ -558,16 +558,35 @@ impl Default for RobotCommand {
 // ---------------------------------------------------------------------------
 
 /// Lifecycle and control events published by the Controller.
+///
+/// `RecordingStart` / `RecordingStop` carry the controller's wall-clock
+/// timestamp (`controller_ts_us`, UNIX-epoch microseconds) at the moment
+/// the user clicked record / stop. Subscribers (encoder, episode-assembler)
+/// use this anchor instead of stamping their own `SystemTime::now()` on
+/// receipt so every artifact for a given episode is anchored to a single
+/// shared instant — irrespective of bus latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
 #[type_name("ControlEvent")]
 #[repr(C)]
 pub enum ControlEvent {
-    RecordingStart { episode_index: u32 },
-    RecordingStop { episode_index: u32 },
-    EpisodeKeep { episode_index: u32 },
-    EpisodeDiscard { episode_index: u32 },
+    RecordingStart {
+        episode_index: u32,
+        controller_ts_us: u64,
+    },
+    RecordingStop {
+        episode_index: u32,
+        controller_ts_us: u64,
+    },
+    EpisodeKeep {
+        episode_index: u32,
+    },
+    EpisodeDiscard {
+        episode_index: u32,
+    },
     Shutdown,
-    ModeSwitch { target_mode: u32 },
+    ModeSwitch {
+        target_mode: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------

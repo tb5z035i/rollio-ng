@@ -1,40 +1,36 @@
-/// Maximum number of camera channels rendered side-by-side in the live
-/// preview. Mirrors `rollio_types::config::MAX_PREVIEW_CAMERAS` (the
-/// visualizer is already configured to subscribe to at most this many
-/// channels, but the UI also enforces it as defense-in-depth so an extra
-/// in-flight frame from a re-configured backend doesn't blow past the
-/// 16:10 layout budget).
+/// Maximum number of camera tiles rendered side-by-side in **one** preview
+/// row. Mirrors `rollio_types::config::MAX_PREVIEW_CAMERAS`.
+///
+/// Tiles past this count wrap onto additional rows in `LivePreviewPanels`
+/// rather than being silently dropped — operators see every configured
+/// stream while each tile keeps the 16:10 box.
 export const MAX_PREVIEW_CAMERAS = 3;
 
 /**
- * Resolve which camera channels to display, in stable order.
+ * Resolve which camera channels to display, in stable order. Configured
+ * channels appear first; any active-but-unconfigured channels are
+ * appended (so a new stream still appears immediately).
  *
- * Configured channels are shown first, then any active-but-unconfigured
- * channels are appended (so a new stream still appears immediately).
- * The result is then truncated to {@link MAX_PREVIEW_CAMERAS} so the
- * preview row keeps room for the 16:10 per-tile box.
+ * No truncation: the live preview wraps overflow into additional rows
+ * (see `LivePreviewPanels`).
  */
 export function resolveCameraNames(
   configuredCameraNames: readonly string[],
   activeFrameNames: readonly string[],
 ): string[] {
-  const names = (() => {
-    if (configuredCameraNames.length > 0) {
-      const merged = [...configuredCameraNames];
-      for (const name of activeFrameNames) {
-        if (!merged.includes(name)) {
-          merged.push(name);
-        }
+  if (configuredCameraNames.length > 0) {
+    const merged = [...configuredCameraNames];
+    for (const name of activeFrameNames) {
+      if (!merged.includes(name)) {
+        merged.push(name);
       }
-      return merged;
     }
+    return merged;
+  }
 
-    if (activeFrameNames.length > 0) {
-      return [...activeFrameNames];
-    }
+  if (activeFrameNames.length > 0) {
+    return [...activeFrameNames];
+  }
 
-    return ["camera_0", "camera_1"];
-  })();
-
-  return names.slice(0, MAX_PREVIEW_CAMERAS);
+  return ["camera_0", "camera_1"];
 }

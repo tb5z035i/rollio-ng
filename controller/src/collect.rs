@@ -4,7 +4,7 @@ use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild, ShutdownTrigger,
 };
 use crate::runtime_paths::{
-    current_executable_dir, resolve_share_root, resolve_state_dir, workspace_root,
+    current_executable_dir, resolve_log_dir, resolve_share_root, resolve_state_dir, workspace_root,
 };
 #[cfg(test)]
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
@@ -76,8 +76,10 @@ fn run_with_config(
     let poll_interval = Duration::from_millis(config.controller.child_poll_interval_ms);
     let shutdown_timeout =
         Duration::from_millis(config.controller.shutdown_timeout_ms).max(Duration::from_secs(30));
-    let log_dir = state_dir.join("rollio-logs");
-    std::fs::create_dir_all(&log_dir)?;
+    // Logs land alongside the user's invocation cwd by default (overridable
+    // via `ROLLIO_LOG_DIR`) so they are easy to find next to the config /
+    // recorded dataset, instead of being hidden under `~/.local/state/rollio`.
+    let log_dir = resolve_log_dir(invocation_cwd)?;
 
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGINT, Arc::clone(&shutdown_requested))?;
@@ -599,7 +601,10 @@ mod tests {
         assert_eq!(start_events.len(), 3);
         assert!(matches!(
             start_events[0],
-            ControlEvent::RecordingStart { episode_index: 0 }
+            ControlEvent::RecordingStart {
+                episode_index: 0,
+                ..
+            }
         ));
         assert!(matches!(
             start_events[2],

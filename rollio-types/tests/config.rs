@@ -242,13 +242,14 @@ fn visualizer_runtime_config_v2_derives_sources_from_enabled_channels() {
     );
 }
 
-/// Configuring more than three camera channels keeps the recording pipeline
-/// intact (each camera still gets its own encoder) but the visualizer-bound
-/// preview list is truncated so the UI never has to render more than
-/// `MAX_PREVIEW_CAMERAS` tiles. This guarantees each tile keeps the 16:10
-/// box without shrinking below the readability threshold.
+/// `MAX_PREVIEW_CAMERAS` only constrains the per-row tile count in the
+/// UI — the visualizer must still subscribe to every enabled camera so
+/// the operator sees all configured streams (overflow wraps onto a
+/// second row in the UI). Earlier behaviour silently dropped extra
+/// cameras from the preview, leaving the operator wondering why a
+/// configured stream looked offline.
 #[test]
-fn visualizer_runtime_config_v2_caps_camera_sources_at_max_preview() {
+fn visualizer_runtime_config_v2_subscribes_to_every_enabled_camera() {
     let toml_text = r#"
 project_name = "many-cameras"
 mode = "intervention"
@@ -327,8 +328,8 @@ port = 19090
     let visualizer = config.visualizer_runtime_config_v2();
     assert_eq!(
         visualizer.camera_sources.len(),
-        MAX_PREVIEW_CAMERAS,
-        "preview row should be capped at MAX_PREVIEW_CAMERAS"
+        5,
+        "visualizer should subscribe to every enabled camera, not silently drop tiles past MAX_PREVIEW_CAMERAS"
     );
     let preview_names: Vec<_> = visualizer
         .camera_sources
@@ -337,8 +338,19 @@ port = 19090
         .collect();
     assert_eq!(
         preview_names,
-        vec!["cam_a/color", "cam_b/color", "cam_c/color"]
+        vec![
+            "cam_a/color",
+            "cam_b/color",
+            "cam_c/color",
+            "cam_d/color",
+            "cam_e/color",
+        ]
     );
+    // Sanity: the per-row constant is still imported and meaningful as a
+    // *layout* hint for the UI grid (number of tiles per row), so leave
+    // it in scope here so a future refactor renaming/removing it would
+    // catch this test too.
+    let _per_row: usize = MAX_PREVIEW_CAMERAS;
 }
 
 #[test]

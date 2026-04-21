@@ -116,7 +116,7 @@ inline auto pixel_format_from_string(const std::string_view value) -> std::optio
 
 struct CameraFrameHeader {
     static constexpr const char* IOX2_TYPE_NAME = "CameraFrameHeader";
-    uint64_t timestamp_ns;
+    uint64_t timestamp_us;
     uint32_t width;
     uint32_t height;
     PixelFormat pixel_format;
@@ -182,24 +182,38 @@ enum class ControlEventTag : uint32_t {
     ModeSwitch = 5,
 };
 
+// Mirrors the Rust `#[repr(C)] enum ControlEvent`. With `RecordingStart` /
+// `RecordingStop` now carrying `(u32 episode_index, u64 controller_ts_us)`,
+// the largest variant's alignment is 8, so the union is laid out at offset
+// 8 (4-byte tag + 4-byte padding). Every variant inside the union is sized
+// to 16 bytes to match the Rust layout — smaller variants are padded with
+// `_pad`.
 struct ControlEvent {
     static constexpr const char* IOX2_TYPE_NAME = "ControlEvent";
     ControlEventTag tag;
+    uint32_t _tag_padding;
     union {
         struct {
             uint32_t episode_index;
+            uint32_t _pad;
+            uint64_t controller_ts_us;
         } recording_start;
         struct {
             uint32_t episode_index;
+            uint32_t _pad;
+            uint64_t controller_ts_us;
         } recording_stop;
         struct {
             uint32_t episode_index;
+            uint32_t _pad[3];
         } episode_keep;
         struct {
             uint32_t episode_index;
+            uint32_t _pad[3];
         } episode_discard;
         struct {
             uint32_t target_mode;
+            uint32_t _pad[3];
         } mode_switch;
     } payload;
 };

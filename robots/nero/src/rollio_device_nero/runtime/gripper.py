@@ -166,6 +166,15 @@ class GripperController:
 
         self._ipc.publish_mode(self._mode_value)
 
+        # Phase 7: snapshot the wall clock right before this tick's command
+        # logic + state read so the published `timestamp_us` reflects the
+        # instant we sampled the AGX gripper cache rather than the instant
+        # the iceoryx2 publish call returned. Subsequent `move_gripper_m`
+        # + publish overhead is tens-of-microseconds at our control rate;
+        # stamping here keeps the published value close to the underlying
+        # CAN-frame receipt instant cached by the SDK.
+        sample_us = _unix_us()
+
         # Identifying: emit the open/close pattern.
         if self._mode_value == DEVICE_CHANNEL_MODE_IDENTIFYING:
             assert self._identify_started_at is not None
@@ -202,7 +211,7 @@ class GripperController:
             _ = self._ipc.poll_parallel_mit_command()
             _ = self._ipc.poll_parallel_position_command()
 
-        published.extend(self._publish_states())
+        published.extend(self._publish_states(sample_us))
 
         return GripperTickResult(
             mode_value=self._mode_value,
@@ -242,9 +251,11 @@ class GripperController:
             self._identify_started_at = None
         self._mode_value = next_mode
 
-    def _publish_states(self) -> list[str]:
+    def _publish_states(self, timestamp_us: int) -> list[str]:
+        # `timestamp_us` is captured by the caller right before this tick's
+        # command logic so the published value reflects sensor-receipt time
+        # rather than publish time. See `step` for the full rationale.
         published: list[str] = []
-        timestamp_ms = _unix_ms()
         publish_states = self._config.publish_states or [
             "parallel_position",
             "parallel_velocity",
@@ -255,7 +266,7 @@ class GripperController:
             value = self._backend.get_gripper_position_m()
             if value is not None:
                 self._ipc.publish_parallel_position(
-                    ParallelVector2.from_values(timestamp_ms, [float(value)])
+                    ParallelVector2.from_values(timestamp_us, [float(value)])
                 )
                 published.append("parallel_position")
 
@@ -263,7 +274,7 @@ class GripperController:
             value = self._backend.get_gripper_velocity_m_per_s()
             if value is not None:
                 self._ipc.publish_parallel_velocity(
-                    ParallelVector2.from_values(timestamp_ms, [float(value)])
+                    ParallelVector2.from_values(timestamp_us, [float(value)])
                 )
                 published.append("parallel_velocity")
 
@@ -271,7 +282,7 @@ class GripperController:
             value = self._backend.get_gripper_effort_n()
             if value is not None:
                 self._ipc.publish_parallel_effort(
-                    ParallelVector2.from_values(timestamp_ms, [float(value)])
+                    ParallelVector2.from_values(timestamp_us, [float(value)])
                 )
                 published.append("parallel_effort")
 
@@ -286,8 +297,8 @@ def _clip_width(value: float) -> float:
     return value
 
 
-def _unix_ms() -> int:
-    return int(time.time() * 1000.0) & 0xFFFFFFFFFFFFFFFF
+def _unix_us() -> int:
+    return (time.time_ns() // 1000) & 0xFFFFFFFFFFFFFFFF
 
 
 __all__ = [

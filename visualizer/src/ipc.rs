@@ -5,7 +5,10 @@
 /// of shared memory once (unavoidable since we release the sample), while
 /// robot state is a small fixed-size Copy type.
 use iceoryx2::prelude::*;
-use rollio_bus::CONTROL_EVENTS_SERVICE;
+use rollio_bus::{
+    CONTROL_EVENTS_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
+};
 use rollio_types::config::{
     RobotStateKind, VisualizerCameraSourceConfig, VisualizerRobotSourceConfig,
 };
@@ -23,7 +26,7 @@ pub enum IpcMessage {
     RobotStateMsg {
         name: String,
         state_kind: RobotStateKind,
-        timestamp_ms: u64,
+        timestamp_us: u64,
         values: Vec<f64>,
         value_min: Vec<f64>,
         value_max: Vec<f64>,
@@ -94,10 +97,19 @@ impl IpcPoller {
             let service_name_str = source.state_topic.clone();
             let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
+            // The visualizer is a state subscriber. Match the producer-side
+            // caps (see `rollio_bus::STATE_BUFFER`) — without them
+            // `open_or_create` rejects the subscription with mismatched
+            // `subscriber_max_buffer_size`.
             let subscriber = if source.state_kind.uses_pose_payload() {
                 let service = node
                     .service_builder(&service_name)
                     .publish_subscribe::<Pose7>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 RobotStateSubscriber::Pose7(service.subscriber_builder().create()?)
             } else if matches!(
@@ -109,12 +121,22 @@ impl IpcPoller {
                 let service = node
                     .service_builder(&service_name)
                     .publish_subscribe::<ParallelVector2>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 RobotStateSubscriber::ParallelVector2(service.subscriber_builder().create()?)
             } else {
                 let service = node
                     .service_builder(&service_name)
                     .publish_subscribe::<JointVector15>()
+                    .subscriber_max_buffer_size(STATE_BUFFER)
+                    .history_size(STATE_BUFFER)
+                    .max_publishers(STATE_MAX_PUBLISHERS)
+                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                    .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 RobotStateSubscriber::JointVector15(service.subscriber_builder().create()?)
             };
@@ -196,7 +218,7 @@ impl IpcPoller {
                             latest = Some(IpcMessage::RobotStateMsg {
                                 name: robot.name.clone(),
                                 state_kind: robot.state_kind,
-                                timestamp_ms: payload.timestamp_ms,
+                                timestamp_us: payload.timestamp_us,
                                 values: payload.values[..payload.len as usize].to_vec(),
                                 value_min: robot.value_min.clone(),
                                 value_max: robot.value_max.clone(),
@@ -215,7 +237,7 @@ impl IpcPoller {
                             latest = Some(IpcMessage::RobotStateMsg {
                                 name: robot.name.clone(),
                                 state_kind: robot.state_kind,
-                                timestamp_ms: payload.timestamp_ms,
+                                timestamp_us: payload.timestamp_us,
                                 values: payload.values[..payload.len as usize].to_vec(),
                                 value_min: robot.value_min.clone(),
                                 value_max: robot.value_max.clone(),
@@ -233,7 +255,7 @@ impl IpcPoller {
                             latest = Some(IpcMessage::RobotStateMsg {
                                 name: robot.name.clone(),
                                 state_kind: robot.state_kind,
-                                timestamp_ms: payload.timestamp_ms,
+                                timestamp_us: payload.timestamp_us,
                                 values: payload.values.to_vec(),
                                 value_min: robot.value_min.clone(),
                                 value_max: robot.value_max.clone(),

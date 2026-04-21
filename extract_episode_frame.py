@@ -231,7 +231,23 @@ def row_to_jsonable(row: pd.Series) -> dict[str, Any]:
 
 
 def extract_video_frame(video_path: Path, seek_seconds: float) -> np.ndarray:
-    """Decode the frame at (or just after) ``seek_seconds`` and return RGB ndarray."""
+    """Decode the frame whose ``frame.time`` is *closest* to ``seek_seconds``.
+
+    With Rollio's VFR MP4 output, each camera's first frame can land at a
+    PTS up to ``1/fps`` after recording start (cameras are not hardware-
+    triggered, so their startup phases differ). A "first frame at-or-after
+    seek" rule then over-shoots in cameras with a later first frame and
+    makes the same `frame_index` show different real-time content across
+    cameras.
+
+    Picking the *closest* frame compresses that misalignment into the
+    natural ±0.5 / fps band: for any ``frame_index >= 1`` every camera's
+    returned frame represents content captured within ``1 / (2 * fps)``
+    seconds of the canonical row instant. ``frame_index == 0`` is the
+    only unavoidable boundary (some cameras may have no frame strictly
+    before ``seek_seconds=0``); in that case we fall back to the first
+    available frame.
+    """
     import av
 
     seek_seconds = max(0.0, float(seek_seconds))
@@ -247,12 +263,21 @@ def extract_video_frame(video_path: Path, seek_seconds: float) -> np.ndarray:
         except av.AVError:
             container.seek(0)
 
-        chosen = None
+        chosen: Any = None
         for frame in container.decode(stream):
             if frame.time is None:
                 continue
-            if frame.time + 1e-6 >= seek_seconds:
+            if chosen is None:
                 chosen = frame
+                continue
+            # Once we land on a frame strictly past `seek_seconds`, decide
+            # whether it or the previous candidate (`chosen`, the latest
+            # frame at-or-before the seek) is the better match.
+            if frame.time >= seek_seconds:
+                prev_dist = abs(chosen.time - seek_seconds)
+                this_dist = abs(frame.time - seek_seconds)
+                if this_dist < prev_dist:
+                    chosen = frame
                 break
             chosen = frame
 

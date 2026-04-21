@@ -98,7 +98,7 @@ class DeviceChannelMode(ctypes.c_int):
 
 class JointVector15(ctypes.Structure):
     _fields_: ClassVar = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * 15),
     ]
@@ -110,7 +110,7 @@ class JointVector15(ctypes.Structure):
 
 class ParallelVector2(ctypes.Structure):
     _fields_: ClassVar = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("len", ctypes.c_uint32),
         ("values", ctypes.c_double * 2),
     ]
@@ -122,7 +122,7 @@ class ParallelVector2(ctypes.Structure):
 
 class Pose7(ctypes.Structure):
     _fields_: ClassVar = [
-        ("timestamp_ms", ctypes.c_uint64),
+        ("timestamp_us", ctypes.c_uint64),
         ("values", ctypes.c_double * 7),
     ]
 
@@ -312,20 +312,20 @@ def drain_state_updates(channel: ChannelView) -> None:
                 active = min(int(payload.len), 15)
                 values = [payload.values[i] for i in range(active)]
                 lines = [
-                    f"t={payload.timestamp_ms}ms",
+                    f"t={payload.timestamp_us}us",
                     format_vector(values),
                 ]
             elif isinstance(payload, ParallelVector2):
                 active = min(int(payload.len), 2)
                 values = [payload.values[i] for i in range(active)]
                 lines = [
-                    f"t={payload.timestamp_ms}ms",
+                    f"t={payload.timestamp_us}us",
                     format_vector(values),
                 ]
             else:
                 values = [payload.values[i] for i in range(7)]
                 lines = [
-                    f"t={payload.timestamp_ms}ms",
+                    f"t={payload.timestamp_us}us",
                     format_vector(values),
                 ]
             channel.states[state_kind] = StateSnapshot(

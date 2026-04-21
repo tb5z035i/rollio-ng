@@ -34,3 +34,4 @@ output/
 dist/*.deb
 dist/*.whl
 robots/nero/build
+rollio-logs/

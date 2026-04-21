@@ -80,9 +80,12 @@ The Nero wheel installs into the operator's venv (`<venv>/lib/python3.12/site-pa
 | Variable | Meaning |
 |----------|---------|
 | `ROLLIO_SHARE_DIR` | Directory that **contains** `ui/web/dist/index.html` (same shape as the repo or `/usr/share/rollio`). Overrides auto-detection. |
-| `ROLLIO_STATE_DIR` | Writable directory for child process cwd, logs under `rollio-logs` / `rollio-setup-logs`, and related state. |
+| `ROLLIO_STATE_DIR` | Writable directory for child process cwd, `rollio-setup-logs`, staging directories, and related state. |
+| `ROLLIO_LOG_DIR` | Directory where `rollio collect` writes per-child log files (`device-*.log`, `encoder-*.log`, …). Defaults to `<invocation cwd>/rollio-logs`. |
 
 If neither `ROLLIO_STATE_DIR` nor `XDG_STATE_HOME` / `$HOME` is set, the controller falls back to `<workspace>/target/rollio-state` (compile-time workspace), which suits in-tree development.
+
+`rollio collect` log files default to `${PWD}/rollio-logs/` (the directory you ran the command from), so that `device-camera.log`, `encoder-*.log`, etc. live next to your `config.toml` and recorded dataset. Set `ROLLIO_LOG_DIR` if you would rather collect them elsewhere (e.g. a writable scratch volume).
 
 ## Controller share-root resolution order (web UI)
 

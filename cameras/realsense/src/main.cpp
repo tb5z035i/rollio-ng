@@ -549,11 +549,67 @@ auto build_enabled_camera_channels(const rollio::BinaryDeviceConfig& config)
     return out;
 }
 
+// Tracks the offset between the realsense device's hardware clock
+// (monotonic, device-internal microseconds) and the host's UNIX-epoch
+// clock. Refreshed periodically so a 10-20+ minute episode does not
+// accumulate device-vs-host crystal drift (combined ~50 ppm worst-case
+// would otherwise reach ~30 ms over 20 min).
+//
+// We deliberately bypass `RS2_OPTION_GLOBAL_TIME_ENABLED` — librealsense's
+// smoothed global-time offset can step the published value backward by a
+// few microseconds between adjacent frames, which surfaced as 1 µs gaps
+// in the encoded MP4 PTS. By owning the offset ourselves we get:
+//   * Per-channel intervals match the camera's real capture cadence
+//     between refreshes (uniform, e.g. 11.1 ms at 90 fps / 16.7 ms at
+//     60 fps / 33.3 ms at 30 fps).
+//   * Per-refresh offset shift is bounded by NTP slew + crystal drift
+//     over the refresh window. With a 5 s window, worst-case shift is
+//     well under the 11.1 ms minimum frame interval, so the refresh
+//     cannot step a published timestamp backward across one frame.
+class HardwareClockOffset {
+public:
+    explicit HardwareClockOffset(std::chrono::microseconds refresh_period)
+        : refresh_period_us_(refresh_period.count()) {}
+
+    // Translate a device hardware-clock timestamp (microseconds) into
+    // UNIX-epoch microseconds, refreshing the underlying offset if the
+    // device-time gap since the last refresh exceeds the configured
+    // window. Thread-affine: the realsense pipeline is single-threaded
+    // and dispatches to every sink from the same loop, so we don't add
+    // a mutex here.
+    auto to_unix_us(int64_t device_us) -> int64_t {
+        if (!initialized_) {
+            offset_us_ = host_unix_us_now() - device_us;
+            initialized_ = true;
+            last_refresh_device_us_ = device_us;
+        } else if (device_us - last_refresh_device_us_ >= refresh_period_us_) {
+            offset_us_ = host_unix_us_now() - device_us;
+            last_refresh_device_us_ = device_us;
+        }
+        return device_us + offset_us_;
+    }
+
+private:
+    static auto host_unix_us_now() -> int64_t {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    }
+
+    int64_t refresh_period_us_;
+    bool initialized_{false};
+    int64_t offset_us_{0};
+    int64_t last_refresh_device_us_{0};
+};
+
 class RealsenseFrameSink {
 public:
     RealsenseFrameSink(std::string channel_type, rollio::PixelFormat pixel_format,
-                       RsStreamSpec spec)
-        : channel_type_(std::move(channel_type)), pixel_format_(pixel_format), spec_(spec) {}
+                       RsStreamSpec spec, std::shared_ptr<HardwareClockOffset> clock)
+        : channel_type_(std::move(channel_type)),
+          pixel_format_(pixel_format),
+          spec_(spec),
+          clock_(std::move(clock)) {}
 
     virtual ~RealsenseFrameSink() = default;
 
@@ -572,18 +628,24 @@ protected:
         return spec_;
     }
 
+    auto clock() -> HardwareClockOffset& {
+        return *clock_;
+    }
+
 private:
     std::string channel_type_;
     rollio::PixelFormat pixel_format_;
     RsStreamSpec spec_;
+    std::shared_ptr<HardwareClockOffset> clock_;
 };
 
 template <typename Publisher>
 class RealsenseFrameSinkImpl final : public RealsenseFrameSink {
 public:
     RealsenseFrameSinkImpl(std::string channel_type, rollio::PixelFormat pixel_format,
-                           RsStreamSpec spec, Publisher publisher)
-        : RealsenseFrameSink(std::move(channel_type), pixel_format, spec),
+                           RsStreamSpec spec, std::shared_ptr<HardwareClockOffset> clock,
+                           Publisher publisher)
+        : RealsenseFrameSink(std::move(channel_type), pixel_format, spec, std::move(clock)),
           publisher_(std::move(publisher)) {}
 
     void try_publish(const rs2::frameset& frames) override {
@@ -603,15 +665,101 @@ public:
         const auto payload_size = static_cast<uint64_t>(frame.get_data_size());
         const auto video_frame = frame.as<rs2::video_frame>();
 
+        // Resolve the device-side hardware timestamp for this frame in
+        // microseconds. We prefer `RS2_FRAME_METADATA_FRAME_TIMESTAMP`
+        // because it's the raw ASIC-side counter (microsecond precision,
+        // monotonic, device-wide so color and depth share the same clock,
+        // unaffected by `RS2_OPTION_GLOBAL_TIME_ENABLED` smoothing). On
+        // some firmware revisions / sensor combos the metadata may be
+        // unavailable, in which case we fall back to `frame.get_timestamp()`
+        // and emit a one-shot warning so the operator knows we're in the
+        // less-clean codepath.
+        int64_t device_us = 0;
+        if (!frame_timestamp_metadata_checked_) {
+            frame_timestamp_metadata_checked_ = true;
+            frame_timestamp_metadata_supported_ =
+                frame.supports_frame_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP);
+            if (!frame_timestamp_metadata_supported_) {
+                std::cerr << "rollio-device-realsense: warning: channel=" << channel_type()
+                          << " does not expose RS2_FRAME_METADATA_FRAME_TIMESTAMP; falling "
+                             "back to frame.get_timestamp() (may include librealsense "
+                             "global-time smoothing artifacts)\n";
+            }
+        }
+        if (frame_timestamp_metadata_supported_) {
+            device_us = frame.get_frame_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP);
+        } else {
+            device_us = static_cast<int64_t>(frame.get_timestamp() * 1000.0);
+        }
+
+        // Drop syncer-padded duplicates. librealsense's pipeline syncer
+        // can re-emit the most recent depth frame paired with a fresh
+        // color frame while the depth sensor is still warming up — those
+        // padded frames carry the same raw hardware timestamp as the
+        // previous one. Republishing them would (a) waste encoder
+        // bandwidth, (b) require us to invent a synthetic timestamp that
+        // doesn't reflect a real new capture. Instead we drop the frame
+        // and let the assembler align around the gap.
+        //
+        // Per-frame strict equality on `device_us` is the right test
+        // because the hardware counter is microsecond-resolution, so two
+        // *real* successive captures differ by ~11,111 µs (90 fps) /
+        // ~16,667 µs (60 fps) / ~33,333 µs (30 fps) at the smallest, all
+        // far above the metadata's quantization.
+        if (last_device_us_ != 0 && device_us <= last_device_us_) {
+            duplicate_drop_count_ += 1;
+            if (!duplicate_drop_warned_) {
+                duplicate_drop_warned_ = true;
+                std::cerr << "rollio-device-realsense: warning: dropping syncer-padded frame "
+                             "on channel="
+                          << channel_type() << " (device_us=" << device_us
+                          << ", last_device_us=" << last_device_us_
+                          << "); subsequent drops are counted but silenced.\n";
+            }
+            return;
+        }
+        last_device_us_ = device_us;
+
+        // Translate the device hardware-clock value to UNIX-epoch
+        // microseconds. The shared `HardwareClockOffset` is responsible
+        // for periodic re-anchoring so a long episode (10-20+ min) does
+        // not accumulate device-vs-host crystal drift.
+        const auto unix_us = clock().to_unix_us(device_us);
+
+        // Belt-and-suspenders monotonicity guard. With duplicates already
+        // dropped above and the 5 s offset refresh window short enough
+        // that NTP slew can't shift the offset by more than the minimum
+        // frame interval, this branch should effectively never fire. If
+        // it ever does (e.g. operator NTP-stepped the host clock
+        // backward), log once with the magnitude.
+        uint64_t timestamp_us = 0;
+        if (last_published_us_ != 0 && unix_us <= static_cast<int64_t>(last_published_us_)) {
+            const auto delta_us = static_cast<int64_t>(last_published_us_) - unix_us;
+            if (!nonmonotonic_warned_) {
+                nonmonotonic_warned_ = true;
+                std::cerr << "rollio-device-realsense: warning: non-monotonic timestamp on "
+                             "channel="
+                          << channel_type() << " (raw_unix_us=" << unix_us
+                          << ", last_published_us=" << last_published_us_
+                          << ", backward_step_us=" << delta_us
+                          << "); bumping by 1 us to keep the stream strictly increasing. "
+                             "Subsequent occurrences are silenced.\n";
+            }
+            timestamp_us = last_published_us_ + 1;
+        } else {
+            timestamp_us = static_cast<uint64_t>(std::max<int64_t>(0, unix_us));
+        }
+        last_published_us_ = timestamp_us;
+
         auto sample = publisher_.loan_slice_uninit(payload_size).value();
         auto& header = sample.user_header_mut();
-        header.timestamp_ns = static_cast<uint64_t>(frame.get_timestamp() * 1000000.0);
+        header.timestamp_us = timestamp_us;
         header.width = static_cast<uint32_t>(video_frame.get_width());
         header.height = static_cast<uint32_t>(video_frame.get_height());
         header.pixel_format = pixel_format();
         header.frame_index = local_frame_index_;
 
-        const auto latest_timestamp_ns = header.timestamp_ns;
+        const auto latest_timestamp_us = header.timestamp_us;
         // Use the slice memcpy fast path. The per-byte `write_from_fn` path
         // routes every byte through a type-erased `bb::StaticFunction` call
         // plus a bounds-checked slice subscript and a placement-new, which
@@ -624,7 +772,8 @@ public:
         if (SteadyClock::now() - last_status_ >= std::chrono::seconds(1)) {
             std::cerr << "rollio-device-realsense: bus_root channel=" << channel_type()
                       << " frame_index=" << local_frame_index_
-                      << " latest_timestamp_ns=" << latest_timestamp_ns << " active=true\n";
+                      << " latest_timestamp_us=" << latest_timestamp_us
+                      << " duplicates_dropped=" << duplicate_drop_count_ << " active=true\n";
             last_status_ = SteadyClock::now();
         }
     }
@@ -633,6 +782,13 @@ private:
     Publisher publisher_;
     uint64_t local_frame_index_{0};
     SteadyClock::time_point last_status_{SteadyClock::now()};
+    bool frame_timestamp_metadata_checked_{false};
+    bool frame_timestamp_metadata_supported_{false};
+    int64_t last_device_us_{0};
+    uint64_t last_published_us_{0};
+    uint64_t duplicate_drop_count_{0};
+    bool duplicate_drop_warned_{false};
+    bool nonmonotonic_warned_{false};
 };
 
 auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> int {
@@ -653,12 +809,51 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
     }
 
     rs2::context context;
-    if (!find_device_by_serial(context, config.id).has_value()) {
+    auto device_opt = find_device_by_serial(context, config.id);
+    if (!device_opt.has_value()) {
         throw std::runtime_error("unknown realsense device: " + config.id);
+    }
+
+    // Best-effort: ask librealsense to disable its smoothed global-time
+    // domain so `frame.get_timestamp()` falls back to the hardware-clock
+    // domain. Empirically this set_option call is a no-op on some D400
+    // firmware combos (the per-sensor option doesn't propagate to the
+    // pipeline-level time keeper), so the sink-side code does NOT depend
+    // on it succeeding — it reads the raw hardware counter via
+    // `RS2_FRAME_METADATA_FRAME_TIMESTAMP` regardless. The set_option is
+    // kept as defence-in-depth: when it does work, the fallback path of
+    // `frame.get_timestamp()` (used only when the metadata field is
+    // unavailable) is also clean of global-time smoothing artifacts.
+    for (auto& sensor : device_opt->query_sensors()) {
+        if (sensor.supports(RS2_OPTION_GLOBAL_TIME_ENABLED)) {
+            try {
+                sensor.set_option(RS2_OPTION_GLOBAL_TIME_ENABLED, 0.0F);
+            } catch (const rs2::error& error) {
+                std::cerr
+                    << "rollio-device-realsense: device=" << config.id
+                    << " warning: failed to disable RS2_OPTION_GLOBAL_TIME_ENABLED on sensor: "
+                    << error.what()
+                    << " (smoothed global-time may produce small non-uniform frame intervals)\n";
+            }
+        }
+        // If the sensor doesn't support `RS2_OPTION_GLOBAL_TIME_ENABLED`
+        // at all, the default is hardware-clock domain — exactly what we
+        // want — so silence that case. The sink-side domain check will
+        // still emit a per-channel warning if any frame ever lands in a
+        // different domain.
     }
 
     set_log_level_from_env_or(LogLevel::Info);
     auto node = NodeBuilder().create<ServiceType::Ipc>().value();
+
+    // Shared by every sink for this device: color and depth read from the
+    // same hardware clock so they share one host-clock offset, and
+    // refreshing in one place keeps them perfectly co-aligned. The 5 s
+    // window is chosen so the per-refresh offset shift (NTP slew + crystal
+    // drift) stays well below the minimum frame interval (11.1 ms at the
+    // realsense's max 90 fps), which makes the sink-side monotonicity
+    // guard rarely (if ever) trip in normal operation.
+    auto clock = std::make_shared<HardwareClockOffset>(std::chrono::seconds(5));
 
     std::vector<std::unique_ptr<RealsenseFrameSink>> sinks;
     sinks.reserve(channels.size());
@@ -682,7 +877,7 @@ auto run_realsense(const rollio::BinaryDeviceConfig& config, bool dry_run) -> in
                              .value();
 
         sinks.push_back(std::make_unique<RealsenseFrameSinkImpl<decltype(publisher)>>(
-            ch.channel_type, ch.profile.pixel_format, ch.rs, std::move(publisher)));
+            ch.channel_type, ch.profile.pixel_format, ch.rs, clock, std::move(publisher)));
     }
 
     const auto control_service_name = ServiceName::create(rollio::CONTROL_EVENTS_SERVICE).value();

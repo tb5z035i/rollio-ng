@@ -642,6 +642,19 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
     let mut frame_index = 0u64;
     let mut last_status_log = Instant::now();
     let mut last_timeout_log = Instant::now() - Duration::from_secs(5);
+    // V4L2 timestamps frames against `CLOCK_MONOTONIC` (the kernel default
+    // for capture buffers). Convert each frame's monotonic timestamp into
+    // UNIX-epoch microseconds via a periodically re-sampled boot offset so
+    // the published values are comparable to every other Rollio publisher.
+    let mut clock_offset = MonotonicToUnixOffset::new();
+    let mut last_offset_refresh = Instant::now();
+    // Some USB webcams (e.g. Logitech C270) occasionally deliver short or
+    // otherwise malformed frames after USB hiccups. Drop those frames
+    // instead of aborting the whole driver, but rate-limit the log line
+    // so the recording session is not killed by a transient hardware
+    // glitch.
+    let mut dropped_malformed_frames: u64 = 0;
+    let mut last_malformed_log = Instant::now() - Duration::from_secs(5);
 
     eprintln!(
         "rollio-device-v4l2: device={} card={} native_format={} output_format={} size={}x{} fps_request={} fps_actual={}",
@@ -686,15 +699,53 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
         if bytes_used == 0 {
             continue;
         }
-        let frame_data = buffer
-            .get(..bytes_used)
-            .ok_or("driver reported bytesused larger than mapped frame buffer")?;
-        let converted = converter.convert(frame_data, configured.native_fourcc)?;
+        let frame_data = match buffer.get(..bytes_used) {
+            Some(slice) => slice,
+            None => {
+                dropped_malformed_frames += 1;
+                if last_malformed_log.elapsed() >= Duration::from_secs(1) {
+                    eprintln!(
+                        "rollio-device-v4l2: device={} dropping malformed frame: \
+                         driver reported bytesused={} larger than mapped buffer={} \
+                         (total_dropped={})",
+                        config.id,
+                        bytes_used,
+                        buffer.len(),
+                        dropped_malformed_frames,
+                    );
+                    last_malformed_log = Instant::now();
+                }
+                continue;
+            }
+        };
+        let converted = match converter.convert(frame_data, configured.native_fourcc) {
+            Ok(buf) => buf,
+            Err(error) => {
+                dropped_malformed_frames += 1;
+                if last_malformed_log.elapsed() >= Duration::from_secs(1) {
+                    eprintln!(
+                        "rollio-device-v4l2: device={} dropping malformed frame: {} \
+                         (total_dropped={})",
+                        config.id, error, dropped_malformed_frames,
+                    );
+                    last_malformed_log = Instant::now();
+                }
+                continue;
+            }
+        };
 
-        let timestamp_ms = wallclock_timestamp_ms()?;
+        // Refresh the boot offset roughly once per second so NTP slew
+        // does not silently drift the per-frame UNIX timestamps.
+        if last_offset_refresh.elapsed() >= Duration::from_secs(1) {
+            clock_offset.refresh();
+            last_offset_refresh = Instant::now();
+        }
+        let timestamp_us = clock_offset
+            .timeval_to_unix_us(metadata.timestamp.sec, metadata.timestamp.usec)
+            .unwrap_or_else(|| wallclock_timestamp_us().unwrap_or(0));
         let mut sample = publisher.loan_slice_uninit(payload_len)?;
         *sample.user_header_mut() = CameraFrameHeader {
-            timestamp_ms,
+            timestamp_us,
             width: configured.width,
             height: configured.height,
             pixel_format: config.pixel_format,
@@ -706,8 +757,9 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
         frame_index += 1;
         if last_status_log.elapsed() >= Duration::from_secs(1) {
             eprintln!(
-                "rollio-device-v4l2: device={} frame_index={} latest_timestamp_ms={} active=true",
-                config.id, frame_index, timestamp_ms
+                "rollio-device-v4l2: device={} frame_index={} latest_timestamp_us={} \
+                 dropped_malformed={} active=true",
+                config.id, frame_index, timestamp_us, dropped_malformed_frames,
             );
             last_status_log = Instant::now();
         }
@@ -884,11 +936,63 @@ fn payload_len(width: u32, height: u32) -> Result<usize, DynError> {
         .ok_or_else(|| "frame payload size overflow".into())
 }
 
-fn wallclock_timestamp_ms() -> Result<u64, DynError> {
+fn wallclock_timestamp_us() -> Result<u64, DynError> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?
-        .as_millis()
+        .as_micros()
         .try_into()?)
+}
+
+/// Tracks a `CLOCK_MONOTONIC` -> UNIX-epoch offset (microseconds).
+///
+/// V4L2 stamps capture buffers using `CLOCK_MONOTONIC` (the kernel default
+/// for `V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC`). To convert to a UNIX-epoch
+/// microsecond value we sample `(SystemTime::now(), CLOCK_MONOTONIC now)`
+/// and apply the difference. The offset is re-sampled periodically by the
+/// caller to absorb NTP slew.
+#[derive(Debug)]
+struct MonotonicToUnixOffset {
+    offset_us: i128,
+}
+
+impl MonotonicToUnixOffset {
+    fn new() -> Self {
+        let mut this = Self { offset_us: 0 };
+        this.refresh();
+        this
+    }
+
+    fn refresh(&mut self) {
+        let unix_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as i128)
+            .unwrap_or(0);
+        let monotonic_us = read_monotonic_us();
+        self.offset_us = unix_us - monotonic_us;
+    }
+
+    fn timeval_to_unix_us(&self, sec: i64, usec: i64) -> Option<u64> {
+        if sec == 0 && usec == 0 {
+            return None;
+        }
+        let monotonic_us = (sec as i128) * 1_000_000 + (usec as i128);
+        let unix_us = monotonic_us + self.offset_us;
+        u64::try_from(unix_us.max(0)).ok()
+    }
+}
+
+fn read_monotonic_us() -> i128 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime is async-signal-safe and writes only into the
+    // provided timespec.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    if rc != 0 {
+        return 0;
+    }
+    (ts.tv_sec as i128) * 1_000_000 + (ts.tv_nsec as i128) / 1_000
 }
 
 fn fourcc_to_string(fourcc: FourCC) -> String {
@@ -1097,6 +1201,32 @@ profile = { width = 640, height = 480, fps = 30, pixel_format = "bgr24" }
             .expect("BGR frame should convert");
 
         assert_eq!(converted, &[30, 20, 10]);
+    }
+
+    #[test]
+    fn monotonic_to_unix_offset_returns_none_for_zero_timeval() {
+        let offset = MonotonicToUnixOffset { offset_us: 1_000 };
+        assert_eq!(offset.timeval_to_unix_us(0, 0), None);
+    }
+
+    #[test]
+    fn monotonic_to_unix_offset_adds_offset_to_monotonic() {
+        // Synthetic offset so the math is checkable without sampling clocks.
+        let offset = MonotonicToUnixOffset {
+            offset_us: 1_700_000_000_000_000, // ~2023-11-15 UTC, in us
+        };
+        // monotonic = 5.5 seconds since boot
+        let unix_us = offset
+            .timeval_to_unix_us(5, 500_000)
+            .expect("non-zero timeval should produce a value");
+        assert_eq!(unix_us, 1_700_000_000_000_000 + 5_500_000);
+    }
+
+    #[test]
+    fn read_monotonic_us_is_monotonic_nondecreasing() {
+        let a = read_monotonic_us();
+        let b = read_monotonic_us();
+        assert!(b >= a);
     }
 
     #[test]

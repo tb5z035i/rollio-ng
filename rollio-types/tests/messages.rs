@@ -17,14 +17,14 @@ unsafe fn roundtrip<T: Clone + Sized>(val: &T) -> T {
 #[test]
 fn camera_frame_header_roundtrip() {
     let hdr = CameraFrameHeader {
-        timestamp_ms: 123_456_789,
+        timestamp_us: 123_456_789,
         width: 640,
         height: 480,
         pixel_format: PixelFormat::Rgb24,
         frame_index: 42,
     };
     let hdr2 = unsafe { roundtrip(&hdr) };
-    assert_eq!(hdr2.timestamp_ms, 123_456_789);
+    assert_eq!(hdr2.timestamp_us, 123_456_789);
     assert_eq!(hdr2.width, 640);
     assert_eq!(hdr2.height, 480);
     assert!(matches!(hdr2.pixel_format, PixelFormat::Rgb24));
@@ -34,7 +34,7 @@ fn camera_frame_header_roundtrip() {
 #[test]
 fn camera_frame_header_payload_size_rgb24() {
     let hdr = CameraFrameHeader {
-        timestamp_ms: 0,
+        timestamp_us: 0,
         width: 640,
         height: 480,
         pixel_format: PixelFormat::Rgb24,
@@ -46,7 +46,7 @@ fn camera_frame_header_payload_size_rgb24() {
 #[test]
 fn camera_frame_header_payload_size_depth16() {
     let hdr = CameraFrameHeader {
-        timestamp_ms: 0,
+        timestamp_us: 0,
         width: 640,
         height: 480,
         pixel_format: PixelFormat::Depth16,
@@ -156,8 +156,14 @@ fn robot_command_roundtrip() {
 #[test]
 fn control_event_all_variants() {
     let variants = [
-        ControlEvent::RecordingStart { episode_index: 0 },
-        ControlEvent::RecordingStop { episode_index: 1 },
+        ControlEvent::RecordingStart {
+            episode_index: 0,
+            controller_ts_us: 1_700_000_000_000_000,
+        },
+        ControlEvent::RecordingStop {
+            episode_index: 1,
+            controller_ts_us: 1_700_000_000_500_000,
+        },
         ControlEvent::EpisodeKeep { episode_index: 2 },
         ControlEvent::EpisodeDiscard { episode_index: 3 },
         ControlEvent::Shutdown,
@@ -170,11 +176,31 @@ fn control_event_all_variants() {
 }
 
 #[test]
+fn control_event_layout_matches_python_mirror() {
+    use core::mem::{align_of, size_of};
+    // Python (`robots/nero/.../ipc/types.py`) declares the ControlEvent
+    // ctypes mirror with the same field layout. If Rust's repr(C) layout
+    // ever changes (e.g. by adding a larger variant), this test catches it
+    // before the Python side starts decoding garbage.
+    assert_eq!(size_of::<ControlEvent>(), 24);
+    assert_eq!(align_of::<ControlEvent>(), 8);
+}
+
+#[test]
 fn control_event_recording_start_payload() {
-    let evt = ControlEvent::RecordingStart { episode_index: 7 };
+    let evt = ControlEvent::RecordingStart {
+        episode_index: 7,
+        controller_ts_us: 1_700_000_000_123_456,
+    };
     let evt2 = unsafe { roundtrip(&evt) };
     match evt2 {
-        ControlEvent::RecordingStart { episode_index } => assert_eq!(episode_index, 7),
+        ControlEvent::RecordingStart {
+            episode_index,
+            controller_ts_us,
+        } => {
+            assert_eq!(episode_index, 7);
+            assert_eq!(controller_ts_us, 1_700_000_000_123_456);
+        }
         _ => panic!("wrong variant"),
     }
 }

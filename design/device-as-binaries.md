@@ -253,7 +253,7 @@ All device-data timestamps should use milliseconds.
 
 Camera frames should keep the existing zero-copy shape:
 
-- `CameraFrameHeader { timestamp_ms, ... } + [u8]`
+- `CameraFrameHeader { timestamp_us, ... } + [u8]`
 
 Robot payloads should use bounded types instead of untyped variable-length
 arrays. Proposed bounds:
@@ -263,11 +263,11 @@ arrays. Proposed bounds:
 
 Suggested payload families:
 
-- `JointVector15 { timestamp_ms, len, values[15] }`
-- `ParallelVector2 { timestamp_ms, len, values[2] }`
-- `Pose7 { timestamp_ms, xyz_xyzw[7] }`
-- `JointMitCommand15 { timestamp_ms, len, position[15], velocity[15], effort[15], kp[15], kd[15] }`
-- `ParallelMitCommand2 { timestamp_ms, len, position[2], velocity[2], effort[2], kp[2], kd[2] }`
+- `JointVector15 { timestamp_us, len, values[15] }`
+- `ParallelVector2 { timestamp_us, len, values[2] }`
+- `Pose7 { timestamp_us, xyz_xyzw[7] }`
+- `JointMitCommand15 { timestamp_us, len, position[15], velocity[15], effort[15], kp[15], kd[15] }`
+- `ParallelMitCommand2 { timestamp_us, len, position[2], velocity[2], effort[2], kp[2], kd[2] }`
 
 ## Scope Note
 

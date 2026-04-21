@@ -469,7 +469,8 @@ export function applyRobotStateSample(
     values: Array.isArray(msg.values) ? msg.values : [],
     valueMin: Array.isArray(msg.value_min) ? msg.value_min : [],
     valueMax: Array.isArray(msg.value_max) ? msg.value_max : [],
-    timestampMs: typeof msg.timestamp_ms === "number" ? msg.timestamp_ms : 0,
+    timestampMs:
+      typeof msg.timestamp_us === "number" ? Math.floor(msg.timestamp_us / 1_000) : 0,
     numJoints: typeof msg.num_joints === "number" ? msg.num_joints : 0,
   };
   const states: AggregatedRobotChannel["states"] = existing

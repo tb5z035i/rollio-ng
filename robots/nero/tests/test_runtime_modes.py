@@ -297,7 +297,7 @@ def test_arm_command_following_with_joint_position(nero_model: NeroModel) -> Non
     # Stay within the per-tick safety clamp (MAX_COMMAND_JOINT_DELTA_RAD
     # ~ 0.0873 rad). 0.05 rad is well inside the window so the runtime
     # forwards the target verbatim.
-    target = JointVector15.from_values(timestamp_ms=0, values=[0.05] * ARM_DOF)
+    target = JointVector15.from_values(timestamp_us=0, values=[0.05] * ARM_DOF)
     ipc.next_joint_position = target
 
     ctrl.step()
@@ -762,7 +762,7 @@ def test_gripper_command_following_uses_kp_slot_as_force_when_nonzero() -> None:
     ctrl, backend, ipc = _gripper_controller("command-following")
 
     msg = ParallelMitCommand2()
-    msg.timestamp_ms = 0
+    msg.timestamp_us = 0
     msg.len = 1
     msg.position[0] = 0.05
     msg.velocity[0] = 0.0

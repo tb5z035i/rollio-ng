@@ -56,8 +56,8 @@ struct CameraStats {
     frames: u64,
     first_frame_index: Option<u64>,
     last_frame_index: Option<u64>,
-    first_source_timestamp_ns: Option<u64>,
-    last_source_timestamp_ns: Option<u64>,
+    first_source_timestamp_us: Option<u64>,
+    last_source_timestamp_us: Option<u64>,
     last_receive_ns: Option<u64>,
     source_intervals_ms: Vec<f64>,
     receive_intervals_ms: Vec<f64>,
@@ -177,7 +177,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         "type": "camera_frame",
                         "name": tap.name,
                         "receive_timestamp_ns": receive_ns,
-                        "source_timestamp_ms": header.timestamp_ms,
+                        "source_timestamp_us": header.timestamp_us,
                         "frame_index": header.frame_index,
                         "width": header.width,
                         "height": header.height,
@@ -269,13 +269,13 @@ fn update_camera_stats(stats: &mut CameraStats, header: CameraFrameHeader, recei
     stats.frames = stats.frames.saturating_add(1);
     stats.first_frame_index.get_or_insert(header.frame_index);
     stats
-        .first_source_timestamp_ns
-        .get_or_insert(header.timestamp_ms);
+        .first_source_timestamp_us
+        .get_or_insert(header.timestamp_us);
 
-    if let Some(previous_source_ns) = stats.last_source_timestamp_ns {
+    if let Some(previous_source_us) = stats.last_source_timestamp_us {
         stats
             .source_intervals_ms
-            .push((header.timestamp_ms.saturating_sub(previous_source_ns)) as f64);
+            .push((header.timestamp_us.saturating_sub(previous_source_us)) as f64 / 1_000.0);
     }
     if let Some(previous_receive_ns) = stats.last_receive_ns {
         stats
@@ -283,7 +283,7 @@ fn update_camera_stats(stats: &mut CameraStats, header: CameraFrameHeader, recei
             .push((receive_ns.saturating_sub(previous_receive_ns)) as f64 / 1_000_000.0);
     }
 
-    stats.last_source_timestamp_ns = Some(header.timestamp_ms);
+    stats.last_source_timestamp_us = Some(header.timestamp_us);
     stats.last_frame_index = Some(header.frame_index);
     stats.last_receive_ns = Some(receive_ns);
 }
@@ -293,13 +293,13 @@ fn print_summary(camera_stats: &HashMap<String, CameraStats>, command_stats: &Co
         let observed_fps = match (
             stats.first_frame_index,
             stats.last_frame_index,
-            stats.first_source_timestamp_ns,
-            stats.last_source_timestamp_ns,
+            stats.first_source_timestamp_us,
+            stats.last_source_timestamp_us,
         ) {
             (Some(first_frame), Some(last_frame), Some(first_ts), Some(last_ts))
                 if last_frame > first_frame && last_ts > first_ts =>
             {
-                (last_frame - first_frame) as f64 / ((last_ts - first_ts) as f64 / 1_000.0)
+                (last_frame - first_frame) as f64 / ((last_ts - first_ts) as f64 / 1_000_000.0)
             }
             _ => 0.0,
         };
@@ -342,8 +342,12 @@ fn percentile(mut values: Vec<f64>, quantile: f64) -> f64 {
 
 fn control_event_fields(event: ControlEvent) -> (&'static str, Option<u32>) {
     match event {
-        ControlEvent::RecordingStart { episode_index } => ("recording_start", Some(episode_index)),
-        ControlEvent::RecordingStop { episode_index } => ("recording_stop", Some(episode_index)),
+        ControlEvent::RecordingStart { episode_index, .. } => {
+            ("recording_start", Some(episode_index))
+        }
+        ControlEvent::RecordingStop { episode_index, .. } => {
+            ("recording_stop", Some(episode_index))
+        }
         ControlEvent::EpisodeKeep { episode_index } => ("episode_keep", Some(episode_index)),
         ControlEvent::EpisodeDiscard { episode_index } => ("episode_discard", Some(episode_index)),
         ControlEvent::Shutdown => ("shutdown", None),

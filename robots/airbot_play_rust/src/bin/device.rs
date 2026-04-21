@@ -10,6 +10,7 @@ use iceoryx2::prelude::*;
 use rollio_bus::{
     channel_command_service_name, channel_mode_control_service_name,
     channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
+    STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     BinaryDeviceConfig, ChannelCommandDefaults, DeviceQueryChannel, DeviceQueryDevice,
@@ -759,21 +760,45 @@ fn run_arm_channel(
     )
     .as_str()
     .try_into()?;
+    // Bump the iceoryx2 ring buffer / history caps on every state and
+    // command topic to `STATE_BUFFER` so the consumer (assembler / teleop
+    // router) can absorb up to ~4 s of work without silently overwriting
+    // unread 250 Hz samples. See `rollio_bus::STATE_BUFFER` for rationale.
     let joint_position_service = node
         .service_builder(&joint_position_topic)
         .publish_subscribe::<JointVector15>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let joint_velocity_service = node
         .service_builder(&joint_velocity_topic)
         .publish_subscribe::<JointVector15>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let joint_effort_service = node
         .service_builder(&joint_effort_topic)
         .publish_subscribe::<JointVector15>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let ee_pose_service = node
         .service_builder(&ee_pose_topic)
         .publish_subscribe::<Pose7>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let joint_position_publisher = joint_position_service.publisher_builder().create()?;
     let joint_velocity_publisher = joint_velocity_service.publisher_builder().create()?;
@@ -782,14 +807,29 @@ fn run_arm_channel(
     let joint_position_command_service = node
         .service_builder(&joint_position_command_topic)
         .publish_subscribe::<JointVector15>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let joint_mit_command_service = node
         .service_builder(&joint_mit_command_topic)
         .publish_subscribe::<JointMitCommand15>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let end_pose_command_service = node
         .service_builder(&end_pose_command_topic)
         .publish_subscribe::<Pose7>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let joint_position_subscriber = joint_position_command_service
         .subscriber_builder()
@@ -1060,13 +1100,19 @@ fn publish_states(
     if !feedback.valid {
         return Ok(());
     }
-    let timestamp_ms = unix_timestamp_ms();
+    // Phase 7: stamp at sensor-feedback receipt time, not at publish time.
+    // `ArmJointFeedback::timestamp_micros` is populated inside the
+    // upstream `refresh_feedback_from_motors` callback at `SystemTime::now()`
+    // when the latest CAN motor snapshot arrives — i.e. the moment the
+    // measurement was actually received on the bus, before any control-loop
+    // jitter or `next_tick` sleep on this thread shifts it.
+    let timestamp_us = feedback_timestamp_us(feedback.timestamp_micros);
     if config
         .publish_states
         .contains(&RobotStateKind::JointPosition)
     {
         joint_position_publisher.send_copy(JointVector15::from_slice(
-            timestamp_ms,
+            timestamp_us,
             &feedback.positions[..config.dof.min(ARM_DOF)],
         ))?;
     }
@@ -1075,13 +1121,13 @@ fn publish_states(
         .contains(&RobotStateKind::JointVelocity)
     {
         joint_velocity_publisher.send_copy(JointVector15::from_slice(
-            timestamp_ms,
+            timestamp_us,
             &feedback.velocities[..config.dof.min(ARM_DOF)],
         ))?;
     }
     if config.publish_states.contains(&RobotStateKind::JointEffort) {
         joint_effort_publisher.send_copy(JointVector15::from_slice(
-            timestamp_ms,
+            timestamp_us,
             &feedback.torques[..config.dof.min(ARM_DOF)],
         ))?;
     }
@@ -1095,7 +1141,7 @@ fn publish_states(
                 .try_into()
                 .map_err(|_| "AIRBOT pose did not contain 7 values")?;
             ee_pose_publisher.send_copy(Pose7 {
-                timestamp_ms,
+                timestamp_us,
                 values: pose_values,
             })?;
         }
@@ -1165,11 +1211,15 @@ fn publish_eef_state(
     publish_states: &[RobotStateKind],
     feedback: &airbot_play_rust::eef::SingleEefFeedback,
 ) -> Result<(), Box<dyn Error>> {
-    let timestamp_ms = unix_timestamp_ms();
+    // Phase 7: stamp at sensor-feedback receipt time. See `publish_states`
+    // for the same rationale on the arm side. `SingleEefFeedback` carries
+    // its own `timestamp_micros` set at the moment the EEF CAN snapshot
+    // landed inside the upstream runtime.
+    let timestamp_us = feedback_timestamp_us(feedback.timestamp_micros);
     if publish_states.contains(&RobotStateKind::ParallelPosition) {
         if let Some(publisher) = &publishers.position {
             publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_ms,
+                timestamp_us,
                 &[feedback.position],
             ))?;
         }
@@ -1177,7 +1227,7 @@ fn publish_eef_state(
     if publish_states.contains(&RobotStateKind::ParallelVelocity) {
         if let Some(publisher) = &publishers.velocity {
             publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_ms,
+                timestamp_us,
                 &[feedback.velocity],
             ))?;
         }
@@ -1185,7 +1235,7 @@ fn publish_eef_state(
     if publish_states.contains(&RobotStateKind::ParallelEffort) {
         if let Some(publisher) = &publishers.effort {
             publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_ms,
+                timestamp_us,
                 &[feedback.effort],
             ))?;
         }
@@ -1330,6 +1380,11 @@ fn open_parallel_publisher(
     let service = node
         .service_builder(&topic)
         .publish_subscribe::<ParallelVector2>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
 }
@@ -1349,6 +1404,11 @@ fn open_parallel_position_subscriber(
     let service = node
         .service_builder(&topic)
         .publish_subscribe::<ParallelVector2>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -1368,6 +1428,11 @@ fn open_parallel_mit_subscriber(
     let service = node
         .service_builder(&topic)
         .publish_subscribe::<ParallelMitCommand2>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -1463,9 +1528,59 @@ fn mounted_eef_channel(
     }
 }
 
-fn unix_timestamp_ms() -> u64 {
+fn unix_timestamp_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_micros() as u64
+}
+
+/// Convert the upstream `timestamp_micros` (UNIX-epoch microseconds, set
+/// at sensor-feedback receipt time inside `airbot_play_rust`) into the
+/// `u64` field that Rollio's iceoryx2 message types expect.
+///
+/// On the rare path where the upstream runtime returns a 0 timestamp
+/// (motor snapshot captured before the system clock was set), fall back
+/// to the current wall clock so subscribers don't see a 1970-epoch value.
+/// The `min(u64::MAX)` saturating cast is purely defensive — `u64` of
+/// microseconds covers ~584,554 years from epoch.
+fn feedback_timestamp_us(timestamp_micros: u128) -> u64 {
+    if timestamp_micros == 0 {
+        return unix_timestamp_us();
+    }
+    timestamp_micros.min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feedback_timestamp_us_passes_through_microseconds() {
+        // After the upstream switch to microseconds, no scaling is needed.
+        assert_eq!(
+            feedback_timestamp_us(1_700_000_000_123_456),
+            1_700_000_000_123_456
+        );
+    }
+
+    #[test]
+    fn feedback_timestamp_us_falls_back_when_upstream_value_is_zero() {
+        let before_us = unix_timestamp_us();
+        let result = feedback_timestamp_us(0);
+        let after_us = unix_timestamp_us();
+        assert!(
+            result >= before_us && result <= after_us,
+            "fallback should come from the current wall clock; got {result} not in [{before_us}, {after_us}]"
+        );
+    }
+
+    #[test]
+    fn feedback_timestamp_us_saturates_on_extreme_inputs() {
+        // u128 inputs larger than u64::MAX saturate instead of wrapping.
+        // `u64::MAX` microseconds is ~584,554 years from epoch, so this is
+        // purely defensive.
+        let result = feedback_timestamp_us(u128::MAX);
+        assert_eq!(result, u64::MAX);
+    }
 }

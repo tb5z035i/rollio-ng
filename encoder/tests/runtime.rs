@@ -248,7 +248,10 @@ fn rvl_round_trip_is_lossless_and_reports_efficiency() {
     std::thread::sleep(Duration::from_millis(150));
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStart { episode_index: 1 },
+        ControlEvent::RecordingStart {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
     std::thread::sleep(Duration::from_millis(50));
 
@@ -265,7 +268,7 @@ fn rvl_round_trip_is_lossless_and_reports_efficiency() {
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ms: unix_timestamp_ms(),
+                timestamp_us: unix_timestamp_us(),
                 width,
                 height,
                 pixel_format: PixelFormat::Depth16,
@@ -277,7 +280,10 @@ fn rvl_round_trip_is_lossless_and_reports_efficiency() {
     }
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStop { episode_index: 1 },
+        ControlEvent::RecordingStop {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
 
     let ready = wait_for_video_ready(
@@ -340,7 +346,10 @@ fn backpressure_publishes_event_and_encoder_keeps_working() {
     std::thread::sleep(Duration::from_millis(150));
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStart { episode_index: 2 },
+        ControlEvent::RecordingStart {
+            episode_index: 2,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
     std::thread::sleep(Duration::from_millis(50));
 
@@ -350,7 +359,7 @@ fn backpressure_publishes_event_and_encoder_keeps_working() {
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ms: unix_timestamp_ms(),
+                timestamp_us: unix_timestamp_us(),
                 width,
                 height,
                 pixel_format: PixelFormat::Depth16,
@@ -370,7 +379,10 @@ fn backpressure_publishes_event_and_encoder_keeps_working() {
 
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStop { episode_index: 2 },
+        ControlEvent::RecordingStop {
+            episode_index: 2,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
     let ready = wait_for_video_ready(
         &ports.ready_subscriber,
@@ -421,7 +433,10 @@ fn run_video_roundtrip(
     std::thread::sleep(Duration::from_millis(150));
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStart { episode_index: 1 },
+        ControlEvent::RecordingStart {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
     std::thread::sleep(Duration::from_millis(50));
 
@@ -433,7 +448,7 @@ fn run_video_roundtrip(
         publish_frame(
             &ports.frame_publisher,
             CameraFrameHeader {
-                timestamp_ms: unix_timestamp_ms(),
+                timestamp_us: unix_timestamp_us(),
                 width,
                 height,
                 pixel_format: PixelFormat::Rgb24,
@@ -445,7 +460,10 @@ fn run_video_roundtrip(
     }
     send_control_event(
         &ports.control_publisher,
-        ControlEvent::RecordingStop { episode_index: 1 },
+        ControlEvent::RecordingStop {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
     );
 
     let ready = wait_for_video_ready(
@@ -774,9 +792,9 @@ fn current_rss_kb() -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
-fn unix_timestamp_ms() -> u64 {
+fn unix_timestamp_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_micros() as u64
 }

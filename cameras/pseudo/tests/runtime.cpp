@@ -220,7 +220,7 @@ auto run_runtime_test() -> void {
         if (frames[idx - 1].header.frame_index >= frames[idx].header.frame_index) {
             throw std::runtime_error("frame indices are not strictly increasing");
         }
-        if (frames[idx - 1].header.timestamp_ns >= frames[idx].header.timestamp_ns) {
+        if (frames[idx - 1].header.timestamp_us >= frames[idx].header.timestamp_us) {
             throw std::runtime_error("frame timestamps are not strictly increasing");
         }
     }

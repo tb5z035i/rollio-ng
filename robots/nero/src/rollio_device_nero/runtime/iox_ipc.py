@@ -19,10 +19,14 @@ from ..ipc.services import (
     COMMAND_PARALLEL_MIT,
     COMMAND_PARALLEL_POSITION,
     CONTROL_EVENTS_SERVICE,
+    STATE_BUFFER,
     STATE_END_EFFECTOR_POSE,
     STATE_JOINT_EFFORT,
     STATE_JOINT_POSITION,
     STATE_JOINT_VELOCITY,
+    STATE_MAX_NODES,
+    STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
     STATE_PARALLEL_EFFORT,
     STATE_PARALLEL_POSITION,
     STATE_PARALLEL_VELOCITY,
@@ -46,6 +50,22 @@ from ..ipc.types import (
     ParallelVector2,
     Pose7,
 )
+
+
+# Helper: every state/command service must request the same caps as the Rust
+# producers/consumers. Wrapping the call here keeps the per-service builders
+# below short and ensures we don't drift apart from the Rust side over time.
+def _open_state_or_command_pubsub(node, service_name, payload_type):
+    return open_or_create_pubsub(
+        node,
+        service_name,
+        payload_type,
+        max_publishers=STATE_MAX_PUBLISHERS,
+        max_subscribers=STATE_MAX_SUBSCRIBERS,
+        max_nodes=STATE_MAX_NODES,
+        subscriber_max_buffer_size=STATE_BUFFER,
+        history_size=STATE_BUFFER,
+    )
 
 
 def _send(publisher: Any, payload: ctypes.Structure) -> None:
@@ -105,21 +125,21 @@ class ArmIox:
         )
 
         self._joint_position_cmd_sub = make_subscriber(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_JOINT_POSITION),
                 JointVector15,
             )
         )
         self._joint_mit_cmd_sub = make_subscriber(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_JOINT_MIT),
                 JointMitCommand15,
             )
         )
         self._end_pose_cmd_sub = make_subscriber(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_END_POSE),
                 Pose7,
@@ -127,28 +147,28 @@ class ArmIox:
         )
 
         self._joint_position_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_POSITION),
                 JointVector15,
             )
         )
         self._joint_velocity_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_VELOCITY),
                 JointVector15,
             )
         )
         self._joint_effort_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_EFFORT),
                 JointVector15,
             )
         )
         self._end_pose_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_END_EFFECTOR_POSE),
                 Pose7,
@@ -243,14 +263,14 @@ class GripperIox:
         )
 
         self._parallel_position_cmd_sub = make_subscriber(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_PARALLEL_POSITION),
                 ParallelVector2,
             )
         )
         self._parallel_mit_cmd_sub = make_subscriber(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_PARALLEL_MIT),
                 ParallelMitCommand2,
@@ -258,21 +278,21 @@ class GripperIox:
         )
 
         self._parallel_position_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_POSITION),
                 ParallelVector2,
             )
         )
         self._parallel_velocity_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_VELOCITY),
                 ParallelVector2,
             )
         )
         self._parallel_effort_state_pub = make_publisher(
-            open_or_create_pubsub(
+            _open_state_or_command_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_EFFORT),
                 ParallelVector2,

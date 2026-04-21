@@ -157,7 +157,7 @@ fn preview_worker_loop(
                 Ok(preview) => {
                     let encoded = protocol::encode_camera_frame(
                         &camera_name,
-                        pending_frame.header.timestamp_ms,
+                        pending_frame.header.timestamp_us,
                         pending_frame.header.frame_index,
                         preview.width,
                         preview.height,

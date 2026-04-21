@@ -17,6 +17,17 @@ from typing import Any
 
 CONTROL_EVENTS_SERVICE: str = "control/events"
 
+# Mirrors `rollio-bus/src/lib.rs::STATE_BUFFER`. Robot drivers publish state
+# at their `control_frequency_hz` (250 Hz by default), and iceoryx2's default
+# `subscriber_max_buffer_size` of 2 only buffers ~8 ms before silent
+# overwrites. Bumping to 1024 gives the consumer ~4 s of headroom even if it
+# blocks on episode-staging work. Producer and consumer must request the
+# same value: `open_or_create` rejects mismatched caps.
+STATE_BUFFER: int = 1024
+STATE_MAX_PUBLISHERS: int = 16
+STATE_MAX_SUBSCRIBERS: int = 16
+STATE_MAX_NODES: int = 16
+
 
 def channel_state_service_name(bus_root: str, channel_type: str, state_kind: str) -> str:
     return f"{bus_root}/{channel_type}/states/{state_kind}"
@@ -94,21 +105,21 @@ def open_or_create_pubsub(
     max_publishers: int | None = None,
     max_subscribers: int | None = None,
     max_nodes: int | None = None,
+    subscriber_max_buffer_size: int | None = None,
+    history_size: int | None = None,
 ) -> Any:
     """Open or create a publish_subscribe service with optional fan-in/out limits.
 
     iceoryx2 enforces that every process opening the same service must agree
-    on the publisher/subscriber/node caps. By default we pass nothing here so
-    iceoryx2 picks its built-in defaults (max_publishers=2, max_subscribers=8,
-    max_nodes=20 in the bundled config) -- matching every other consumer
-    (visualizer, teleop router, episode assembler, the airbot driver's
-    state/command services) so a single-publisher state/command service can
-    be opened by anyone first.
+    on the publisher/subscriber/node caps AND the ring buffer / history
+    sizes. The Rust side now requests `STATE_BUFFER` (1024) on every state
+    and command topic to absorb up to ~4 s of consumer-blocking work at 250
+    Hz; Python-side callers should pass the same value when opening one of
+    those topics.
 
-    Mode services need multiple writers (controller, visualizer, CLI scripts
-    for keyboard testing), so callers that open mode services explicitly
-    pass `max_publishers=16, max_subscribers=16, max_nodes=16` -- the same
-    convention the airbot device uses.
+    Mode services don't need the deep ring (mode is a single discrete value
+    with low cardinality), so they pass nothing here and iceoryx2 picks its
+    built-in defaults.
     """
     iox2 = _iox2()
     builder = node.service_builder(iox2.ServiceName.new(service_name)).publish_subscribe(
@@ -120,6 +131,10 @@ def open_or_create_pubsub(
         builder = builder.max_subscribers(max_subscribers)
     if max_nodes is not None:
         builder = builder.max_nodes(max_nodes)
+    if subscriber_max_buffer_size is not None:
+        builder = builder.subscriber_max_buffer_size(subscriber_max_buffer_size)
+    if history_size is not None:
+        builder = builder.history_size(history_size)
     return builder.open_or_create()
 
 
@@ -189,10 +204,14 @@ __all__ = [
     "COMMAND_PARALLEL_MIT",
     "COMMAND_PARALLEL_POSITION",
     "CONTROL_EVENTS_SERVICE",
+    "STATE_BUFFER",
     "STATE_END_EFFECTOR_POSE",
     "STATE_JOINT_EFFORT",
     "STATE_JOINT_POSITION",
     "STATE_JOINT_VELOCITY",
+    "STATE_MAX_NODES",
+    "STATE_MAX_PUBLISHERS",
+    "STATE_MAX_SUBSCRIBERS",
     "STATE_PARALLEL_EFFORT",
     "STATE_PARALLEL_POSITION",
     "STATE_PARALLEL_VELOCITY",

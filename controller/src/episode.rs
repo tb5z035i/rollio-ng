@@ -1,6 +1,6 @@
 use rollio_types::messages::{ControlEvent, EpisodeCommand, EpisodeState, EpisodeStatus};
 use std::collections::BTreeSet;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct EpisodeLifecycle {
@@ -61,6 +61,7 @@ impl EpisodeLifecycle {
                 self.pending_elapsed_ms = 0;
                 Ok(ControlEvent::RecordingStart {
                     episode_index: self.next_episode_index,
+                    controller_ts_us: controller_now_us(),
                 })
             }
             (EpisodeState::Recording, EpisodeCommand::Stop) => {
@@ -69,6 +70,7 @@ impl EpisodeLifecycle {
                 self.recording_started_at = None;
                 Ok(ControlEvent::RecordingStop {
                     episode_index: self.next_episode_index,
+                    controller_ts_us: controller_now_us(),
                 })
             }
             (EpisodeState::Pending, EpisodeCommand::Keep) => {
@@ -105,6 +107,19 @@ impl EpisodeLifecycle {
     }
 }
 
+/// Returns the controller's wall-clock timestamp in UNIX-epoch microseconds.
+///
+/// Used as the `controller_ts_us` anchor on `ControlEvent::RecordingStart` /
+/// `RecordingStop` so every downstream subscriber (encoder, episode-assembler)
+/// references the *same* moment instead of stamping their own clock on
+/// receipt.
+fn controller_now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +133,13 @@ mod tests {
             .handle_command(EpisodeCommand::Start, now)
             .expect("start should be valid");
         assert_eq!(lifecycle.state(), EpisodeState::Recording);
-        assert_eq!(event, ControlEvent::RecordingStart { episode_index: 0 });
+        assert!(matches!(
+            event,
+            ControlEvent::RecordingStart {
+                episode_index: 0,
+                controller_ts_us
+            } if controller_ts_us > 0
+        ));
     }
 
     #[test]
@@ -132,7 +153,13 @@ mod tests {
             .handle_command(EpisodeCommand::Stop, now + Duration::from_secs(2))
             .expect("stop should be valid");
         assert_eq!(lifecycle.state(), EpisodeState::Pending);
-        assert_eq!(event, ControlEvent::RecordingStop { episode_index: 0 });
+        assert!(matches!(
+            event,
+            ControlEvent::RecordingStop {
+                episode_index: 0,
+                controller_ts_us
+            } if controller_ts_us > 0
+        ));
         assert_eq!(lifecycle.status(now).state, EpisodeState::Pending);
     }
 

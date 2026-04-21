@@ -64,7 +64,7 @@ describe("protocol", () => {
         JSON.stringify({
           type: "robot_state",
           name: "airbot_play_arm",
-          timestamp_ms: 999,
+          timestamp_us: 999_000,
           num_joints: 6,
           values: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
           state_kind: "joint_position",
@@ -73,7 +73,7 @@ describe("protocol", () => {
     ).toMatchObject({
       type: "robot_state",
       name: "airbot_play_arm",
-      timestamp_ms: 999,
+      timestamp_us: 999_000,
       num_joints: 6,
       values: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
       state_kind: "joint_position",

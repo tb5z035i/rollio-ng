@@ -51,7 +51,7 @@ fn router_cartesian_initial_sync_ramps_pose() {
     let mut child = spawn_router_v2(&config);
     thread::sleep(Duration::from_millis(150));
 
-    // The router skips leader samples whose `timestamp_ms` matches the
+    // The router skips leader samples whose `timestamp_us` matches the
     // last forwarded one, so we use a monotonic counter rather than
     // wallclock millis to ensure each leader publish is treated as a
     // distinct sample even when the test loop iterates inside a single
@@ -65,7 +65,7 @@ fn router_cartesian_initial_sync_ramps_pose() {
 
     // Follower starts at the origin with identity orientation.
     let follower_pose = Pose7 {
-        timestamp_ms: next_ts(),
+        timestamp_us: next_ts(),
         values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
     };
     publish_pose(&ports.follower_state_publisher, follower_pose)
@@ -75,7 +75,7 @@ fn router_cartesian_initial_sync_ramps_pose() {
     // far above the SYNC_COMPLETE_THRESHOLD_M so the very first
     // forwarded command MUST be clamped.
     let leader_pose = Pose7 {
-        timestamp_ms: next_ts(),
+        timestamp_us: next_ts(),
         values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
     };
     publish_pose(&ports.leader_state_publisher, leader_pose)
@@ -112,13 +112,13 @@ fn router_cartesian_initial_sync_ramps_pose() {
     for tick in 0..200 {
         follower_x = (follower_x + 0.05).min(1.0);
         let updated_follower = Pose7 {
-            timestamp_ms: next_ts(),
+            timestamp_us: next_ts(),
             values: [follower_x, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         publish_pose(&ports.follower_state_publisher, updated_follower)
             .expect("follower state publish should work");
         let updated_leader = Pose7 {
-            timestamp_ms: next_ts(),
+            timestamp_us: next_ts(),
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         publish_pose(&ports.leader_state_publisher, updated_leader)
@@ -151,13 +151,13 @@ fn router_cartesian_initial_sync_ramps_pose() {
     let hold_until = Instant::now() + SYNC_HOLD_DURATION + SYNC_HOLD_PADDING;
     while Instant::now() < hold_until {
         let updated_follower = Pose7 {
-            timestamp_ms: next_ts(),
+            timestamp_us: next_ts(),
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         publish_pose(&ports.follower_state_publisher, updated_follower)
             .expect("follower state publish should work");
         let updated_leader = Pose7 {
-            timestamp_ms: next_ts(),
+            timestamp_us: next_ts(),
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         publish_pose(&ports.leader_state_publisher, updated_leader)
@@ -171,7 +171,7 @@ fn router_cartesian_initial_sync_ramps_pose() {
     // After completion, an arbitrary big leader jump must be forwarded
     // verbatim (pass-through engaged).
     let jump_leader = Pose7 {
-        timestamp_ms: next_ts(),
+        timestamp_us: next_ts(),
         values: [-2.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0],
     };
     publish_pose(&ports.leader_state_publisher, jump_leader)

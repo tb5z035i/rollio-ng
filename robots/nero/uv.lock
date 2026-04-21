@@ -628,7 +628,7 @@ wheels = [
 
 [[package]]
 name = "rollio-device-nero"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "iceoryx2" },

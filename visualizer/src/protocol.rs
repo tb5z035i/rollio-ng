@@ -4,14 +4,14 @@
 ///   Byte 0:      frame encoding type (0x01 = JPEG)
 ///   Bytes 1-2:   camera name length (u16 LE)
 ///   Bytes 3..N:  camera name (UTF-8)
-///   Bytes N+1..N+8:   source timestamp_ms (u64 LE)
+///   Bytes N+1..N+8:   source timestamp_us (u64 LE)
 ///   Bytes N+9..N+16:  source frame_index (u64 LE)
 ///   Bytes N+17..N+20: encoded preview width (u32 LE)
 ///   Bytes N+21..N+24: encoded preview height (u32 LE)
 ///   Remaining:   encoded frame data (JPEG payload)
 ///
 /// Text/JSON messages (both directions):
-///   Visualizer → UI: {"type":"robot_state","name":"...","timestamp_ms":...,...}
+///   Visualizer → UI: {"type":"robot_state","name":"...","timestamp_us":...,...}
 ///   Visualizer → UI: {"type":"stream_info",...}
 ///   UI → Visualizer:  {"type":"command","action":"set_preview_size","width":...,"height":...}
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub const FRAME_TYPE_JPEG: u8 = 0x01;
 /// Pre-allocates the exact output capacity to avoid reallocation.
 pub fn encode_camera_frame(
     name: &str,
-    timestamp_ms: u64,
+    timestamp_us: u64,
     frame_index: u64,
     width: u32,
     height: u32,
@@ -42,7 +42,7 @@ pub fn encode_camera_frame(
     buf.push(FRAME_TYPE_JPEG);
     buf.extend_from_slice(&(name_len as u16).to_le_bytes());
     buf.extend_from_slice(name_bytes);
-    buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+    buf.extend_from_slice(&timestamp_us.to_le_bytes());
     buf.extend_from_slice(&frame_index.to_le_bytes());
     buf.extend_from_slice(&width.to_le_bytes());
     buf.extend_from_slice(&height.to_le_bytes());
@@ -62,7 +62,7 @@ struct RobotStateJson<'a> {
     #[serde(rename = "type")]
     msg_type: &'static str,
     name: &'a str,
-    timestamp_ms: u64,
+    timestamp_us: u64,
     num_joints: u32,
     /// Element values for the named `state_kind`. The field name is kept as
     /// `values` (not "positions") so it accurately describes velocity and
@@ -78,7 +78,7 @@ struct RobotStateJson<'a> {
 /// Encode a robot state into a JSON string for WebSocket text message.
 pub fn encode_robot_state(
     name: &str,
-    timestamp_ms: u64,
+    timestamp_us: u64,
     values: &[f64],
     state_kind: &str,
     value_min: &[f64],
@@ -87,7 +87,7 @@ pub fn encode_robot_state(
     let msg = RobotStateJson {
         msg_type: "robot_state",
         name,
-        timestamp_ms,
+        timestamp_us,
         num_joints: values.len() as u32,
         values,
         state_kind,

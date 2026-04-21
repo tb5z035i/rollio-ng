@@ -1,4 +1,6 @@
 pub mod dataset;
+pub mod lerobot;
+pub mod raw;
 pub mod runtime;
 
 use clap::{Parser, Subcommand};

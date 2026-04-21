@@ -108,6 +108,25 @@ pub fn resolve_state_dir() -> Result<PathBuf, Box<dyn Error>> {
     Ok(p)
 }
 
+/// Directory used to capture child-process log files (`device-*.log`,
+/// `encoder-*.log`, etc.) for a `rollio collect`/`teleop` run.
+///
+/// Order:
+/// 1. `ROLLIO_LOG_DIR` (created if missing).
+/// 2. `<invocation_cwd>/rollio-logs` — keeps logs alongside the user's
+///    project / config so they can be inspected without hunting through
+///    XDG state directories.
+pub fn resolve_log_dir(invocation_cwd: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    if let Ok(dir) = env::var("ROLLIO_LOG_DIR") {
+        let p = PathBuf::from(dir);
+        fs::create_dir_all(&p)?;
+        return Ok(p);
+    }
+    let p = invocation_cwd.join("rollio-logs");
+    fs::create_dir_all(&p)?;
+    Ok(p)
+}
+
 /// Default executable basename for a driver. Every device executable now
 /// follows the unified `rollio-device-{driver}` convention; the previous
 /// `rollio-camera-*` / `rollio-robot-*` split is gone (devices may expose
@@ -198,5 +217,27 @@ mod tests {
         assert_eq!(got, st);
         assert!(got.is_dir());
         std::env::remove_var("ROLLIO_STATE_DIR");
+    }
+
+    #[test]
+    fn resolve_log_dir_defaults_to_invocation_cwd() {
+        let _guard = env_lock();
+        std::env::remove_var("ROLLIO_LOG_DIR");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let got = resolve_log_dir(tmp.path()).expect("log dir");
+        assert_eq!(got, tmp.path().join("rollio-logs"));
+        assert!(got.is_dir());
+    }
+
+    #[test]
+    fn resolve_log_dir_honors_rollio_log_dir() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let custom = tmp.path().join("logs-here");
+        std::env::set_var("ROLLIO_LOG_DIR", &custom);
+        let got = resolve_log_dir(tmp.path()).expect("log dir");
+        assert_eq!(got, custom);
+        assert!(got.is_dir());
+        std::env::remove_var("ROLLIO_LOG_DIR");
     }
 }

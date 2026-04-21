@@ -284,6 +284,15 @@ class ArmController:
 
         self._ipc.publish_mode(self._mode_value)
 
+        # Phase 7: snapshot the wall clock IMMEDIATELY before pulling the
+        # latest cached AGX feedback, so the published `timestamp_us`
+        # reflects the instant the cache was sampled rather than the
+        # instant we managed to publish (which is gravity-comp + move_mit
+        # + iceoryx2 send time later — typically 200-500 us at our 250 Hz
+        # control rate). The pyAgxArm SDK does not expose its own per-frame
+        # timestamp, so this is the closest approximation we can make
+        # without modifying the SDK reader thread.
+        q_meas_us = _unix_us()
         q_meas = self._backend.get_joint_angles_array()
         if q_meas is None:
             return ArmTickResult(
@@ -330,7 +339,7 @@ class ArmController:
                 )
             )
 
-        published.extend(self._publish_states(q_meas))
+        published.extend(self._publish_states(q_meas, q_meas_us))
 
         return ArmTickResult(
             mode_value=self._mode_value,
@@ -597,9 +606,12 @@ class ArmController:
         )
         return p_des, np.zeros(ARM_DOF), kp, kd
 
-    def _publish_states(self, q_meas: np.ndarray) -> list[str]:
+    def _publish_states(self, q_meas: np.ndarray, timestamp_us: int) -> list[str]:
+        # `timestamp_us` is captured by the caller right before pulling the
+        # joint-angle snapshot from the AGX backend (see `step`). Phase 7
+        # uses that earlier instant instead of `_unix_us()` here to keep
+        # the published `timestamp_us` close to sensor-receipt time.
         published: list[str] = []
-        timestamp_ms = _unix_ms()
         publish_states = self._config.publish_states or [
             "joint_position",
             "joint_velocity",
@@ -608,7 +620,7 @@ class ArmController:
         ]
 
         if "joint_position" in publish_states:
-            self._ipc.publish_joint_position(JointVector15.from_values(timestamp_ms, list(q_meas)))
+            self._ipc.publish_joint_position(JointVector15.from_values(timestamp_us, list(q_meas)))
             published.append("joint_position")
 
         if "joint_velocity" in publish_states:
@@ -616,7 +628,7 @@ class ArmController:
             if qd is not None:
                 self._ipc.publish_joint_velocity(
                     JointVector15.from_values(
-                        timestamp_ms, [float(v) for v in np.asarray(qd)[:ARM_DOF]]
+                        timestamp_us, [float(v) for v in np.asarray(qd)[:ARM_DOF]]
                     )
                 )
                 published.append("joint_velocity")
@@ -626,7 +638,7 @@ class ArmController:
             if tau is not None:
                 self._ipc.publish_joint_effort(
                     JointVector15.from_values(
-                        timestamp_ms, [float(t) for t in np.asarray(tau)[:ARM_DOF]]
+                        timestamp_us, [float(t) for t in np.asarray(tau)[:ARM_DOF]]
                     )
                 )
                 published.append("joint_effort")
@@ -639,14 +651,14 @@ class ArmController:
             # orientation gets -- otherwise a Cartesian teleop follower
             # sees x/y mirrored.
             pose = apply_publish_pose_fix(self._model.end_effector_pose7(q_meas))
-            self._ipc.publish_end_effector_pose(Pose7.from_values(timestamp_ms, pose))
+            self._ipc.publish_end_effector_pose(Pose7.from_values(timestamp_us, pose))
             published.append("end_effector_pose")
 
         return published
 
 
-def _unix_ms() -> int:
-    return int(time.time() * 1000.0) & 0xFFFFFFFFFFFFFFFF
+def _unix_us() -> int:
+    return (time.time_ns() // 1000) & 0xFFFFFFFFFFFFFFFF
 
 
 def _clamp_p_des_to_max_joint_delta(p_des: np.ndarray, q_meas: np.ndarray) -> np.ndarray:

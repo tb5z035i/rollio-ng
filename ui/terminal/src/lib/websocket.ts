@@ -456,11 +456,14 @@ function applyRobotStateSample(
   msg: RobotStateMessage,
 ): void {
   const existing = channels.get(msg.name);
+  // Convert wire-format microseconds to milliseconds for the UI internal
+  // display fields (which keep the historical `*Ms` naming for display).
+  const timestampMs = Math.floor(msg.timestamp_us / 1_000);
   const sample: RobotChannelSample = {
     values: msg.values,
     valueMin: msg.value_min ?? [],
     valueMax: msg.value_max ?? [],
-    timestampMs: msg.timestamp_ms,
+    timestampMs,
     numJoints: msg.num_joints,
   };
   const states: AggregatedRobotChannel["states"] = existing
@@ -470,7 +473,7 @@ function applyRobotStateSample(
   channels.set(msg.name, {
     name: msg.name,
     states,
-    lastTimestampMs: Math.max(existing?.lastTimestampMs ?? 0, msg.timestamp_ms),
+    lastTimestampMs: Math.max(existing?.lastTimestampMs ?? 0, timestampMs),
     endEffectorStatus: msg.end_effector_status ?? existing?.endEffectorStatus,
     endEffectorFeedbackValid:
       msg.end_effector_feedback_valid ?? existing?.endEffectorFeedbackValid,

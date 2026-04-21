@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
-use rollio_bus::CONTROL_EVENTS_SERVICE;
+use rollio_bus::{
+    CONTROL_EVENTS_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
+};
 use rollio_types::config::{
     MappingStrategy, RobotCommandKind, RobotStateKind, TeleopRuntimeConfigV2,
 };
@@ -124,7 +127,7 @@ enum FollowerCommandPublisher {
 }
 
 enum LeaderState {
-    Vector { timestamp_ms: u64, values: Vec<f64> },
+    Vector { timestamp_us: u64, values: Vec<f64> },
     Pose(Pose7),
 }
 
@@ -680,7 +683,7 @@ pub fn run_router(config: TeleopRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
         config.follower_command_kind,
     )?;
     let control_subscriber = create_control_subscriber(&node)?;
-    let mut last_forwarded_timestamp_ms = None;
+    let mut last_forwarded_timestamp_us = None;
     let mut sync_state = SyncState::new(&config);
     let mut follower_state: Option<LeaderState> = None;
 
@@ -706,8 +709,8 @@ pub fn run_router(config: TeleopRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
             }
         }
         if let Some(state) = drain_latest_state(&leader_state_subscriber)? {
-            let timestamp_ms = state_timestamp_ms(&state);
-            if last_forwarded_timestamp_ms == Some(timestamp_ms) {
+            let timestamp_us = state_timestamp_us(&state);
+            if last_forwarded_timestamp_us == Some(timestamp_us) {
                 continue;
             }
             let mapped = map_leader_state(&config, &state)?;
@@ -720,11 +723,11 @@ pub fn run_router(config: TeleopRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
                 match outcome {
                     SyncOutcome::Publish => {
                         publish_command(&follower_command_publisher, forwarded)?;
-                        last_forwarded_timestamp_ms = Some(timestamp_ms);
+                        last_forwarded_timestamp_us = Some(timestamp_us);
                     }
                     SyncOutcome::Hold => {
                         // Deliberately do NOT advance
-                        // `last_forwarded_timestamp_ms`: we want the
+                        // `last_forwarded_timestamp_us`: we want the
                         // next loop iteration to re-evaluate the same
                         // leader sample once follower feedback lands,
                         // so the very first published command is
@@ -754,11 +757,20 @@ fn create_state_subscriber(
     kind: RobotStateKind,
 ) -> Result<LeaderStateSubscriber, Box<dyn Error>> {
     let service_name: ServiceName = topic.try_into()?;
+    // See `rollio_bus::STATE_BUFFER`. The teleop router is a state subscriber
+    // (and a command publisher) and must request the same caps as the
+    // device-side producers so `open_or_create` does not reject the
+    // subscription.
     Ok(match kind {
         RobotStateKind::EndEffectorPose => {
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<Pose7>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             LeaderStateSubscriber::Pose7(service.subscriber_builder().create()?)
         }
@@ -768,6 +780,11 @@ fn create_state_subscriber(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<ParallelVector2>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             LeaderStateSubscriber::ParallelVector2(service.subscriber_builder().create()?)
         }
@@ -775,6 +792,11 @@ fn create_state_subscriber(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<JointVector15>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             LeaderStateSubscriber::JointVector15(service.subscriber_builder().create()?)
         }
@@ -792,6 +814,11 @@ fn create_command_publisher(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<JointVector15>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             FollowerCommandPublisher::JointVector15(service.publisher_builder().create()?)
         }
@@ -799,6 +826,11 @@ fn create_command_publisher(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<JointMitCommand15>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             FollowerCommandPublisher::JointMitCommand15(service.publisher_builder().create()?)
         }
@@ -806,6 +838,11 @@ fn create_command_publisher(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<ParallelVector2>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             FollowerCommandPublisher::ParallelVector2(service.publisher_builder().create()?)
         }
@@ -813,6 +850,11 @@ fn create_command_publisher(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<ParallelMitCommand2>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             FollowerCommandPublisher::ParallelMitCommand2(service.publisher_builder().create()?)
         }
@@ -820,6 +862,11 @@ fn create_command_publisher(
             let service = node
                 .service_builder(&service_name)
                 .publish_subscribe::<Pose7>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
             FollowerCommandPublisher::Pose7(service.publisher_builder().create()?)
         }
@@ -861,7 +908,7 @@ fn drain_latest_state(
             };
             let payload = *sample.payload();
             latest = Some(LeaderState::Vector {
-                timestamp_ms: payload.timestamp_ms,
+                timestamp_us: payload.timestamp_us,
                 values: payload.values[..payload.len as usize].to_vec(),
             });
         },
@@ -871,7 +918,7 @@ fn drain_latest_state(
             };
             let payload = *sample.payload();
             latest = Some(LeaderState::Vector {
-                timestamp_ms: payload.timestamp_ms,
+                timestamp_us: payload.timestamp_us,
                 values: payload.values[..payload.len as usize].to_vec(),
             });
         },
@@ -884,10 +931,10 @@ fn drain_latest_state(
     }
 }
 
-fn state_timestamp_ms(state: &LeaderState) -> u64 {
+fn state_timestamp_us(state: &LeaderState) -> u64 {
     match state {
-        LeaderState::Vector { timestamp_ms, .. } => *timestamp_ms,
-        LeaderState::Pose(payload) => payload.timestamp_ms,
+        LeaderState::Vector { timestamp_us, .. } => *timestamp_us,
+        LeaderState::Pose(payload) => payload.timestamp_us,
     }
 }
 
@@ -918,7 +965,7 @@ fn map_leader_state(
             // schema mismatch surfaces early instead of silently
             // dispatching the wrong payload type.
             let LeaderState::Vector {
-                timestamp_ms,
+                timestamp_us,
                 values,
             } = state
             else {
@@ -928,10 +975,10 @@ fn map_leader_state(
                 apply_joint_mapping(values, &config.joint_index_map, &config.joint_scales)?;
             Ok(Some(match config.follower_command_kind {
                 RobotCommandKind::JointPosition => ForwardedCommand::JointPosition(
-                    JointVector15::from_slice(*timestamp_ms, &mapped),
+                    JointVector15::from_slice(*timestamp_us, &mapped),
                 ),
                 RobotCommandKind::JointMit => ForwardedCommand::JointMit(joint_mit_command(
-                    *timestamp_ms,
+                    *timestamp_us,
                     &mapped,
                     &config.command_defaults.joint_mit_kp,
                     &config.command_defaults.joint_mit_kd,
@@ -950,7 +997,7 @@ fn map_leader_state(
             // ParallelMit when the follower advertised it (kp/kd from
             // command_defaults), otherwise as ParallelPosition.
             let LeaderState::Vector {
-                timestamp_ms,
+                timestamp_us,
                 values,
             } = state
             else {
@@ -960,11 +1007,11 @@ fn map_leader_state(
             let mapped: Vec<f64> = values.iter().map(|value| value * ratio).collect();
             Ok(Some(match config.follower_command_kind {
                 RobotCommandKind::ParallelPosition => ForwardedCommand::ParallelPosition(
-                    ParallelVector2::from_slice(*timestamp_ms, &mapped),
+                    ParallelVector2::from_slice(*timestamp_us, &mapped),
                 ),
                 RobotCommandKind::ParallelMit => {
                     ForwardedCommand::ParallelMit(parallel_mit_command(
-                        *timestamp_ms,
+                        *timestamp_us,
                         &mapped,
                         &config.command_defaults.parallel_mit_kp,
                         &config.command_defaults.parallel_mit_kd,
@@ -1011,14 +1058,14 @@ fn apply_joint_mapping(
 }
 
 fn joint_mit_command(
-    timestamp_ms: u64,
+    timestamp_us: u64,
     values: &[f64],
     kp: &[f64],
     kd: &[f64],
 ) -> JointMitCommand15 {
     let len = values.len().min(rollio_types::messages::MAX_DOF);
     let mut command = JointMitCommand15 {
-        timestamp_ms,
+        timestamp_us,
         len: len as u32,
         ..JointMitCommand15::default()
     };
@@ -1031,14 +1078,14 @@ fn joint_mit_command(
 }
 
 fn parallel_mit_command(
-    timestamp_ms: u64,
+    timestamp_us: u64,
     values: &[f64],
     kp: &[f64],
     kd: &[f64],
 ) -> ParallelMitCommand2 {
     let len = values.len().min(rollio_types::messages::MAX_PARALLEL);
     let mut command = ParallelMitCommand2 {
-        timestamp_ms,
+        timestamp_us,
         len: len as u32,
         ..ParallelMitCommand2::default()
     };
@@ -1119,7 +1166,7 @@ mod tests {
     fn direct_joint_identity_mapping_preserves_positions() {
         let config = direct_config();
         let state = LeaderState::Vector {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1134,7 +1181,7 @@ mod tests {
         let mut config = direct_config();
         config.joint_index_map = vec![2, 1, 0];
         let state = LeaderState::Vector {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1149,7 +1196,7 @@ mod tests {
         let mut config = direct_config();
         config.joint_scales = vec![2.0, 1.0, 0.5];
         let state = LeaderState::Vector {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: vec![0.1, 0.2, 0.6],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1171,7 +1218,7 @@ mod tests {
             parallel_mit_kd: Vec::new(),
         };
         let state = LeaderState::Vector {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1207,7 +1254,7 @@ mod tests {
     fn parallel_policy_scales_position_value() {
         let config = parallel_config(2.5, RobotCommandKind::ParallelPosition);
         let state = LeaderState::Vector {
-            timestamp_ms: 42,
+            timestamp_us: 42,
             values: vec![0.04],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1232,7 +1279,7 @@ mod tests {
             parallel_mit_kd: vec![0.5],
         };
         let state = LeaderState::Vector {
-            timestamp_ms: 7,
+            timestamp_us: 7,
             values: vec![0.05],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
@@ -1251,7 +1298,7 @@ mod tests {
         config.leader_state_kind = RobotStateKind::EndEffectorPose;
         config.follower_command_kind = RobotCommandKind::EndPose;
         let pose = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [0.3, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0],
         };
         let command =
@@ -1306,7 +1353,7 @@ mod tests {
             &[0.5, -0.4, 0.3, 0.2, 0.1, 0.0],
         ));
         let follower = LeaderState::Vector {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let outcome = sync_state.apply(&mut command, Some(&follower));
@@ -1343,7 +1390,7 @@ mod tests {
             &[0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
         ));
         let follower = LeaderState::Vector {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let outcome = sync_state.apply(&mut command, Some(&follower));
@@ -1420,11 +1467,11 @@ mod tests {
         // Leader is 1 m away from the follower along +X. The follower
         // reports the origin with identity orientation.
         let mut command = ForwardedCommand::EndPose(Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         });
         let follower = LeaderState::Pose(Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         });
         let outcome = sync_state.apply(&mut command, Some(&follower));
@@ -1456,11 +1503,11 @@ mod tests {
         // qz = sin(45 deg), qw = cos(45 deg).
         let half_angle = std::f64::consts::FRAC_PI_4;
         let mut command = ForwardedCommand::EndPose(Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, half_angle.sin(), half_angle.cos()],
         });
         let follower = LeaderState::Pose(Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         });
         let outcome = sync_state.apply(&mut command, Some(&follower));
@@ -1512,7 +1559,7 @@ mod tests {
         let small_translation = SYNC_COMPLETE_THRESHOLD_M * 0.5;
         let small_half_angle = SYNC_COMPLETE_THRESHOLD_ROT_RAD * 0.25;
         let leader = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [
                 small_translation,
                 0.0,
@@ -1524,7 +1571,7 @@ mod tests {
             ],
         };
         let follower = Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let now = std::time::Instant::now();
@@ -1545,11 +1592,11 @@ mod tests {
         let mut sync_state = SyncState::new(&config);
         let small_translation = SYNC_COMPLETE_THRESHOLD_M * 0.5;
         let leader = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [small_translation, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let follower = Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let t0 = std::time::Instant::now();
@@ -1589,7 +1636,7 @@ mod tests {
         let config = cartesian_sync_config();
         let mut sync_state = SyncState::new(&config);
         let close_leader = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [
                 SYNC_COMPLETE_THRESHOLD_M * 0.5,
                 0.0,
@@ -1601,11 +1648,11 @@ mod tests {
             ],
         };
         let far_leader = Pose7 {
-            timestamp_ms: 124,
+            timestamp_us: 124,
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let follower = Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let t0 = std::time::Instant::now();
@@ -1652,11 +1699,11 @@ mod tests {
         let config = cartesian_sync_config();
         let mut sync_state = SyncState::new(&config);
         let leader = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let stuck_follower = Pose7 {
-            timestamp_ms: 100,
+            timestamp_us: 100,
             values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let t0 = std::time::Instant::now();
@@ -1693,7 +1740,7 @@ mod tests {
         let config = cartesian_sync_config();
         let mut sync_state = SyncState::new(&config);
         let original = Pose7 {
-            timestamp_ms: 123,
+            timestamp_us: 123,
             values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         };
         let mut command = ForwardedCommand::EndPose(original);

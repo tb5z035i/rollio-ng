@@ -21,7 +21,10 @@ pub struct RunArgs {
 }
 
 enum WorkerControl {
-    RecordingStart(u32),
+    RecordingStart {
+        episode_index: u32,
+        controller_ts_us: u64,
+    },
     RecordingStop,
     DroppedFrame,
     Shutdown,
@@ -139,9 +142,15 @@ pub fn run(args: RunArgs) -> Result<()> {
 
         while let Some(sample) = control_subscriber.receive().map_err(map_iceoryx_error)? {
             match sample.payload() {
-                ControlEvent::RecordingStart { episode_index } => {
+                ControlEvent::RecordingStart {
+                    episode_index,
+                    controller_ts_us,
+                } => {
                     control_tx
-                        .send(WorkerControl::RecordingStart(*episode_index))
+                        .send(WorkerControl::RecordingStart {
+                            episode_index: *episode_index,
+                            controller_ts_us: *controller_ts_us,
+                        })
                         .map_err(|error| {
                             EncoderError::message(format!("failed to signal worker: {error}"))
                         })?;
@@ -218,14 +227,26 @@ fn worker_main(
     frame_rx: mpsc::Receiver<OwnedFrame>,
     event_tx: mpsc::Sender<WorkerEvent>,
 ) -> Result<()> {
-    let mut pending_episode: Option<u32> = None;
+    #[derive(Debug, Clone, Copy)]
+    struct PendingEpisode {
+        episode_index: u32,
+        // Controller's wall-clock anchor (UNIX-epoch microseconds) — used as
+        // the VFR PTS origin so each frame's PTS in the encoded MP4 is
+        // exactly `frame.header.timestamp_us - controller_ts_us`.
+        controller_ts_us: u64,
+    }
+
+    let mut pending_episode: Option<PendingEpisode> = None;
     let mut active_session = None;
     let mut stop_after_drain = false;
 
     loop {
         while let Ok(control) = control_rx.try_recv() {
             match control {
-                WorkerControl::RecordingStart(episode_index) => {
+                WorkerControl::RecordingStart {
+                    episode_index,
+                    controller_ts_us,
+                } => {
                     if let Some(session) = active_session.take() {
                         match media::finish_session(session) {
                             Ok(artifact) => {
@@ -237,7 +258,10 @@ fn worker_main(
                             }
                         }
                     }
-                    pending_episode = Some(episode_index);
+                    pending_episode = Some(PendingEpisode {
+                        episode_index,
+                        controller_ts_us,
+                    });
                     stop_after_drain = false;
                 }
                 WorkerControl::RecordingStop => {
@@ -270,10 +294,15 @@ fn worker_main(
         while let Ok(frame) = frame_rx.try_recv() {
             processed_any_frame = true;
             if active_session.is_none() {
-                let Some(episode_index) = pending_episode else {
+                let Some(episode) = pending_episode else {
                     continue;
                 };
-                active_session = Some(media::open_session(&config, episode_index, &frame)?);
+                active_session = Some(media::open_session(
+                    &config,
+                    episode.episode_index,
+                    episode.controller_ts_us,
+                    &frame,
+                )?);
             }
             if let Some(session) = active_session.as_mut() {
                 media::encode_frame(session, &frame)?;
@@ -285,10 +314,15 @@ fn worker_main(
                 Ok(frame) => {
                     processed_any_frame = true;
                     if active_session.is_none() {
-                        let Some(episode_index) = pending_episode else {
+                        let Some(episode) = pending_episode else {
                             continue;
                         };
-                        active_session = Some(media::open_session(&config, episode_index, &frame)?);
+                        active_session = Some(media::open_session(
+                            &config,
+                            episode.episode_index,
+                            episode.controller_ts_us,
+                            &frame,
+                        )?);
                     }
                     if let Some(session) = active_session.as_mut() {
                         media::encode_frame(session, &frame)?;

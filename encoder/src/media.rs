@@ -95,7 +95,16 @@ pub(crate) struct LibavSession {
     hw_frames: Option<AvBufferRef>,
     width: u32,
     height: u32,
-    next_pts: i64,
+    /// Episode anchor (UNIX-epoch microseconds) shared with every other
+    /// recording artifact. The encoded MP4 has VFR PTS in microseconds:
+    /// `pts_us = frame.header.timestamp_us - recording_start_us`.
+    recording_start_us: u64,
+    /// Last PTS we sent to the muxer (microseconds). MP4/MKV muxers reject
+    /// non-strictly-increasing PTS, so frames whose computed PTS is
+    /// `<= last_pts_us` are bumped to `last_pts_us + 1` and a one-time
+    /// warning is logged.
+    last_pts_us: Option<i64>,
+    nonmonotonic_warning_logged: bool,
     metrics: EncodeMetrics,
 }
 
@@ -106,6 +115,11 @@ pub(crate) struct RvlSession {
     encoder: DepthEncoder,
     width: u32,
     height: u32,
+    /// See `LibavSession::recording_start_us`. The RVL writer stores each
+    /// frame's absolute `timestamp_us` inline; this anchor is unused today
+    /// but kept on the session for forward-compatibility with relative
+    /// timestamp variants.
+    _recording_start_us: u64,
     _frame_len: usize,
     metrics: EncodeMetrics,
 }
@@ -220,6 +234,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
 pub(crate) fn open_session(
     runtime: &EncoderRuntimeConfigV2,
     episode_index: u32,
+    recording_start_us: u64,
     first_frame: &OwnedFrame,
 ) -> Result<SessionEncoder> {
     fs::create_dir_all(&runtime.output_dir)?;
@@ -228,10 +243,11 @@ pub(crate) fn open_session(
         EncoderCodec::Rvl => Ok(SessionEncoder::Rvl(RvlSession::new(
             runtime.clone(),
             path,
+            recording_start_us,
             first_frame,
         )?)),
         EncoderCodec::H264 | EncoderCodec::H265 | EncoderCodec::Av1 => Ok(SessionEncoder::Libav(
-            LibavSession::new(runtime.clone(), path, first_frame)?,
+            LibavSession::new(runtime.clone(), path, recording_start_us, first_frame)?,
         )),
     }
 }
@@ -278,6 +294,7 @@ impl LibavSession {
     fn new(
         config: EncoderRuntimeConfigV2,
         output_path: PathBuf,
+        recording_start_us: u64,
         first_frame: &OwnedFrame,
     ) -> Result<Self> {
         ensure_ffmpeg_initialized()?;
@@ -303,6 +320,13 @@ impl LibavSession {
             .contains(ffmpeg::format::Flags::GLOBAL_HEADER);
         let fps = ffmpeg::Rational(config.fps as i32, 1);
 
+        // Use a microsecond-resolution time base so per-frame VFR PTS
+        // (computed as `frame.header.timestamp_us - recording_start_us`)
+        // can be sent verbatim without rescale-loss. The MP4 muxer may
+        // still rewrite the *stream* time base after `write_header`; the
+        // rescue below captures the post-header value.
+        let encoder_time_base = ffmpeg::Rational(1, 1_000_000);
+
         let mut encoder = ffmpeg::codec::context::Context::new_with_codec(codec)
             .encoder()
             .video()?;
@@ -311,7 +335,22 @@ impl LibavSession {
         encoder.set_aspect_ratio(ffmpeg::Rational(1, 1));
         encoder.set_format(encoder_pixel);
         encoder.set_frame_rate(Some(fps));
-        encoder.set_time_base((1, config.fps as i32));
+        encoder.set_time_base(encoder_time_base);
+        // Disable B-frames so encoded order == display order. With B-frames
+        // enabled (libx264 default = 3) the encoder emits packets where
+        // `packet.pts` (display time) is smaller than `packet.dts` (decode
+        // time, monotonic in encoded order) for B-frames that come after
+        // a P-frame in the bitstream. The MP4 muxer enforces `pts >= dts`
+        // per packet and rejects the stream with
+        // `pts (X) < dts (Y) in stream 0`. With CFR `next_pts++` the
+        // muxer would compute consistent DTS shifts internally, but with
+        // VFR microsecond PTS (Phase 5), libx264's reorder math leaves
+        // some packets violating the invariant. Setting `max_b_frames=0`
+        // gives us encoded-order == display-order, so DTS == PTS for
+        // every packet and the muxer is happy. The compression hit is
+        // ~5-10 % vs B-frames-enabled at the same bitrate, which we
+        // accept for VFR correctness.
+        encoder.set_max_b_frames(0);
         if global_header {
             encoder.set_flags(ffmpeg::codec::Flags::GLOBAL_HEADER);
         }
@@ -347,7 +386,7 @@ impl LibavSession {
         {
             let mut stream = output.add_stream(codec)?;
             stream_index = stream.index();
-            stream.set_time_base((1, config.fps as i32));
+            stream.set_time_base(encoder_time_base);
             stream.set_parameters(&opened_encoder);
             unsafe {
                 (*stream.parameters().as_mut_ptr()).codec_tag = 0;
@@ -389,18 +428,32 @@ impl LibavSession {
             hw_frames,
             width: first_frame.header.width,
             height: first_frame.header.height,
-            next_pts: 0,
+            recording_start_us,
+            last_pts_us: None,
+            nonmonotonic_warning_logged: false,
             metrics: EncodeMetrics::default(),
         })
     }
 
     fn encode_frame(&mut self, frame: &OwnedFrame) -> Result<()> {
         ensure_frame_compatibility(&frame.header, self.width, self.height)?;
+
+        // Compute the per-frame PTS in microseconds (encoder time base).
+        // Frames whose capture timestamp is before the recording start are
+        // dropped — they are in-flight from before the user pressed record
+        // and would produce a negative PTS that the muxer rejects.
+        let Some(pts_us) = self.compute_pts_us(frame.header.timestamp_us) else {
+            // Pre-recording frame: record as a dropped frame for metrics
+            // visibility and exit.
+            self.metrics.dropped_frames = self.metrics.dropped_frames.saturating_add(1);
+            return Ok(());
+        };
+
         let started = Instant::now();
         maybe_test_encode_delay();
         let mut source = ffmpeg::frame::Video::new(self.source_pixel, self.width, self.height);
         copy_frame_payload(&mut source, &frame.header, &frame.payload)?;
-        source.set_pts(Some(self.next_pts));
+        source.set_pts(Some(pts_us));
         let mut converted = None;
         if self.source_pixel == self.scale_pixel {
             if self.uses_hw_frames() {
@@ -418,7 +471,7 @@ impl LibavSession {
         } else {
             let mut frame_to_scale = ffmpeg::frame::Video::empty();
             self.scaler.run(&source, &mut frame_to_scale)?;
-            frame_to_scale.set_pts(Some(self.next_pts));
+            frame_to_scale.set_pts(Some(pts_us));
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
                     self.hw_frames
@@ -435,7 +488,7 @@ impl LibavSession {
         if let Some(frame_to_send) = converted.as_ref() {
             self.encoder.send_frame(frame_to_send)?;
         }
-        self.next_pts += 1;
+        self.last_pts_us = Some(pts_us);
 
         let before = self.metrics.encoded_bytes;
         self.receive_packets()?;
@@ -443,6 +496,19 @@ impl LibavSession {
         self.metrics
             .record_frame(frame.payload.len(), encoded_bytes, started.elapsed());
         Ok(())
+    }
+
+    /// Compute the next strictly-monotonic PTS in microseconds, relative to
+    /// the recording start. Delegates to the free function `compute_pts_us`
+    /// so the logic can be unit-tested without spinning up a live ffmpeg
+    /// encoder.
+    fn compute_pts_us(&mut self, frame_timestamp_us: u64) -> Option<i64> {
+        compute_pts_us(
+            frame_timestamp_us,
+            self.recording_start_us,
+            &mut self.last_pts_us,
+            &mut self.nonmonotonic_warning_logged,
+        )
     }
 
     fn receive_packets(&mut self) -> Result<()> {
@@ -481,6 +547,7 @@ impl RvlSession {
     fn new(
         config: EncoderRuntimeConfigV2,
         output_path: PathBuf,
+        recording_start_us: u64,
         first_frame: &OwnedFrame,
     ) -> Result<Self> {
         if first_frame.header.pixel_format != PixelFormat::Depth16 {
@@ -504,6 +571,7 @@ impl RvlSession {
             encoder: DepthEncoder::rvl(frame_len),
             width: first_frame.header.width,
             height: first_frame.header.height,
+            _recording_start_us: recording_start_us,
             _frame_len: frame_len,
             metrics: EncodeMetrics::default(),
         })
@@ -522,7 +590,7 @@ impl RvlSession {
         let depth_pixels = depth16_payload_to_vec(&frame.payload)?;
         let encoded = self.encoder.encode(&depth_pixels)?;
         self.writer
-            .write_all(&frame.header.timestamp_ms.to_le_bytes())?;
+            .write_all(&frame.header.timestamp_us.to_le_bytes())?;
         self.writer
             .write_all(&frame.header.frame_index.to_le_bytes())?;
         self.writer
@@ -1070,7 +1138,7 @@ fn decode_rvl_artifact(path: &Path) -> Result<DecodedArtifact> {
     };
 
     loop {
-        let Some(_timestamp_ms) = read_optional_u64(&mut reader)? else {
+        let Some(_timestamp_us) = read_optional_u64(&mut reader)? else {
             break;
         };
         let _frame_index = read_u64(&mut reader)?;
@@ -1106,5 +1174,114 @@ fn read_optional_u64<R: Read>(reader: &mut R) -> Result<Option<u64>> {
         Ok(()) => Ok(Some(u64::from_le_bytes(bytes))),
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
         Err(error) => Err(error.into()),
+    }
+}
+
+/// Free-function variant of `LibavSession::compute_pts_us` so the PTS
+/// computation can be unit-tested without spinning up a libav encoder.
+///
+/// Semantics:
+/// * `frame_timestamp_us` is the camera's UNIX-epoch wall-clock timestamp.
+/// * Returns `None` for pre-recording frames (frame timestamp older than
+///   the recording-start anchor); the caller drops them.
+/// * Returns the strictly-monotonic PTS in microseconds otherwise. If the
+///   camera publishes the same or an earlier timestamp twice in a row, the
+///   PTS is bumped by one microsecond to keep the MP4 muxer happy and a
+///   one-shot warning is logged via `nonmonotonic_warned`.
+fn compute_pts_us(
+    frame_timestamp_us: u64,
+    recording_start_us: u64,
+    last_pts_us: &mut Option<i64>,
+    nonmonotonic_warned: &mut bool,
+) -> Option<i64> {
+    let raw_pts =
+        i64::try_from(frame_timestamp_us).ok()? - i64::try_from(recording_start_us).ok()?;
+    if raw_pts < 0 {
+        return None;
+    }
+    let pts = match *last_pts_us {
+        Some(last) if raw_pts <= last => {
+            if !*nonmonotonic_warned {
+                *nonmonotonic_warned = true;
+                eprintln!(
+                    "rollio-encoder: warning: non-monotonic frame timestamp \
+                     (raw={} us, last={} us); bumping by 1 us to keep the \
+                     muxer happy. Subsequent occurrences are silenced.",
+                    raw_pts, last
+                );
+            }
+            last + 1
+        }
+        _ => raw_pts,
+    };
+    *last_pts_us = Some(pts);
+    Some(pts)
+}
+
+#[cfg(test)]
+mod pts_tests {
+    use super::*;
+
+    #[test]
+    fn pre_recording_frame_returns_none_and_does_not_advance_pts() {
+        let mut last_pts_us = None;
+        let mut warned = false;
+        let result = compute_pts_us(999_900, 1_000_000, &mut last_pts_us, &mut warned);
+        assert_eq!(result, None);
+        assert_eq!(last_pts_us, None);
+        assert!(!warned);
+    }
+
+    #[test]
+    fn typical_increasing_timestamps_yield_relative_us_pts() {
+        let mut last_pts_us = None;
+        let mut warned = false;
+        // Three frames at 1 ms, 34 ms, 67 ms past start.
+        assert_eq!(
+            compute_pts_us(1_001_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(1_000)
+        );
+        assert_eq!(
+            compute_pts_us(1_034_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(34_000)
+        );
+        assert_eq!(
+            compute_pts_us(1_067_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(67_000)
+        );
+        assert!(!warned);
+    }
+
+    #[test]
+    fn duplicate_or_out_of_order_timestamp_is_bumped_by_one_us() {
+        let mut last_pts_us = None;
+        let mut warned = false;
+        // First frame: PTS=10ms.
+        assert_eq!(
+            compute_pts_us(1_010_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(10_000)
+        );
+        // Second frame has same timestamp -> bumped to 10_001.
+        assert_eq!(
+            compute_pts_us(1_010_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(10_001)
+        );
+        assert!(warned);
+        // Third frame older than the bumped PTS -> bumped to 10_002.
+        assert_eq!(
+            compute_pts_us(1_005_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(10_002)
+        );
+    }
+
+    #[test]
+    fn first_frame_at_recording_start_yields_zero_pts() {
+        let mut last_pts_us = None;
+        let mut warned = false;
+        assert_eq!(
+            compute_pts_us(1_000_000, 1_000_000, &mut last_pts_us, &mut warned),
+            Some(0)
+        );
+        assert_eq!(last_pts_us, Some(0));
     }
 }

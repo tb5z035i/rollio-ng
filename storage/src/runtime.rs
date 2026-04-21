@@ -56,7 +56,14 @@ struct DatasetInfo {
     fps: u32,
     splits: BTreeMap<String, String>,
     data_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     video_path: Option<String>,
+    /// Mirror of the assembler's `info.json::raw_path` so the merged
+    /// dataset advertises the per-channel raw Parquet dump alongside
+    /// `data_path` and `video_path`. Older datasets predating Phase 6c
+    /// omit this field — `Option<...>` keeps deserialization tolerant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_path: Option<String>,
     features: BTreeMap<String, FeatureSpec>,
     embedded_config_toml: String,
 }
@@ -284,6 +291,12 @@ fn store_episode_local(
         &request.staging_dir.join("videos"),
         &output_root.join("videos"),
     )?;
+    // Per-channel raw Parquet dump (Phase 6c). Lives alongside `data/` and
+    // `videos/`. Without this merge the assembler's `raw::write_episode_raw_dump`
+    // would write into the staging dir but never reach the dataset, since
+    // `fs::remove_dir_all(&request.staging_dir)` below wipes it after the
+    // normal data/videos move.
+    merge_tree_if_present(&request.staging_dir.join("raw"), &output_root.join("raw"))?;
     merge_meta_jsonl_if_present(
         &request.staging_dir.join("meta/tasks.jsonl"),
         &output_root.join("meta/tasks.jsonl"),
@@ -327,6 +340,7 @@ fn update_root_info(path: &Path, staged: DatasetInfo) -> Result<(), Box<dyn Erro
             splits: staged.splits.clone(),
             data_path: staged.data_path.clone(),
             video_path: staged.video_path.clone(),
+            raw_path: staged.raw_path.clone(),
             features: staged.features.clone(),
             embedded_config_toml: staged.embedded_config_toml.clone(),
         }
@@ -338,11 +352,23 @@ fn update_root_info(path: &Path, staged: DatasetInfo) -> Result<(), Box<dyn Erro
     if info.robot_type.is_none() {
         info.robot_type = staged.robot_type;
     }
-    if info.features.is_empty() {
-        info.features = staged.features;
+    // Union the staged feature set into the merged feature set so the
+    // dataset's `info.json` always advertises every column ever produced.
+    // Without this an episode with a sparse schema (e.g. recorded with
+    // the robot disconnected, so observations are missing) would either
+    // overwrite the richer schema from an earlier episode or — under
+    // the previous `is_empty()` guard — silently drop a richer schema
+    // from a later episode. Tools (LeRobot training scripts, custom
+    // analysis notebooks) typically consult `info.features` to know
+    // which columns to expect across the whole dataset.
+    for (key, spec) in staged.features {
+        info.features.entry(key).or_insert(spec);
     }
     if info.video_path.is_none() {
         info.video_path = staged.video_path;
+    }
+    if info.raw_path.is_none() {
+        info.raw_path = staged.raw_path;
     }
     if info.embedded_config_toml.trim().is_empty() {
         info.embedded_config_toml = staged.embedded_config_toml;
@@ -437,6 +463,15 @@ mod tests {
         assert!(root
             .join("videos/chunk-000/camera_top/episode_000000.mp4")
             .exists());
+        // Phase 6c raw dump must reach the merged dataset alongside
+        // `data/` and `videos/`. Without the explicit `raw/` merge in
+        // `store_episode_local` this file would be wiped with the
+        // staging dir and silently disappear.
+        assert!(
+            root.join("raw/chunk-000/episode_000000/robot_a__arm__joint_position.parquet")
+                .exists(),
+            "raw/ tree should be merged into the dataset"
+        );
         assert!(root.join("meta/info.json").exists());
         assert!(
             !staging.exists(),
@@ -446,6 +481,70 @@ mod tests {
         let info = read_dataset_info(&root.join("meta/info.json")).expect("info should parse");
         assert_eq!(info.total_episodes, 1);
         assert_eq!(info.total_frames, 10);
+        assert_eq!(
+            info.raw_path.as_deref(),
+            Some("raw/chunk-{chunk_index:03d}/episode_{episode_index:06d}"),
+            "info.json should advertise the raw_path template"
+        );
+    }
+
+    #[test]
+    fn store_episode_local_unions_features_across_episodes() {
+        // Episode 0 stages with a populated feature set (e.g. observation
+        // present); episode 1 stages with no features (e.g. robot was
+        // disconnected during recording). After both land, the merged
+        // info.json should keep the richer schema from episode 0 instead
+        // of being clobbered by episode 1's empty set.
+        let root = temp_dir("storage-root-union");
+        let config = test_config(root.clone());
+
+        let stage_full = temp_dir("storage-stage-full");
+        let mut full_features = BTreeMap::new();
+        full_features.insert(
+            "observation.state.airbot_play__arm.joint_position".into(),
+            FeatureSpec {
+                dtype: "float64".into(),
+                shape: vec![6],
+                names: Some((0..6).map(|i| format!("joint_{i}")).collect()),
+                video_info: None,
+            },
+        );
+        let stage_full_root =
+            write_staged_episode_with_features(stage_full, 0, 10, full_features.clone());
+        store_episode_local(
+            &config,
+            &EpisodeReadyRequest {
+                episode_index: 0,
+                staging_dir: stage_full_root,
+            },
+        )
+        .expect("first episode should store");
+
+        let stage_empty = write_staged_episode_with_features(
+            temp_dir("storage-stage-empty"),
+            1,
+            20,
+            BTreeMap::new(),
+        );
+        store_episode_local(
+            &config,
+            &EpisodeReadyRequest {
+                episode_index: 1,
+                staging_dir: stage_empty,
+            },
+        )
+        .expect("second episode should store");
+
+        let info = read_dataset_info(&root.join("meta/info.json")).expect("info should parse");
+        assert!(
+            info.features
+                .contains_key("observation.state.airbot_play__arm.joint_position"),
+            "richer feature set from earlier episode should survive a later \
+             episode with an empty feature set, got features: {:?}",
+            info.features.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(info.total_episodes, 2);
+        assert_eq!(info.total_frames, 30);
     }
 
     #[test]
@@ -498,17 +597,46 @@ mod tests {
         }
     }
 
+    fn write_staged_episode_with_features(
+        root: PathBuf,
+        episode_index: u32,
+        frame_count: u64,
+        features: BTreeMap<String, FeatureSpec>,
+    ) -> PathBuf {
+        let staged = write_staged_episode(root, episode_index, frame_count);
+        // Overwrite the meta/info.json the helper just wrote with one that
+        // carries the requested feature set. Everything else (paths, sizes,
+        // etc.) stays the same.
+        let info_path = staged.join("meta/info.json");
+        let mut info = read_dataset_info(&info_path).expect("staged info should parse");
+        info.features = features;
+        fs::write(
+            &info_path,
+            serde_json::to_vec_pretty(&info).expect("info should serialize"),
+        )
+        .expect("info should be rewritten");
+        staged
+    }
+
     fn write_staged_episode(root: PathBuf, episode_index: u32, frame_count: u64) -> PathBuf {
         let data_path = root.join(format!("data/chunk-000/episode_{episode_index:06}.parquet"));
         let video_path = root.join(format!(
             "videos/chunk-000/camera_top/episode_{episode_index:06}.mp4"
         ));
+        // Per-channel raw Parquet (Phase 6c). Storage now merges this tree
+        // alongside `data/` and `videos/`, so the test fixture mirrors a
+        // realistic staging dir that includes one raw observation file.
+        let raw_path = root.join(format!(
+            "raw/chunk-000/episode_{episode_index:06}/robot_a__arm__joint_position.parquet"
+        ));
         let meta_path = root.join("meta");
         fs::create_dir_all(data_path.parent().unwrap()).expect("data dir should exist");
         fs::create_dir_all(video_path.parent().unwrap()).expect("video dir should exist");
+        fs::create_dir_all(raw_path.parent().unwrap()).expect("raw dir should exist");
         fs::create_dir_all(&meta_path).expect("meta dir should exist");
         fs::write(&data_path, b"parquet").expect("parquet should be written");
         fs::write(&video_path, b"video").expect("video should be written");
+        fs::write(&raw_path, b"raw_parquet").expect("raw parquet should be written");
         let info = DatasetInfo {
             codebase_version: "v2.1".into(),
             robot_type: Some("leader_arm".into()),
@@ -522,6 +650,7 @@ mod tests {
             video_path: Some(
                 "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4".into(),
             ),
+            raw_path: Some("raw/chunk-{chunk_index:03d}/episode_{episode_index:06d}".into()),
             features: BTreeMap::new(),
             embedded_config_toml: "fps = 30".into(),
         };

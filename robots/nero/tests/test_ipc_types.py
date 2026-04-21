@@ -26,7 +26,12 @@ _RUST_LAYOUTS: dict[type, tuple[int, int]] = {
     t.ParallelVector2: (32, 8),
     t.ParallelMitCommand2: (96, 8),
     t.DeviceChannelMode: (4, 4),
-    t.ControlEvent: (8, 4),
+    # Phase 4 added `controller_ts_us: u64` to `RecordingStart` /
+    # `RecordingStop`, bumping the enum's largest variant to (u32, u64) and
+    # forcing 8-byte alignment. Layout is now: tag(4) + pad(4) + payload(16)
+    # = 24 bytes total. Cross-checked against the Rust round-trip test in
+    # `rollio-types/tests/messages.rs::control_event_layout_matches_python_mirror`.
+    t.ControlEvent: (24, 8),
 }
 
 
@@ -36,14 +41,14 @@ def test_size_and_alignment_match_rust(cls: type, expected: tuple[int, int]) -> 
 
 
 def test_joint_vector_15_field_offsets() -> None:
-    assert t.JointVector15.timestamp_ms.offset == 0
+    assert t.JointVector15.timestamp_us.offset == 0
     assert t.JointVector15.len.offset == 8
     # 4 bytes of natural alignment padding after `len`.
     assert t.JointVector15.values.offset == 16
 
 
 def test_joint_mit_command_15_field_offsets() -> None:
-    assert t.JointMitCommand15.timestamp_ms.offset == 0
+    assert t.JointMitCommand15.timestamp_us.offset == 0
     assert t.JointMitCommand15.len.offset == 8
     assert t.JointMitCommand15.position.offset == 16
     assert t.JointMitCommand15.velocity.offset == 16 + 15 * 8
@@ -53,19 +58,37 @@ def test_joint_mit_command_15_field_offsets() -> None:
 
 
 def test_pose7_field_offsets() -> None:
-    assert t.Pose7.timestamp_ms.offset == 0
+    assert t.Pose7.timestamp_us.offset == 0
     assert t.Pose7.values.offset == 8
 
 
 def test_parallel_vector_2_field_offsets() -> None:
-    assert t.ParallelVector2.timestamp_ms.offset == 0
+    assert t.ParallelVector2.timestamp_us.offset == 0
     assert t.ParallelVector2.len.offset == 8
     assert t.ParallelVector2.values.offset == 16
 
 
 def test_control_event_field_offsets() -> None:
+    # Phase 4: `tag` (i32) + 4-byte padding + payload union at offset 8.
     assert t.ControlEvent.tag.offset == 0
-    assert t.ControlEvent.payload.offset == 4
+    assert t.ControlEvent.payload.offset == 8
+
+
+def test_control_event_recording_start_payload_layout() -> None:
+    """`RecordingStart` carries `(u32 episode_index, u64 controller_ts_us)`.
+
+    Inside the union the two fields land at offsets 0 and 8 (with a 4-byte
+    pad between them to satisfy the u64 alignment), matching the Rust
+    `#[repr(C)]` layout of the enum variant.
+    """
+    # Reach into the private payload classes by name to avoid relying on
+    # ctypes' private CField representation.
+    from rollio_device_nero.ipc.types import _ControlEventRecording
+
+    assert _ControlEventRecording.episode_index.offset == 0
+    assert _ControlEventRecording.controller_ts_us.offset == 8
+    # Total payload size matches the union slot we declared (16 bytes).
+    assert ctypes.sizeof(_ControlEventRecording) == 16
 
 
 @pytest.mark.parametrize(
@@ -86,8 +109,8 @@ def test_type_name_matches_rust(cls: type, expected_name: str) -> None:
 
 
 def test_joint_vector_15_from_values_truncates_and_pads() -> None:
-    msg = t.JointVector15.from_values(timestamp_ms=42, values=[1.0, 2.0, 3.0])
-    assert msg.timestamp_ms == 42
+    msg = t.JointVector15.from_values(timestamp_us=42, values=[1.0, 2.0, 3.0])
+    assert msg.timestamp_us == 42
     assert msg.len == 3
     assert msg.values[0] == 1.0
     assert msg.values[2] == 3.0
@@ -95,8 +118,8 @@ def test_joint_vector_15_from_values_truncates_and_pads() -> None:
 
 
 def test_pose7_from_values_pads_short_inputs() -> None:
-    msg = t.Pose7.from_values(timestamp_ms=99, values=[0.1, 0.2, 0.3])
-    assert msg.timestamp_ms == 99
+    msg = t.Pose7.from_values(timestamp_us=99, values=[0.1, 0.2, 0.3])
+    assert msg.timestamp_us == 99
     assert msg.values[0] == 0.1
     assert msg.values[6] == 0.0
 

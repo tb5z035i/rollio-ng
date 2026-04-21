@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { Box } from "ink";
 import { encodeSetPreviewSize, type StreamInfoMessage } from "../lib/protocol.js";
 import type { AggregatedRobotChannel, CameraFrame } from "../lib/websocket.js";
-import { resolveCameraNames } from "../lib/camera-layout.js";
+import { MAX_PREVIEW_CAMERAS, resolveCameraNames } from "../lib/camera-layout.js";
 import { CameraRow, describeCameraPreviewRaster } from "./StreamPanel.js";
 import { InfoPanel } from "./InfoPanel.js";
 import { RobotStatePanel } from "./RobotStatePanel.js";
@@ -54,20 +54,35 @@ export function LivePreviewPanels({
   const infoPanelHeight = isWide
     ? 0
     : Math.min(5, Math.max(3, Math.floor(contentHeight * 0.15)));
-  const cameraPanelHeight = Math.max(
+  const totalCameraPanelHeight = Math.max(
     5,
     contentHeight - robotPanelHeight - (isWide ? 0 : infoPanelHeight),
+  );
+  // Wrap camera tiles into rows of at most `MAX_PREVIEW_CAMERAS` so the
+  // operator sees every configured stream — overflow lands on a second
+  // row instead of being silently dropped. The per-row height shrinks
+  // proportionally so the cluster fits within the existing camera panel
+  // height; the per-row width budget improves because each row only
+  // needs to fit `min(N_remaining, MAX_PREVIEW_CAMERAS)` tiles.
+  const cameraRowCount = Math.max(1, Math.ceil(cameraNames.length / MAX_PREVIEW_CAMERAS));
+  const perRowCameraPanelHeight = Math.max(
+    5,
+    Math.floor(totalCameraPanelHeight / cameraRowCount),
+  );
+  const tilesPerRow = Math.min(
+    Math.max(cameraNames.length, 1),
+    MAX_PREVIEW_CAMERAS,
   );
   const cameraPreviewRaster = useMemo(
     () =>
       describeCameraPreviewRaster(
         contentWidth,
-        cameraPanelHeight,
-        Math.max(cameraNames.length, 1),
+        perRowCameraPanelHeight,
+        tilesPerRow,
         cellGeometry,
         rendererId,
       ),
-    [cameraNames.length, cameraPanelHeight, cellGeometry, contentWidth, rendererId],
+    [cellGeometry, contentWidth, perRowCameraPanelHeight, rendererId, tilesPerRow],
   );
   const cameraData = useMemo(
     () =>
@@ -77,6 +92,13 @@ export function LivePreviewPanels({
       })),
     [cameraNames, frames],
   );
+  const cameraRows = useMemo(() => {
+    const rows: typeof cameraData[] = [];
+    for (let i = 0; i < cameraData.length; i += MAX_PREVIEW_CAMERAS) {
+      rows.push(cameraData.slice(i, i + MAX_PREVIEW_CAMERAS));
+    }
+    return rows;
+  }, [cameraData]);
   const cameraInfoByName = useMemo(
     () => new Map((streamInfo?.cameras ?? []).map((camera) => [camera.name, camera])),
     [streamInfo],
@@ -116,7 +138,7 @@ export function LivePreviewPanels({
     lines.push(pad("") + "│");
     lines.push(pad(` WS: ${connected ? "Connected" : "Disconnected"}`) + "│");
 
-    const totalRows = cameraPanelHeight + 2;
+    const totalRows = totalCameraPanelHeight + 2;
     while (lines.length < totalRows - 1) {
       lines.push(pad("") + "│");
     }
@@ -125,7 +147,7 @@ export function LivePreviewPanels({
   }, [
     cameraInfoByName,
     cameraNames,
-    cameraPanelHeight,
+    totalCameraPanelHeight,
     connected,
     frames,
     infoPanelWidth,
@@ -173,16 +195,17 @@ export function LivePreviewPanels({
 
   return (
     <Box flexDirection="column">
-      {cameraData.length > 0 && (
+      {cameraRows.map((row, rowIndex) => (
         <CameraRow
-          cameras={cameraData}
+          key={`row-${rowIndex}`}
+          cameras={row}
           previewRaster={cameraPreviewRaster}
           cellGeometry={cellGeometry}
           rendererId={rendererId}
-          infoPanelLines={infoPanelLines}
-          hasRightPanel={isWide}
+          infoPanelLines={rowIndex === 0 ? infoPanelLines : undefined}
+          hasRightPanel={isWide && rowIndex === 0}
         />
-      )}
+      ))}
 
       <Box flexDirection="column">
         {robotEntries.length > 0 ? (

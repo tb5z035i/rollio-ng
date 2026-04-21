@@ -9,8 +9,20 @@
 CARGO_BUILD_ARGS ?= --release
 CARGO_RUN_ARGS ?= $(CARGO_BUILD_ARGS)
 
-# C++: parallel compile jobs for `cmake --build` (override: make cpp-build CMAKE_BUILD_JOBS=8).
-CMAKE_BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 4)
+# Parallel jobs: Cargo (`-j`), cameras `cmake --build`, and airbot_play_rust Pinocchio
+# (read by build.rs as AIRBOT_PINOCCHIO_BUILD_JOBS). Prefer `BUILD_JOBS=8`; legacy
+# `CMAKE_BUILD_JOBS=8` on the make command line also sets BUILD_JOBS.
+# If rustc + native C++ thrashes CPU or OOMs, lower BUILD_JOBS before raising Cargo -j.
+ifeq ($(origin CMAKE_BUILD_JOBS),command line)
+BUILD_JOBS := $(CMAKE_BUILD_JOBS)
+else
+BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 4)
+endif
+# Guard against an empty value (e.g. shell missing nproc with no fallback).
+ifeq ($(strip $(BUILD_JOBS)),)
+BUILD_JOBS := 4
+endif
+CMAKE_BUILD_JOBS ?= $(BUILD_JOBS)
 
 all: build
 
@@ -69,16 +81,19 @@ apply-airbot-pinocchio-patch:
 	fi
 
 rust-build: apply-airbot-pinocchio-patch
-	cargo build --workspace $(CARGO_BUILD_ARGS)
+	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
+		cargo build --workspace $(CARGO_BUILD_ARGS) -j $(BUILD_JOBS)
 
 rust-test: apply-airbot-pinocchio-patch
-	cargo test --workspace
+	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
+		cargo test --workspace -j $(BUILD_JOBS)
 
 rust-fmt:
 	cargo fmt --all
 
 rust-lint: apply-airbot-pinocchio-patch
-	cargo clippy --workspace -- -D warnings
+	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
+		cargo clippy --workspace -j $(BUILD_JOBS) -- -D warnings
 
 # ── C++ ──────────────────────────────────────────────────────────────
 
@@ -124,7 +139,8 @@ python-lint:
 # ── Smoke ─────────────────────────────────────────────────────────────
 
 smoke-pseudo: build
-	cargo run $(CARGO_RUN_ARGS) -p rollio -- collect -c config/config.example.toml
+	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
+		cargo run $(CARGO_RUN_ARGS) -j $(BUILD_JOBS) -p rollio -- collect -c config/config.example.toml
 
 # ── Packaging ─────────────────────────────────────────────────────────
 # All packaging logic lives in ./build.sh. These targets are thin wrappers.
@@ -145,7 +161,7 @@ package-deps:
 	sudo apt-get update
 	sudo apt-get install -y --no-install-recommends \
 	  patch build-essential dpkg-dev \
-	  cmake pkg-config nasm clang libclang-dev llvm-dev \
+	  cmake ninja-build pkg-config nasm clang libclang-dev llvm-dev \
 	  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
 	  liburdfdom-dev \
 	  libconsole-bridge-dev \

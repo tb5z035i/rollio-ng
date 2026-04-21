@@ -82,9 +82,9 @@ auto parse_u32_arg(int argc, char* argv[], const std::string& name,
     return static_cast<uint32_t>(std::stoul(*value));
 }
 
-auto timestamp_ns() -> uint64_t {
+auto timestamp_us() -> uint64_t {
     return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(SystemClock::now().time_since_epoch())
+        std::chrono::duration_cast<std::chrono::microseconds>(SystemClock::now().time_since_epoch())
             .count());
 }
 
@@ -281,13 +281,13 @@ auto run_camera(const rollio::CameraDeviceConfig& config) -> int {
 
         auto sample = publisher.loan_slice_uninit(payload_size).value();
         auto& header = sample.user_header_mut();
-        header.timestamp_ns = timestamp_ns();
+        header.timestamp_us = timestamp_us();
         header.width = config.width;
         header.height = config.height;
         header.pixel_format = config.pixel_format;
         header.frame_index = frame_index;
 
-        const auto latest_timestamp_ns = header.timestamp_ns;
+        const auto latest_timestamp_us = header.timestamp_us;
         // Use the slice memcpy fast path. `write_from_fn` routes every byte
         // through a type-erased `bb::StaticFunction` call plus a bounds-checked
         // slice subscript and a placement-new, which dominates CPU usage on
@@ -300,7 +300,7 @@ auto run_camera(const rollio::CameraDeviceConfig& config) -> int {
         if (SteadyClock::now() - last_status >= std::chrono::seconds(1)) {
             std::cerr << "rollio-device-pseudo-camera: device=" << config.name
                       << " frame_index=" << frame_index
-                      << " latest_timestamp_ns=" << latest_timestamp_ns << " active=true\n";
+                      << " latest_timestamp_us=" << latest_timestamp_us << " active=true\n";
             last_status = SteadyClock::now();
         }
 

@@ -17,11 +17,13 @@ describe("resolveCameraNames", () => {
     ).toEqual(["camera_a", "camera_b"]);
   });
 
-  it(`caps the preview row at ${MAX_PREVIEW_CAMERAS} channels`, () => {
-    const configured = ["cam_a", "cam_b", "cam_c", "cam_d", "cam_e"];
+  it(`returns every configured channel even when more than ${MAX_PREVIEW_CAMERAS} are configured (overflow wraps to a second row in the grid, not a silent drop)`, () => {
+    const configured = Array.from(
+      { length: MAX_PREVIEW_CAMERAS + 2 },
+      (_, i) => `cam_${i}`,
+    );
     const names = resolveCameraNames(configured, []);
-    expect(names).toHaveLength(MAX_PREVIEW_CAMERAS);
-    expect(names).toEqual(configured.slice(0, MAX_PREVIEW_CAMERAS));
+    expect(names).toEqual(configured);
   });
 
   it("falls back to placeholders when nothing is configured or active", () => {

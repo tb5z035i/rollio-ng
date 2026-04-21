@@ -332,14 +332,14 @@ fn ipc_poll_loop(
                 IpcMessage::RobotStateMsg {
                     name,
                     state_kind,
-                    timestamp_ms,
+                    timestamp_us,
                     values,
                     value_min,
                     value_max,
                 } => {
                     let json = protocol::encode_robot_state(
                         &name,
-                        timestamp_ms,
+                        timestamp_us,
                         &values,
                         state_kind.topic_suffix(),
                         &value_min,

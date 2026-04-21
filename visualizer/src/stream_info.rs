@@ -106,13 +106,16 @@ impl StreamInfoRegistry {
         let camera = self.camera_entry(name);
         camera.source_width = Some(header.width);
         camera.source_height = Some(header.height);
-        camera.latest_timestamp_ms = Some(header.timestamp_ms);
+        // Source bus timestamps are now microseconds (see CameraFrameHeader).
+        // Display values stay in milliseconds for the UI; convert at the boundary.
+        let timestamp_ms = header.timestamp_us / 1_000;
+        camera.latest_timestamp_ms = Some(timestamp_ms);
         camera.latest_frame_index = Some(header.frame_index);
         update_fps_estimate(
             &mut camera.source_fps_estimate,
             &mut camera.last_source_sample,
             header.frame_index,
-            header.timestamp_ms,
+            timestamp_ms,
         );
     }
 

@@ -46,8 +46,8 @@ export type RobotStateKind =
 export interface RobotStateMessage {
   type: "robot_state";
   name: string;
-  /** Backend timestamp in milliseconds (visualizer wire format). */
-  timestamp_ms: number;
+  /** Backend timestamp in microseconds (visualizer wire format). */
+  timestamp_us: number;
   num_joints: number;
   /** Element values for `state_kind`. Unit depends on the kind: rad / rad·s⁻¹
    *  / Nm for joint kinds, m / m·s⁻¹ / N for parallel kinds, mixed for poses.

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MAX_PREVIEW_CAMERAS } from "../lib/camera-layout";
 import { incrementGauge, nowMs, recordTiming, setGauge } from "../lib/debug-metrics";
 import type { PreviewDimensions } from "../lib/layout";
 import type { CameraFrame } from "../lib/websocket";
@@ -78,10 +79,18 @@ export function CameraGrid({
     recordTiming("ui.camera_commit", nowMs() - commitStartMs);
   }, [cameras]);
 
+  // Tiles wrap onto additional rows once a row already holds
+  // `MAX_PREVIEW_CAMERAS` of them, so each tile keeps a healthy 16:10-ish
+  // box even when the project ships with more cameras than fit on one
+  // row (e.g. realsense color + depth + 2 wrist cams = 4, with cap=3,
+  // produces 2 rows: [3 tiles, 1 tile]). Earlier behaviour silently
+  // hid every tile past the cap; the operator was left wondering why a
+  // configured stream looked offline.
+  const columnCount = Math.max(1, Math.min(cameras.length, MAX_PREVIEW_CAMERAS));
   return (
     <div
       className="camera-grid"
-      style={{ gridTemplateColumns: `repeat(${Math.max(1, cameras.length)}, minmax(0, 1fr))` }}
+      style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
     >
       {cameras.map((camera, index) => (
         <section className="panel camera-tile" key={camera.name}>

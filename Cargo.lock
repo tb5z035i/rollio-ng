@@ -2215,6 +2215,7 @@ dependencies = [
  "clap",
  "iceoryx2",
  "jpeg-decoder",
+ "libc",
  "rollio-bus",
  "rollio-types",
  "serde",
