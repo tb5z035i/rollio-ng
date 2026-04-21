@@ -1,16 +1,19 @@
 use crate::error::{map_iceoryx_error, EncoderError, Result};
-use crate::media::{self, EncodedArtifact, OwnedFrame};
+use crate::media::{self, BuiltPreview, EncodedArtifact, OwnedFrame, PreviewBuilder};
 use clap::Args;
 use iceoryx2::prelude::*;
 use rollio_bus::{BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, VIDEO_READY_SERVICE};
 use rollio_types::config::EncoderRuntimeConfigV2;
 use rollio_types::messages::{
-    BackpressureEvent, CameraFrameHeader, ControlEvent, FixedString256, FixedString64, VideoReady,
+    BackpressureEvent, CameraFrameHeader, ControlEvent, FixedString256, FixedString64, PixelFormat,
+    VideoReady,
 };
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+type PreviewPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [u8], CameraFrameHeader>;
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -168,10 +171,13 @@ pub fn run(args: RunArgs) -> Result<()> {
             }
         }
 
+        // The encoder is now always-on: it forwards every frame to the
+        // worker so the preview tap can produce RGB24 previews even when
+        // no episode is being recorded. Backpressure is still meaningful
+        // only inside a recording session — preview-tap drops are not an
+        // actionable signal for the controller, so the BackpressureEvent
+        // is only emitted while `recording_active = true`.
         while let Some(sample) = frame_subscriber.receive().map_err(map_iceoryx_error)? {
-            if !recording_active {
-                continue;
-            }
             let owned = OwnedFrame {
                 header: *sample.user_header(),
                 payload: sample.payload().to_vec(),
@@ -179,14 +185,16 @@ pub fn run(args: RunArgs) -> Result<()> {
             match frame_tx.try_send(owned) {
                 Ok(()) => {}
                 Err(mpsc::TrySendError::Full(_frame)) => {
-                    publish_backpressure(&backpressure_publisher, &config.process_id)?;
-                    control_tx
-                        .send(WorkerControl::DroppedFrame)
-                        .map_err(|error| {
-                            EncoderError::message(format!(
-                                "failed to signal dropped frame: {error}"
-                            ))
-                        })?;
+                    if recording_active {
+                        publish_backpressure(&backpressure_publisher, &config.process_id)?;
+                        control_tx
+                            .send(WorkerControl::DroppedFrame)
+                            .map_err(|error| {
+                                EncoderError::message(format!(
+                                    "failed to signal dropped frame: {error}"
+                                ))
+                            })?;
+                    }
                 }
                 Err(mpsc::TrySendError::Disconnected(_frame)) => {
                     return Err(EncoderError::message(
@@ -221,20 +229,117 @@ pub fn run(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
+/// Owns the iceoryx2 preview publisher and the `PreviewBuilder`. Both
+/// live on the worker thread so we keep ffmpeg and iceoryx2 publisher
+/// state single-threaded.
+struct PreviewPipeline {
+    publisher: PreviewPublisher,
+    builder: PreviewBuilder,
+    output_width: u32,
+    output_height: u32,
+}
+
+impl PreviewPipeline {
+    fn new(config: &EncoderRuntimeConfigV2, node: &Node<ipc::Service>) -> Result<Self> {
+        let preview_service_name: ServiceName = config
+            .preview_topic
+            .as_str()
+            .try_into()
+            .map_err(map_iceoryx_error)?;
+        let preview_service = node
+            .service_builder(&preview_service_name)
+            .publish_subscribe::<[u8]>()
+            .user_header::<CameraFrameHeader>()
+            .open_or_create()
+            .map_err(map_iceoryx_error)?;
+        let payload_capacity = (config.preview_width as usize)
+            .checked_mul(config.preview_height as usize)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or_else(|| EncoderError::message("preview slot size overflow"))?;
+        let publisher = preview_service
+            .publisher_builder()
+            .initial_max_slice_len(payload_capacity)
+            .allocation_strategy(AllocationStrategy::PowerOfTwo)
+            .create()
+            .map_err(map_iceoryx_error)?;
+        let builder = PreviewBuilder::new(
+            config.preview_width,
+            config.preview_height,
+            config.preview_fps,
+        );
+        Ok(Self {
+            publisher,
+            builder,
+            output_width: config.preview_width,
+            output_height: config.preview_height,
+        })
+    }
+
+    /// Decode (if MJPG), downscale to RGB24, and publish on the preview
+    /// service if the throttle allows. Errors during preview generation
+    /// are logged but never propagated; the recording path must keep
+    /// running even if a preview frame fails.
+    fn publish_if_due(&mut self, frame: &OwnedFrame, process_id: &str) {
+        match self.builder.build(frame) {
+            Ok(Some(preview)) => {
+                if let Err(error) = self.publish(preview) {
+                    eprintln!(
+                        "rollio-encoder: preview publish failed for process={process_id}: {error}"
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "rollio-encoder: preview build failed for process={process_id} \
+                     (format={:?}, frame={}x{}): {error}",
+                    frame.header.pixel_format, frame.header.width, frame.header.height,
+                );
+            }
+        }
+    }
+
+    fn publish(&self, preview: BuiltPreview) -> Result<()> {
+        let mut sample = self
+            .publisher
+            .loan_slice_uninit(preview.rgb.len())
+            .map_err(map_iceoryx_error)?;
+        *sample.user_header_mut() = CameraFrameHeader {
+            timestamp_us: preview.timestamp_us,
+            width: self.output_width,
+            height: self.output_height,
+            pixel_format: PixelFormat::Rgb24,
+            frame_index: preview.frame_index,
+        };
+        let sample = sample.write_from_slice(&preview.rgb);
+        sample.send().map_err(map_iceoryx_error)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingEpisode {
+    episode_index: u32,
+    // Controller's wall-clock anchor (UNIX-epoch microseconds) — used as
+    // the VFR PTS origin so each frame's PTS in the encoded MP4 is
+    // exactly `frame.header.timestamp_us - controller_ts_us`.
+    controller_ts_us: u64,
+}
+
 fn worker_main(
     config: EncoderRuntimeConfigV2,
     control_rx: mpsc::Receiver<WorkerControl>,
     frame_rx: mpsc::Receiver<OwnedFrame>,
     event_tx: mpsc::Sender<WorkerEvent>,
 ) -> Result<()> {
-    #[derive(Debug, Clone, Copy)]
-    struct PendingEpisode {
-        episode_index: u32,
-        // Controller's wall-clock anchor (UNIX-epoch microseconds) — used as
-        // the VFR PTS origin so each frame's PTS in the encoded MP4 is
-        // exactly `frame.header.timestamp_us - controller_ts_us`.
-        controller_ts_us: u64,
-    }
+    // The preview pipeline (publisher + downscale-to-RGB24 builder) lives
+    // on the worker thread so iceoryx2 publishers stay single-threaded
+    // and the MJPG decoder isn't shipped across threads.
+    let preview_node = NodeBuilder::new()
+        .signal_handling_mode(SignalHandlingMode::Disabled)
+        .create::<ipc::Service>()
+        .map_err(map_iceoryx_error)?;
+    let mut preview_pipeline = PreviewPipeline::new(&config, &preview_node)?;
 
     let mut pending_episode: Option<PendingEpisode> = None;
     let mut active_session = None;
@@ -293,40 +398,26 @@ fn worker_main(
         let mut processed_any_frame = false;
         while let Ok(frame) = frame_rx.try_recv() {
             processed_any_frame = true;
-            if active_session.is_none() {
-                let Some(episode) = pending_episode else {
-                    continue;
-                };
-                active_session = Some(media::open_session(
-                    &config,
-                    episode.episode_index,
-                    episode.controller_ts_us,
-                    &frame,
-                )?);
-            }
-            if let Some(session) = active_session.as_mut() {
-                media::encode_frame(session, &frame)?;
-            }
+            handle_frame(
+                &config,
+                &frame,
+                &mut active_session,
+                &pending_episode,
+                &mut preview_pipeline,
+            )?;
         }
 
         if !processed_any_frame {
             match frame_rx.recv_timeout(Duration::from_millis(10)) {
                 Ok(frame) => {
                     processed_any_frame = true;
-                    if active_session.is_none() {
-                        let Some(episode) = pending_episode else {
-                            continue;
-                        };
-                        active_session = Some(media::open_session(
-                            &config,
-                            episode.episode_index,
-                            episode.controller_ts_us,
-                            &frame,
-                        )?);
-                    }
-                    if let Some(session) = active_session.as_mut() {
-                        media::encode_frame(session, &frame)?;
-                    }
+                    handle_frame(
+                        &config,
+                        &frame,
+                        &mut active_session,
+                        &pending_episode,
+                        &mut preview_pipeline,
+                    )?;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -352,6 +443,37 @@ fn worker_main(
             stop_after_drain = false;
         }
     }
+}
+
+/// One-frame work shared between the `try_recv` and `recv_timeout`
+/// branches of `worker_main`: always run the preview tap, then encode if
+/// a recording session is active.
+fn handle_frame(
+    config: &EncoderRuntimeConfigV2,
+    frame: &OwnedFrame,
+    active_session: &mut Option<media::SessionEncoder>,
+    pending_episode: &Option<PendingEpisode>,
+    preview_pipeline: &mut PreviewPipeline,
+) -> Result<()> {
+    // Preview tap runs on every received frame, regardless of recording
+    // state. The pipeline throttles internally to honor `preview_fps`.
+    preview_pipeline.publish_if_due(frame, &config.process_id);
+
+    if active_session.is_none() {
+        let Some(episode) = pending_episode.as_ref() else {
+            return Ok(());
+        };
+        *active_session = Some(media::open_session(
+            config,
+            episode.episode_index,
+            episode.controller_ts_us,
+            frame,
+        )?);
+    }
+    if let Some(session) = active_session.as_mut() {
+        media::encode_frame(session, frame)?;
+    }
+    Ok(())
 }
 
 fn load_runtime_config(args: &RunArgs) -> Result<EncoderRuntimeConfigV2> {

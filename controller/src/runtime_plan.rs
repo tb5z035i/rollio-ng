@@ -73,15 +73,10 @@ pub(crate) fn build_collect_specs(
         current_exe_dir,
     )?);
 
-    for encoder_config in config.encoder_runtime_configs_v2() {
-        specs.push(build_encoder_spec(
-            &encoder_config,
-            workspace_root,
-            child_working_dir,
-            current_exe_dir,
-        )?);
-    }
-
+    // Encoders are now spawned by `build_preview_specs` (so the preview
+    // tap is also alive in setup/identifying mode). Adding them again
+    // here would double-spawn each encoder process and break iceoryx2
+    // service negotiation.
     let embedded_config_toml = toml::to_string(config)?;
     let assembler_config = config.assembler_runtime_config_v2(embedded_config_toml);
     specs.push(build_assembler_spec(
@@ -163,6 +158,20 @@ pub(crate) fn build_preview_specs(
     for device in &config.devices {
         specs.push(build_device_spec(
             device,
+            workspace_root,
+            child_working_dir,
+            current_exe_dir,
+        )?);
+    }
+
+    // The visualizer subscribes to each camera's preview tap, which is
+    // published by the encoder process — not the camera driver itself.
+    // The encoder is a no-op outside an active recording (no codec work),
+    // but it still produces the always-on RGB24 preview tap. Spawning it
+    // here means setup/identifying mode also gets live camera previews.
+    for encoder_config in config.encoder_runtime_configs_v2() {
+        specs.push(build_encoder_spec(
+            &encoder_config,
             workspace_root,
             child_working_dir,
             current_exe_dir,

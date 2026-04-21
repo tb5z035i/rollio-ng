@@ -114,6 +114,25 @@ discard_key = "x"
 video_codec = "h264"
 depth_codec = "rvl"
 queue_size = 32
+# Codec input chroma subsampling: "422" (default) keeps native chroma
+# resolution from YUYV / MJPG-422 sources, "420" matches legacy 4:2:0.
+# Auto-falls back to "420" for codec/backend pairs without 4:2:2 input
+# support.
+chroma_subsampling = "422"
+# Optional quality knobs — omit any field to keep the libavcodec default.
+# crf:        0..=51 (lower = better quality, larger files).
+#             18 ≈ visually lossless ; 15 ≈ archive ; 0 = lossless.
+# preset:     codec-specific speed/quality preset
+#             ("ultrafast".."veryslow" for x264/x265, "0".."13" for
+#             SVT-AV1, "p1".."p7" for NVENC).
+# tune:       psychovisual hint ("film", "animation", "grain", ...).
+# bit_depth:  8 (default) or 10.
+# color_space:"auto" (default), "bt709-limited", or "bt601-limited".
+# crf = 18
+# preset = "slow"
+# tune = "film"
+# bit_depth = 8
+# color_space = "bt709-limited"
 
 [assembler]
 encoded_handoff = "file"

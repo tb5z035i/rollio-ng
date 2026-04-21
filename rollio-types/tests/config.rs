@@ -237,8 +237,8 @@ fn visualizer_runtime_config_v2_derives_sources_from_enabled_channels() {
     assert_eq!(visualizer.camera_sources.len(), 2);
     assert_eq!(visualizer.robot_sources.len(), 8);
     assert_eq!(
-        visualizer.camera_sources[0].frame_topic,
-        "camera_top/color/frames"
+        visualizer.camera_sources[0].preview_topic,
+        "camera_top/color/preview"
     );
 }
 

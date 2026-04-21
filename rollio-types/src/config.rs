@@ -291,6 +291,50 @@ pub enum EncoderArtifactFormat {
     Rvl,
 }
 
+/// Chroma subsampling for the codec input pixel format. `S422` (the
+/// default) preserves the native chroma resolution of YUYV / MJPG-422
+/// camera sources at the cost of slightly larger files; `S420` mirrors
+/// the legacy behaviour and downsamples chroma vertically by 2x.
+///
+/// The encoder will silently fall back to `S420` when the resolved
+/// libav codec / backend pair can't accept 4:2:2 input (older NVENC
+/// hardware, libsvtav1, certain VAAPI drivers); the configured default
+/// only kicks in where the encoder actually advertises 4:2:2 support.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChromaSubsampling {
+    /// 4:2:0 chroma (legacy default, smallest files, broadest player
+    /// compatibility, codec input is YUV420P / NV12).
+    #[serde(alias = "420", alias = "yuv420p", alias = "s420")]
+    S420,
+    /// 4:2:2 chroma (preserves native chroma resolution from YUYV and
+    /// MJPG-422 sources, codec input is YUV422P / NV16).
+    #[default]
+    #[serde(alias = "422", alias = "yuv422p", alias = "s422")]
+    S422,
+}
+
+/// Color metadata written into the encoded bitstream so downstream
+/// players know which color primaries / transfer / matrix to use when
+/// converting YUV back to RGB. `Auto` (the default) leaves the fields
+/// unset and lets each player guess from the resolution (typically
+/// BT.709 for >=720p, BT.601 for SD).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EncoderColorSpace {
+    /// Don't write color metadata. Matches the pre-config behaviour and
+    /// keeps existing recordings reproducible after this change rolls
+    /// out.
+    #[default]
+    Auto,
+    /// BT.709 limited-range (modern HD; recommended for >= 720p).
+    #[serde(alias = "bt709", alias = "rec709")]
+    Bt709Limited,
+    /// BT.601 limited-range (SD; recommended for <= 480p webcam modes).
+    #[serde(alias = "bt601", alias = "smpte170m", alias = "rec601")]
+    Bt601Limited,
+}
+
 impl EncoderArtifactFormat {
     pub fn extension(self) -> &'static str {
         match self {
@@ -359,6 +403,43 @@ pub struct EncoderConfig {
     pub depth_backend: EncoderBackend,
     #[serde(default)]
     pub artifact_format: EncoderArtifactFormat,
+    /// Codec input chroma subsampling. Default `S422` preserves YUYV /
+    /// MJPG-422 chroma; the encoder falls back to `S420` for codec /
+    /// backend combinations that can't ingest 4:2:2.
+    #[serde(default)]
+    pub chroma_subsampling: ChromaSubsampling,
+    /// Constant-quality target. Lower = better quality, larger files.
+    /// Typical x264/x265 useful range is `0..=51` (`0` = lossless,
+    /// `18` ≈ visually lossless, `23` is the libavcodec default,
+    /// `28` is "OK for streaming"). Mapped to `cq` for NVENC and to
+    /// `qp` (CQP rate-control) for VAAPI. `None` keeps the encoder's
+    /// built-in default and matches the pre-config behaviour.
+    #[serde(default)]
+    pub crf: Option<u8>,
+    /// Encoder preset (e.g. `"ultrafast"..="veryslow"` for x264/x265,
+    /// numeric `"0".."13"` for SVT-AV1, `"p1".."p7"` for NVENC).
+    /// Slower presets trade encoder CPU for either smaller files or
+    /// higher quality at the same `crf`. `None` keeps the libavcodec
+    /// default (typically `medium` for x264/x265).
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Codec-specific psychovisual tuning hint (e.g. `"film"`,
+    /// `"animation"`, `"grain"`, `"stillimage"` for x264; `"grain"`
+    /// or `"psnr"` for x265). `None` keeps the libavcodec default.
+    #[serde(default)]
+    pub tune: Option<String>,
+    /// Codec input bit depth. Currently `8` (default) and `10` are
+    /// supported. 10-bit eliminates banding in dark scenes at the cost
+    /// of ~25% larger files; requires the host's `libx264` / `libx265`
+    /// to be the 10-bit build (most distros ship one that handles
+    /// both).
+    #[serde(default = "default_bit_depth")]
+    pub bit_depth: u8,
+    /// Color metadata to write into the bitstream. `Auto` (default)
+    /// leaves the fields unset; pick `Bt709Limited` or `Bt601Limited`
+    /// to give downstream players a definitive answer.
+    #[serde(default)]
+    pub color_space: EncoderColorSpace,
     #[serde(default = "default_queue_size")]
     pub queue_size: u32,
 }
@@ -379,6 +460,18 @@ struct EncoderConfigSerde {
     depth_backend: Option<EncoderBackend>,
     #[serde(default)]
     artifact_format: EncoderArtifactFormat,
+    #[serde(default)]
+    chroma_subsampling: ChromaSubsampling,
+    #[serde(default)]
+    crf: Option<u8>,
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
+    tune: Option<String>,
+    #[serde(default = "default_bit_depth")]
+    bit_depth: u8,
+    #[serde(default)]
+    color_space: EncoderColorSpace,
     #[serde(default = "default_queue_size")]
     queue_size: u32,
 }
@@ -406,6 +499,12 @@ impl From<EncoderConfigSerde> for EncoderConfig {
             video_backend,
             depth_backend,
             artifact_format: value.artifact_format,
+            chroma_subsampling: value.chroma_subsampling,
+            crf: value.crf,
+            preset: value.preset,
+            tune: value.tune,
+            bit_depth: value.bit_depth,
+            color_space: value.color_space,
             queue_size: value.queue_size,
         }
     }
@@ -430,6 +529,10 @@ fn default_queue_size() -> u32 {
     32
 }
 
+fn default_bit_depth() -> u8 {
+    8
+}
+
 impl Default for EncoderConfig {
     fn default() -> Self {
         let video_codec = EncoderCodec::default();
@@ -442,6 +545,12 @@ impl Default for EncoderConfig {
             video_backend: backend,
             depth_backend: default_backend_for_codec(depth_codec, backend),
             artifact_format: EncoderArtifactFormat::default(),
+            chroma_subsampling: ChromaSubsampling::default(),
+            crf: None,
+            preset: None,
+            tune: None,
+            bit_depth: default_bit_depth(),
+            color_space: EncoderColorSpace::default(),
             queue_size: default_queue_size(),
         }
     }
@@ -514,6 +623,33 @@ impl EncoderConfig {
             return Err(ConfigError::Validation(
                 "encoder: queue_size must be > 0".into(),
             ));
+        }
+        if let Some(crf) = self.crf {
+            if crf > 51 {
+                return Err(ConfigError::Validation(format!(
+                    "encoder: crf must be in 0..=51, got {crf}"
+                )));
+            }
+        }
+        if !(self.bit_depth == 8 || self.bit_depth == 10) {
+            return Err(ConfigError::Validation(format!(
+                "encoder: bit_depth must be 8 or 10, got {}",
+                self.bit_depth
+            )));
+        }
+        if let Some(preset) = self.preset.as_deref() {
+            if preset.trim().is_empty() {
+                return Err(ConfigError::Validation(
+                    "encoder: preset must not be an empty string (omit the field to use the libavcodec default)".into(),
+                ));
+            }
+        }
+        if let Some(tune) = self.tune.as_deref() {
+            if tune.trim().is_empty() {
+                return Err(ConfigError::Validation(
+                    "encoder: tune must not be an empty string (omit the field to use the libavcodec default)".into(),
+                ));
+            }
         }
         self.validate_codec("video_codec", self.video_codec, self.video_backend)?;
         self.validate_codec("depth_codec", self.depth_codec, self.depth_backend)?;
@@ -2024,7 +2160,13 @@ impl VisualizerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerCameraSourceConfig {
     pub channel_id: String,
-    pub frame_topic: String,
+    /// Topic the visualizer subscribes to for this camera. As of the
+    /// "native camera pixel formats" change this is the encoder's
+    /// downsized RGB24 preview tap (`channel_preview_service_name`),
+    /// not the raw camera frames topic. The encoder always runs (even
+    /// when not recording), so the preview tap is always populated as
+    /// long as the camera driver is publishing.
+    pub preview_topic: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2221,6 +2363,53 @@ pub struct EncoderRuntimeConfigV2 {
     #[serde(default = "default_queue_size")]
     pub queue_size: u32,
     pub fps: u32,
+    /// Identifies the bus topic family used for the always-on RGB24 preview
+    /// tap that the visualizer subscribes to. The encoder reads from
+    /// `frame_topic` (the raw camera feed) and republishes a downsized RGB24
+    /// frame on `preview_topic`. Both topics share the same `bus_root` /
+    /// `channel_type` pair; see `channel_preview_service_name` in
+    /// `rollio-bus`. This field is required so an old encoder binary
+    /// reading a new runtime config — or vice versa — fails loudly instead
+    /// of silently dropping the preview tap.
+    pub preview_topic: String,
+    /// Width of the preview tap that the encoder publishes for the
+    /// visualizer. Mirrors `[visualizer] max_preview_width` so a single
+    /// dimension request travels through the project config.
+    pub preview_width: u32,
+    pub preview_height: u32,
+    /// Throttled preview-tap publish rate. Mirrors `[visualizer]
+    /// preview_fps` so the encoder produces at most this many preview
+    /// frames per second regardless of the camera's native fps.
+    pub preview_fps: u32,
+    /// Configured chroma subsampling for the codec input pixel format.
+    /// `S422` (default) preserves YUYV / MJPG-422 chroma; `S420` matches
+    /// the legacy 4:2:0 behaviour. The encoder downgrades to `S420` at
+    /// session-open time when the resolved codec / backend pair can't
+    /// accept 4:2:2 input (older NVENC, libsvtav1, certain VAAPI
+    /// drivers).
+    #[serde(default)]
+    pub chroma_subsampling: ChromaSubsampling,
+    /// Optional constant-quality target (mapped to `crf` for x264/x265/
+    /// AV1, `cq` for NVENC, `qp` for VAAPI). `None` keeps the
+    /// libavcodec default.
+    #[serde(default)]
+    pub crf: Option<u8>,
+    /// Optional codec preset name (`"slow"`, `"veryslow"`, etc.).
+    /// `None` keeps the libavcodec default.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Optional codec tuning hint (`"film"`, `"animation"`, ...).
+    /// `None` keeps the libavcodec default.
+    #[serde(default)]
+    pub tune: Option<String>,
+    /// Codec input bit depth (`8` or `10`). `8` matches legacy
+    /// behaviour.
+    #[serde(default = "default_bit_depth")]
+    pub bit_depth: u8,
+    /// Color metadata to write into the encoded bitstream. `Auto`
+    /// matches legacy behaviour (no metadata, players guess).
+    #[serde(default)]
+    pub color_space: EncoderColorSpace,
 }
 
 impl EncoderRuntimeConfigV2 {
@@ -2237,6 +2426,12 @@ impl EncoderRuntimeConfigV2 {
             video_backend: self.backend,
             depth_backend: self.backend,
             artifact_format: self.artifact_format,
+            chroma_subsampling: self.chroma_subsampling,
+            crf: self.crf,
+            preset: self.preset.clone(),
+            tune: self.tune.clone(),
+            bit_depth: self.bit_depth,
+            color_space: self.color_space,
             queue_size: self.queue_size,
         }
         .resolved_artifact_format()
@@ -2266,9 +2461,10 @@ impl EncoderRuntimeConfigV2 {
             || self.channel_id.trim().is_empty()
             || self.frame_topic.trim().is_empty()
             || self.output_dir.trim().is_empty()
+            || self.preview_topic.trim().is_empty()
         {
             return Err(ConfigError::Validation(
-                "encoder runtime v2: process_id, channel_id, frame_topic, and output_dir must not be empty"
+                "encoder runtime v2: process_id, channel_id, frame_topic, preview_topic, and output_dir must not be empty"
                     .into(),
             ));
         }
@@ -2278,6 +2474,17 @@ impl EncoderRuntimeConfigV2 {
                 self.fps
             )));
         }
+        if self.preview_width == 0 || self.preview_height == 0 {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: preview_width and preview_height must be > 0".into(),
+            ));
+        }
+        if self.preview_fps == 0 || self.preview_fps > 1000 {
+            return Err(ConfigError::Validation(format!(
+                "encoder runtime v2: preview_fps must be 1..1000, got {}",
+                self.preview_fps
+            )));
+        }
         EncoderConfig {
             video_codec: self.codec,
             depth_codec: self.codec,
@@ -2285,6 +2492,12 @@ impl EncoderRuntimeConfigV2 {
             video_backend: self.backend,
             depth_backend: self.backend,
             artifact_format: self.artifact_format,
+            chroma_subsampling: self.chroma_subsampling,
+            crf: self.crf,
+            preset: self.preset.clone(),
+            tune: self.tune.clone(),
+            bit_depth: self.bit_depth,
+            color_space: self.color_space,
             queue_size: self.queue_size,
         }
         .validate()
@@ -2665,12 +2878,16 @@ impl ProjectConfig {
         // configured streams in the live preview. `MAX_PREVIEW_CAMERAS`
         // applies to layout (max tiles per row) — overflow wraps onto a
         // second row in the UI rather than being silently dropped.
+        //
+        // The visualizer subscribes to the encoder's downsized RGB24
+        // preview tap, never to the raw camera frames topic — so it
+        // never has to decode YUYV/MJPG bytes itself.
         let camera_sources = self
             .resolved_camera_channels()
             .into_iter()
             .map(|camera| VisualizerCameraSourceConfig {
                 channel_id: camera.channel_id,
-                frame_topic: camera.frame_topic,
+                preview_topic: camera_preview_topic_v2(&camera.bus_root, &camera.channel_type),
             })
             .collect();
         let robot_sources = self
@@ -2717,6 +2934,7 @@ impl ProjectConfig {
                 // for color and cpu for depth gets each encoder bound to
                 // the right device — no global field is good enough here.
                 let backend = self.encoder.backend_for_pixel_format(camera.pixel_format);
+                let preview_topic = camera_preview_topic_v2(&camera.bus_root, &camera.channel_type);
                 EncoderRuntimeConfigV2 {
                     process_id: encoder_process_id_v2(&camera.channel_id),
                     channel_id: camera.channel_id.clone(),
@@ -2730,6 +2948,16 @@ impl ProjectConfig {
                     artifact_format: self.encoder.resolved_artifact_format_for(codec),
                     queue_size: self.encoder.queue_size,
                     fps: camera.fps,
+                    preview_topic,
+                    preview_width: self.visualizer.max_preview_width,
+                    preview_height: self.visualizer.max_preview_height,
+                    preview_fps: self.visualizer.preview_fps,
+                    chroma_subsampling: self.encoder.chroma_subsampling,
+                    crf: self.encoder.crf,
+                    preset: self.encoder.preset.clone(),
+                    tune: self.encoder.tune.clone(),
+                    bit_depth: self.encoder.bit_depth,
+                    color_space: self.encoder.color_space,
                 }
             })
             .collect()
@@ -2925,6 +3153,10 @@ fn channel_prefix_v2(bus_root: &str, channel_type: &str) -> String {
 
 fn camera_frames_topic_v2(bus_root: &str, channel_type: &str) -> String {
     format!("{}/frames", channel_prefix_v2(bus_root, channel_type))
+}
+
+fn camera_preview_topic_v2(bus_root: &str, channel_type: &str) -> String {
+    format!("{}/preview", channel_prefix_v2(bus_root, channel_type))
 }
 
 fn robot_state_topic_v2(bus_root: &str, channel_type: &str, state: RobotStateKind) -> String {

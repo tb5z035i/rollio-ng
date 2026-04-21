@@ -102,16 +102,16 @@ parallel_mit_kd = []
 [[devices.channels]]
 channel_type = "depth"
 kind = "camera"
-enabled = true
+enabled = false
 name = "realsense_depth"
 channel_label = "Intel RealSense Depth"
 publish_states = []
 recorded_states = []
 
 [devices.channels.profile]
-width = 848
-height = 480
-fps = 60
+width = 1280
+height = 720
+fps = 30
 pixel_format = "depth16"
 
 [devices.channels.command_defaults]
@@ -161,7 +161,7 @@ recorded_states = []
 width = 640
 height = 480
 fps = 30
-pixel_format = "rgb24"
+pixel_format = "yuyv"
 native_pixel_format = "YUYV"
 
 [devices.channels.command_defaults]
@@ -190,7 +190,7 @@ recorded_states = []
 width = 640
 height = 480
 fps = 30
-pixel_format = "rgb24"
+pixel_format = "yuyv"
 native_pixel_format = "YUYV"
 
 [devices.channels.command_defaults]
@@ -206,6 +206,11 @@ backend = "auto"
 video_backend = "auto"
 depth_backend = "auto"
 artifact_format = "auto"
+crf = 12
+preset = "slow"
+chroma_subsampling = "s422"
+bit_depth = 8
+color_space = "auto"
 queue_size = 32
 
 [assembler]

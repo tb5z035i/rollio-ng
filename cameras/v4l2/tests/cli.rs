@@ -47,7 +47,10 @@ fn validate_rejects_non_v4l2_path() {
 }
 
 #[test]
-fn run_rejects_non_rgb_output_format() {
+fn run_rejects_unsupported_output_format() {
+    // depth16 is not supported by V4L2 webcams; the driver must reject
+    // it before opening the device. mjpeg / yuyv are now valid bus
+    // formats and must NOT be rejected here.
     let config = r#"name = "cam"
 driver = "v4l2"
 id = "/dev/video0"
@@ -56,7 +59,7 @@ bus_root = "cam"
 [[channels]]
 channel_type = "color"
 kind = "camera"
-profile = { width = 640, height = 480, fps = 30, pixel_format = "mjpeg" }
+profile = { width = 640, height = 480, fps = 30, pixel_format = "depth16" }
 "#;
 
     let output = Command::new(bin())
@@ -66,12 +69,12 @@ profile = { width = 640, height = 480, fps = 30, pixel_format = "mjpeg" }
 
     assert!(
         !output.status.success(),
-        "run should fail for mjpeg output config"
+        "run should fail for depth16 output config"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("rgb24 or bgr24"),
+        stderr.contains("rgb24, bgr24, yuyv, mjpeg"),
         "unexpected stderr: {stderr}"
     );
 }

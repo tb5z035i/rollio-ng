@@ -1,6 +1,7 @@
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    camera_frames_service_name, BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, VIDEO_READY_SERVICE,
+    camera_frames_service_name, channel_preview_service_name, BACKPRESSURE_SERVICE,
+    CONTROL_EVENTS_SERVICE, VIDEO_READY_SERVICE,
 };
 use rollio_encoder::media::{decode_artifact, decode_artifact_with_backend, probe_capabilities};
 use rollio_types::config::{EncoderBackend, EncoderCapabilityDirection, EncoderCodec};
@@ -526,6 +527,288 @@ fn run_video_roundtrip(
     Ok(())
 }
 
+/// YUYV is one of the new "native" bus pixel formats. The encoder must
+/// accept raw YUV422 frames, swscale them to YUV420P, and produce a
+/// playable video. Uses a synthetic gradient payload so we don't need a
+/// real camera.
+#[test]
+fn yuyv_frames_round_trip_through_cpu_h264() {
+    let _guard = test_guard();
+    if !codec_supported(
+        EncoderCodec::H264,
+        EncoderCapabilityDirection::Encode,
+        EncoderBackend::Cpu,
+    ) || !codec_supported(
+        EncoderCodec::H264,
+        EncoderCapabilityDirection::Decode,
+        EncoderBackend::Cpu,
+    ) {
+        eprintln!("skipping yuyv round-trip: cpu h264 path unavailable");
+        return;
+    }
+
+    let width = 96u32;
+    let height = 64u32;
+    let frame_count = 8usize;
+    let camera_name = unique_name("yuyv_cam");
+    let process_id = format!("encoder.{}", unique_name("yuyv_h264"));
+    let output_dir = TempDir::new().expect("tempdir");
+    let ports = create_test_ports(&camera_name).expect("ports");
+    let config = runtime_config(
+        &process_id,
+        &camera_name,
+        output_dir.path(),
+        EncoderCodec::H264.as_str(),
+        backend_name(EncoderBackend::Cpu),
+        32,
+        30,
+    );
+    let mut child = spawn_encoder(&config, &[]);
+    std::thread::sleep(Duration::from_millis(150));
+    send_control_event(
+        &ports.control_publisher,
+        ControlEvent::RecordingStart {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
+    );
+    std::thread::sleep(Duration::from_millis(50));
+
+    for frame_index in 0..frame_count {
+        let payload = make_yuyv_payload(width, height, frame_index as u64);
+        publish_frame(
+            &ports.frame_publisher,
+            CameraFrameHeader {
+                timestamp_us: unix_timestamp_us(),
+                width,
+                height,
+                pixel_format: PixelFormat::Yuyv,
+                frame_index: frame_index as u64,
+            },
+            &payload,
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    send_control_event(
+        &ports.control_publisher,
+        ControlEvent::RecordingStop {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
+    );
+
+    let ready = wait_for_video_ready(
+        &ports.ready_subscriber,
+        &process_id,
+        Duration::from_secs(20),
+    )
+    .expect("expected video_ready for yuyv encode");
+    send_control_event(&ports.control_publisher, ControlEvent::Shutdown);
+    wait_for_exit(&mut child, Duration::from_secs(5));
+
+    let artifact_path = std::path::PathBuf::from(ready.file_path.as_str());
+    let decoded =
+        decode_artifact(&artifact_path, EncoderCodec::H264).expect("decode should succeed");
+    assert_eq!(decoded.width, width, "decoded width should match");
+    assert_eq!(decoded.height, height, "decoded height should match");
+    assert_eq!(
+        decoded.frame_count, frame_count,
+        "decoded frame count should match published frame count"
+    );
+}
+
+/// MJPG is the second new "native" format. The encoder must run libav's
+/// MJPEG decoder per frame, then re-encode through the configured codec.
+/// Uses a synthetic JPEG produced by libav itself so the test stays
+/// deterministic and doesn't depend on a real camera dump.
+#[test]
+fn mjpeg_frames_round_trip_through_cpu_h264() {
+    let _guard = test_guard();
+    if !codec_supported(
+        EncoderCodec::H264,
+        EncoderCapabilityDirection::Encode,
+        EncoderBackend::Cpu,
+    ) || !codec_supported(
+        EncoderCodec::H264,
+        EncoderCapabilityDirection::Decode,
+        EncoderBackend::Cpu,
+    ) {
+        eprintln!("skipping mjpeg round-trip: cpu h264 path unavailable");
+        return;
+    }
+
+    let width = 96u32;
+    let height = 64u32;
+    let frame_count = 6usize;
+    let camera_name = unique_name("mjpeg_cam");
+    let process_id = format!("encoder.{}", unique_name("mjpeg_h264"));
+    let output_dir = TempDir::new().expect("tempdir");
+    let ports = create_test_ports(&camera_name).expect("ports");
+    let config = runtime_config(
+        &process_id,
+        &camera_name,
+        output_dir.path(),
+        EncoderCodec::H264.as_str(),
+        backend_name(EncoderBackend::Cpu),
+        32,
+        30,
+    );
+    let mut child = spawn_encoder(&config, &[]);
+    std::thread::sleep(Duration::from_millis(150));
+    send_control_event(
+        &ports.control_publisher,
+        ControlEvent::RecordingStart {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
+    );
+    std::thread::sleep(Duration::from_millis(50));
+
+    let jpeg_payloads: Vec<Vec<u8>> = (0..frame_count)
+        .map(|frame_index| make_synthetic_jpeg(width, height, frame_index as u64))
+        .collect();
+    for (frame_index, payload) in jpeg_payloads.iter().enumerate() {
+        publish_frame(
+            &ports.frame_publisher,
+            CameraFrameHeader {
+                timestamp_us: unix_timestamp_us(),
+                width,
+                height,
+                pixel_format: PixelFormat::Mjpeg,
+                frame_index: frame_index as u64,
+            },
+            payload,
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    send_control_event(
+        &ports.control_publisher,
+        ControlEvent::RecordingStop {
+            episode_index: 1,
+            controller_ts_us: unix_timestamp_us(),
+        },
+    );
+
+    let ready = wait_for_video_ready(
+        &ports.ready_subscriber,
+        &process_id,
+        Duration::from_secs(20),
+    )
+    .expect("expected video_ready for mjpeg encode");
+    send_control_event(&ports.control_publisher, ControlEvent::Shutdown);
+    wait_for_exit(&mut child, Duration::from_secs(5));
+
+    let artifact_path = std::path::PathBuf::from(ready.file_path.as_str());
+    let decoded =
+        decode_artifact(&artifact_path, EncoderCodec::H264).expect("decode should succeed");
+    assert_eq!(decoded.width, width, "decoded width should match");
+    assert_eq!(decoded.height, height, "decoded height should match");
+    assert_eq!(
+        decoded.frame_count, frame_count,
+        "decoded frame count should match published frame count"
+    );
+}
+
+/// The encoder must publish RGB24 preview frames on the
+/// `channel_preview_service_name` topic even when no episode is being
+/// recorded. The visualizer relies on this for its always-on live
+/// preview.
+#[test]
+fn preview_tap_publishes_without_active_recording() {
+    let _guard = test_guard();
+    let width = 96u32;
+    let height = 64u32;
+    let camera_name = unique_name("preview_cam");
+    let process_id = format!("encoder.{}", unique_name("preview"));
+    let output_dir = TempDir::new().expect("tempdir");
+    // Pre-create the camera frame service ports, then attach a
+    // subscriber to the preview tap topic before the encoder spawns so
+    // we don't miss any frames.
+    let ports = create_test_ports(&camera_name).expect("ports");
+    let preview_topic = channel_preview_service_name(&camera_name, "color");
+    let preview_node = NodeBuilder::new()
+        .signal_handling_mode(SignalHandlingMode::Disabled)
+        .create::<ipc::Service>()
+        .expect("preview test node");
+    let preview_service_name: ServiceName = preview_topic
+        .as_str()
+        .try_into()
+        .expect("preview topic should be a valid service name");
+    let preview_service = preview_node
+        .service_builder(&preview_service_name)
+        .publish_subscribe::<[u8]>()
+        .user_header::<CameraFrameHeader>()
+        .open_or_create()
+        .expect("preview service");
+    let preview_subscriber = preview_service
+        .subscriber_builder()
+        .create()
+        .expect("preview subscriber");
+
+    let config = runtime_config(
+        &process_id,
+        &camera_name,
+        output_dir.path(),
+        EncoderCodec::H264.as_str(),
+        backend_name(EncoderBackend::Cpu),
+        32,
+        30,
+    );
+    let mut child = spawn_encoder(&config, &[]);
+    // Give the worker thread enough time to open the preview publisher.
+    std::thread::sleep(Duration::from_millis(250));
+
+    // Publish a few raw RGB24 frames *without* sending RecordingStart.
+    // The preview tap should still see them.
+    for frame_index in 0..6u64 {
+        let payload = make_rgb_payload(width, height, frame_index);
+        publish_frame(
+            &ports.frame_publisher,
+            CameraFrameHeader {
+                timestamp_us: unix_timestamp_us(),
+                width,
+                height,
+                pixel_format: PixelFormat::Rgb24,
+                frame_index,
+            },
+            &payload,
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Drain the preview subscriber and confirm at least one frame was
+    // published.
+    let mut preview_frames: usize = 0;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && preview_frames == 0 {
+        while let Some(sample) = preview_subscriber
+            .receive()
+            .expect("preview receive should succeed")
+        {
+            assert_eq!(
+                sample.user_header().pixel_format,
+                PixelFormat::Rgb24,
+                "preview tap must always publish RGB24"
+            );
+            // Preview dimensions come from the runtime config (320x240).
+            assert_eq!(sample.user_header().width, 320);
+            assert_eq!(sample.user_header().height, 240);
+            assert_eq!(sample.payload().len(), 320 * 240 * 3);
+            preview_frames += 1;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    send_control_event(&ports.control_publisher, ControlEvent::Shutdown);
+    wait_for_exit(&mut child, Duration::from_secs(5));
+
+    assert!(
+        preview_frames >= 1,
+        "preview tap should publish at least one frame even with no active recording \
+         (received {preview_frames})"
+    );
+}
+
 fn binary_path() -> &'static str {
     env!("CARGO_BIN_EXE_rollio-encoder")
 }
@@ -644,8 +927,21 @@ fn runtime_config(
     queue_size: u32,
     fps: u32,
 ) -> String {
+    let frame_topic = camera_frames_service_name(camera_name);
+    let preview_topic = rollio_bus::channel_preview_service_name(camera_name, "color");
     format!(
-        "process_id = \"{process_id}\"\ncamera_name = \"{camera_name}\"\noutput_dir = \"{}\"\ncodec = \"{codec}\"\nbackend = \"{backend}\"\nqueue_size = {queue_size}\nfps = {fps}\n",
+        "process_id = \"{process_id}\"\n\
+         channel_id = \"{camera_name}/color\"\n\
+         frame_topic = \"{frame_topic}\"\n\
+         preview_topic = \"{preview_topic}\"\n\
+         output_dir = \"{}\"\n\
+         codec = \"{codec}\"\n\
+         backend = \"{backend}\"\n\
+         queue_size = {queue_size}\n\
+         fps = {fps}\n\
+         preview_width = 320\n\
+         preview_height = 240\n\
+         preview_fps = 10\n",
         output_dir.display()
     )
 }
@@ -745,6 +1041,85 @@ fn make_rgb_payload(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
         }
     }
     payload
+}
+
+/// Synthetic YUYV (Y'U'V'422) payload: 2 bytes per pixel laid out as
+/// `Y0 U Y1 V`. Width must be even because Y0 and Y1 share chroma.
+fn make_yuyv_payload(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
+    assert!(width.is_multiple_of(2), "yuyv width must be even");
+    let mut payload = vec![0u8; width as usize * height as usize * 2];
+    for y in 0..height as usize {
+        for x_pair in 0..(width as usize / 2) {
+            let row_offset = y * width as usize * 2 + x_pair * 4;
+            let y0 = ((x_pair as u64 * 17 + frame_index * 11) % 220 + 16) as u8;
+            let y1 = ((x_pair as u64 * 17 + frame_index * 11 + 7) % 220 + 16) as u8;
+            let u = ((y as u64 * 5 + frame_index * 3) % 200 + 32) as u8;
+            let v = ((y as u64 * 7 + frame_index * 13) % 200 + 32) as u8;
+            payload[row_offset] = y0;
+            payload[row_offset + 1] = u;
+            payload[row_offset + 2] = y1;
+            payload[row_offset + 3] = v;
+        }
+    }
+    payload
+}
+
+/// Build a synthetic JPEG payload using libav's MJPEG encoder so the
+/// MJPG round-trip test doesn't depend on a real camera or a baked-in
+/// JPEG fixture. We re-use `ffmpeg-next` (already pulled in by the
+/// encoder crate) to encode a single solid-color RGB frame to JPEG.
+fn make_synthetic_jpeg(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
+    use ffmpeg_next as ffmpeg;
+    rollio_encoder::media::ensure_ffmpeg_initialized().expect("ffmpeg init");
+
+    let codec = ffmpeg::encoder::find(ffmpeg::codec::Id::MJPEG).expect("mjpeg encoder");
+    let mut encoder_ctx = ffmpeg::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .video()
+        .expect("video encoder");
+    encoder_ctx.set_width(width);
+    encoder_ctx.set_height(height);
+    encoder_ctx.set_format(ffmpeg::util::format::pixel::Pixel::YUVJ420P);
+    encoder_ctx.set_time_base((1, 30));
+    let mut encoder = encoder_ctx.open_as(codec).expect("open mjpeg encoder");
+
+    // Build a YUVJ420P frame from a synthetic RGB pattern.
+    let rgb = make_rgb_payload(width, height, frame_index);
+    let mut rgb_frame =
+        ffmpeg::frame::Video::new(ffmpeg::util::format::pixel::Pixel::RGB24, width, height);
+    let stride = rgb_frame.stride(0);
+    let row_bytes = width as usize * 3;
+    for row in 0..height as usize {
+        let dst_offset = row * stride;
+        let src_offset = row * row_bytes;
+        rgb_frame.data_mut(0)[dst_offset..dst_offset + row_bytes]
+            .copy_from_slice(&rgb[src_offset..src_offset + row_bytes]);
+    }
+
+    let mut scaler = ffmpeg::software::scaling::context::Context::get(
+        ffmpeg::util::format::pixel::Pixel::RGB24,
+        width,
+        height,
+        ffmpeg::util::format::pixel::Pixel::YUVJ420P,
+        width,
+        height,
+        ffmpeg::software::scaling::flag::Flags::BILINEAR,
+    )
+    .expect("scaler");
+    let mut yuv_frame = ffmpeg::frame::Video::empty();
+    scaler.run(&rgb_frame, &mut yuv_frame).expect("rgb->yuv");
+    yuv_frame.set_pts(Some(0));
+
+    encoder
+        .send_frame(&yuv_frame)
+        .expect("send frame to mjpeg encoder");
+    encoder.send_eof().expect("send eof");
+
+    let mut packet = ffmpeg::Packet::empty();
+    encoder
+        .receive_packet(&mut packet)
+        .expect("receive jpeg packet");
+    packet.data().expect("packet should carry bytes").to_vec()
 }
 
 fn make_depth_payload(width: u32, height: u32, frame_index: u64) -> Vec<u16> {

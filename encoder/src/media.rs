@@ -1,8 +1,9 @@
 use crate::error::{EncoderError, Result};
 use ffmpeg_next as ffmpeg;
 use rollio_types::config::{
-    EncoderArtifactFormat, EncoderBackend, EncoderCapability, EncoderCapabilityDirection,
-    EncoderCapabilityReport, EncoderCodec, EncoderImplementationFamily, EncoderRuntimeConfigV2,
+    ChromaSubsampling, EncoderArtifactFormat, EncoderBackend, EncoderCapability,
+    EncoderCapabilityDirection, EncoderCapabilityReport, EncoderCodec, EncoderColorSpace,
+    EncoderImplementationFamily, EncoderRuntimeConfigV2,
 };
 use rollio_types::messages::{CameraFrameHeader, PixelFormat};
 use rvl::{
@@ -73,6 +74,261 @@ pub struct DecodedArtifact {
     pub last_depth_frame: Option<Vec<u16>>,
 }
 
+/// Builds downsized RGB24 preview frames for the visualizer's preview tap.
+///
+/// The encoder owns one of these per camera channel and feeds every
+/// incoming bus frame through it (throttled to the configured preview
+/// fps). The output is RGB24 at the configured preview dimensions; the
+/// visualizer never sees raw YUYV/MJPG bytes.
+///
+/// Decoding (MJPG) and downscaling (swscale source -> RGB24 small) are
+/// done eagerly per frame; reuse with the codec session would be nice
+/// but isn't necessary at typical preview rates (10..60 fps).
+pub struct PreviewBuilder {
+    output_width: u32,
+    output_height: u32,
+    /// Minimum interval between published preview frames, in microseconds.
+    /// Calculated from the configured `preview_fps` upper bound.
+    min_interval_us: u64,
+    /// Last frame timestamp we actually published, in microseconds.
+    /// Frames whose `header.timestamp_us - last_emit_us < min_interval_us`
+    /// are skipped without decoding.
+    last_emit_us: Option<u64>,
+    /// Per-session MJPEG decoder; lazily initialized when the first MJPG
+    /// frame arrives. Same logic as `LibavSession::mjpeg_decoder`.
+    mjpeg_decoder: Option<ffmpeg::decoder::Video>,
+    /// swscale context: source pixel format -> RGB24 at preview dims.
+    /// Rebuilt if the source pixel format changes mid-session.
+    scaler: Option<ffmpeg::software::scaling::context::Context>,
+    /// Source pixel format the current scaler expects on its input.
+    scaler_input_pixel: Option<ffmpeg::util::format::pixel::Pixel>,
+    /// Source dims the current scaler expects (matches the camera's
+    /// native dims; we don't expect them to change mid-session but
+    /// rebuild the scaler defensively if they do).
+    scaler_input_dims: Option<(u32, u32)>,
+}
+
+/// One preview frame ready to publish on the iceoryx2 preview tap.
+pub struct BuiltPreview {
+    pub width: u32,
+    pub height: u32,
+    pub timestamp_us: u64,
+    pub frame_index: u64,
+    pub rgb: Vec<u8>,
+}
+
+impl PreviewBuilder {
+    pub fn new(output_width: u32, output_height: u32, preview_fps: u32) -> Self {
+        let min_interval_us = if preview_fps == 0 {
+            0
+        } else {
+            1_000_000 / u64::from(preview_fps)
+        };
+        Self {
+            output_width,
+            output_height,
+            min_interval_us,
+            last_emit_us: None,
+            mjpeg_decoder: None,
+            scaler: None,
+            scaler_input_pixel: None,
+            scaler_input_dims: None,
+        }
+    }
+
+    pub fn output_width(&self) -> u32 {
+        self.output_width
+    }
+
+    pub fn output_height(&self) -> u32 {
+        self.output_height
+    }
+
+    /// Returns Ok(Some(...)) when the throttle says it's time to publish,
+    /// Ok(None) when the frame is dropped to honour `preview_fps`, and an
+    /// Err for unrecoverable decode/conversion failures.
+    pub fn build(&mut self, frame: &OwnedFrame) -> Result<Option<BuiltPreview>> {
+        let timestamp_us = frame.header.timestamp_us;
+        if !self.is_emit_due(timestamp_us) {
+            return Ok(None);
+        }
+
+        // Depth16 has no libav pixel format; produce a GRAY8 source frame
+        // by mapping each depth sample to an 8-bit intensity (closer is
+        // brighter, fixed 1 m reference matches the legacy visualizer
+        // path so the preview doesn't flicker between frames). swscale
+        // then expands GRAY8 -> RGB24 at preview dimensions, sharing the
+        // normal scaler caching path.
+        let source = if frame.header.pixel_format == PixelFormat::Depth16 {
+            depth16_to_gray8_av_frame(frame)?
+        } else {
+            decode_or_copy_frame_to_av(frame, &mut self.mjpeg_decoder)?
+        };
+        let source_pixel = source.format();
+        self.ensure_scaler(source_pixel, source.width(), source.height())?;
+
+        let scaler = self
+            .scaler
+            .as_mut()
+            .expect("scaler should be initialized after ensure_scaler");
+        let mut rgb_frame = ffmpeg::frame::Video::empty();
+        scaler.run(&source, &mut rgb_frame)?;
+
+        let rgb = compact_rgb_frame(&rgb_frame);
+        self.last_emit_us = Some(timestamp_us);
+        Ok(Some(BuiltPreview {
+            width: self.output_width,
+            height: self.output_height,
+            timestamp_us,
+            frame_index: frame.header.frame_index,
+            rgb,
+        }))
+    }
+
+    fn is_emit_due(&self, timestamp_us: u64) -> bool {
+        match self.last_emit_us {
+            None => true,
+            Some(last) if self.min_interval_us == 0 => timestamp_us >= last,
+            Some(last) => {
+                timestamp_us == 0
+                    || timestamp_us < last
+                    || timestamp_us - last >= self.min_interval_us
+            }
+        }
+    }
+
+    fn ensure_scaler(
+        &mut self,
+        source_pixel: ffmpeg::util::format::pixel::Pixel,
+        source_width: u32,
+        source_height: u32,
+    ) -> Result<()> {
+        let dims = (source_width, source_height);
+        if self.scaler.is_some()
+            && self.scaler_input_pixel == Some(source_pixel)
+            && self.scaler_input_dims == Some(dims)
+        {
+            return Ok(());
+        }
+        let mut scaler = ffmpeg::software::scaling::context::Context::get(
+            source_pixel,
+            source_width,
+            source_height,
+            ffmpeg::util::format::pixel::Pixel::RGB24,
+            self.output_width,
+            self.output_height,
+            ffmpeg::software::scaling::flag::Flags::FAST_BILINEAR,
+        )?;
+        // RGB24 has no concept of color range; tell swscale to interpret
+        // the source according to its J-format flag (full range for MJPG,
+        // limited range for plain YUV422/420). Without this, MJPG previews
+        // would render slightly washed compared to YUYV previews.
+        set_swscale_color_range_to_mpeg(
+            &mut scaler,
+            source_pixel,
+            ffmpeg::util::format::pixel::Pixel::RGB24,
+        )?;
+        self.scaler = Some(scaler);
+        self.scaler_input_pixel = Some(source_pixel);
+        self.scaler_input_dims = Some(dims);
+        Ok(())
+    }
+}
+
+/// RealSense D435 Z16 depth uses a 0.001 m scale by default, so a raw
+/// value of 1000 corresponds to ~1.0 m. Keeping the preview reference
+/// fixed avoids frame-to-frame flicker from per-frame normalization.
+const DEPTH16_PREVIEW_REFERENCE_RAW: u32 = 1000;
+
+/// Build a single-plane GRAY8 AVFrame from a depth16 bus payload, with
+/// the same depth->intensity mapping the legacy visualizer used (closer
+/// = brighter, 0 = black for invalid samples). The PreviewBuilder then
+/// runs swscale GRAY8 -> RGB24 at preview dimensions like any other
+/// camera, so the visualizer stays format-agnostic.
+fn depth16_to_gray8_av_frame(frame: &OwnedFrame) -> Result<ffmpeg::frame::Video> {
+    let width = frame.header.width;
+    let height = frame.header.height;
+    let expected_len = (width as usize) * (height as usize) * 2;
+    if expected_len == 0 {
+        return Err(EncoderError::message(
+            "depth16 preview requires non-empty frame dimensions",
+        ));
+    }
+    if frame.payload.len() < expected_len {
+        return Err(EncoderError::message(format!(
+            "depth16 payload too short: expected at least {} bytes for {}x{}, got {}",
+            expected_len,
+            width,
+            height,
+            frame.payload.len()
+        )));
+    }
+    let mut gray =
+        ffmpeg::frame::Video::new(ffmpeg::util::format::pixel::Pixel::GRAY8, width, height);
+    let stride = gray.stride(0);
+    let dst = gray.data_mut(0);
+    let depth_bytes = &frame.payload[..expected_len];
+    for row in 0..height as usize {
+        let src_row_offset = row * (width as usize) * 2;
+        let dst_row_offset = row * stride;
+        for col in 0..width as usize {
+            let chunk_offset = src_row_offset + col * 2;
+            let depth =
+                u16::from_le_bytes([depth_bytes[chunk_offset], depth_bytes[chunk_offset + 1]])
+                    as u32;
+            let intensity = if depth == 0 {
+                0u8
+            } else {
+                let clamped = depth.min(DEPTH16_PREVIEW_REFERENCE_RAW);
+                (((DEPTH16_PREVIEW_REFERENCE_RAW - clamped) * 255) / DEPTH16_PREVIEW_REFERENCE_RAW)
+                    as u8
+            };
+            dst[dst_row_offset + col] = intensity;
+        }
+    }
+    Ok(gray)
+}
+
+/// Decode an MJPG bus frame into an `AVFrame`, or copy a raw frame
+/// into one. Shared by `LibavSession::decode_or_copy_source` and
+/// `PreviewBuilder::build`. The MJPEG decoder is borrowed from the
+/// caller so each consumer keeps its own per-session state without
+/// crossing thread boundaries.
+fn decode_or_copy_frame_to_av(
+    frame: &OwnedFrame,
+    mjpeg_decoder: &mut Option<ffmpeg::decoder::Video>,
+) -> Result<ffmpeg::frame::Video> {
+    match frame.header.pixel_format {
+        PixelFormat::Mjpeg => {
+            if mjpeg_decoder.is_none() {
+                let codec = ffmpeg::decoder::find(ffmpeg::codec::Id::MJPEG)
+                    .ok_or_else(|| EncoderError::message("MJPEG decoder not available in libav"))?;
+                let context = ffmpeg::codec::context::Context::new_with_codec(codec);
+                *mjpeg_decoder = Some(context.decoder().video()?);
+            }
+            let decoder = mjpeg_decoder
+                .as_mut()
+                .expect("MJPEG decoder is initialized");
+            let packet = ffmpeg::Packet::copy(&frame.payload);
+            decoder.send_packet(&packet)?;
+            let mut decoded = ffmpeg::frame::Video::empty();
+            if decoder.receive_frame(&mut decoded).is_err() {
+                return Err(EncoderError::message(
+                    "MJPEG decoder did not produce a frame for one bus payload",
+                ));
+            }
+            Ok(decoded)
+        }
+        other => {
+            let source_pixel = pixel_format_for_libav(other)?;
+            let mut source =
+                ffmpeg::frame::Video::new(source_pixel, frame.header.width, frame.header.height);
+            copy_frame_payload(&mut source, &frame.header, &frame.payload)?;
+            Ok(source)
+        }
+    }
+}
+
 pub(crate) enum SessionEncoder {
     Libav(LibavSession),
     Rvl(RvlSession),
@@ -87,8 +343,27 @@ pub(crate) struct LibavSession {
     encoder: ffmpeg::encoder::Video,
     stream_index: usize,
     stream_time_base: ffmpeg::Rational,
-    scaler: ffmpeg::software::scaling::context::Context,
-    source_pixel: ffmpeg::util::format::pixel::Pixel,
+    /// Source -> codec-input pixel format scaler. Lazily built on the first
+    /// frame because for MJPG sources the actual source pixel format
+    /// (typically `YUVJ422P` for D4xx-class JPEGs) is only known after
+    /// decoding. For non-MJPG sources we still build it lazily for code
+    /// uniformity, but it's set up on the very first frame.
+    scaler: Option<ffmpeg::software::scaling::context::Context>,
+    /// The pixel format the scaler currently expects on its input. None
+    /// until the first frame; recreated if the source format changes
+    /// mid-session (e.g. an MJPG decoder switching from 422 to 420).
+    scaler_input_pixel: Option<ffmpeg::util::format::pixel::Pixel>,
+    /// Bus pixel format (e.g. Yuyv, Mjpeg, Rgb24) recorded for
+    /// diagnostics and future preview-tap reuse logic. The frame's own
+    /// header drives the decode dispatch so we stay tolerant of a config
+    /// that mid-session declared a different format than its first
+    /// frame; this field stays around as a one-shot snapshot of "what
+    /// the session was configured to expect".
+    #[allow(dead_code)]
+    bus_pixel_format: PixelFormat,
+    /// Per-session MJPEG decoder. Lazily initialized for `Mjpeg` sources;
+    /// `None` for everything else.
+    mjpeg_decoder: Option<ffmpeg::decoder::Video>,
     scale_pixel: ffmpeg::util::format::pixel::Pixel,
     encoder_pixel: ffmpeg::util::format::pixel::Pixel,
     _hw_device: Option<AvBufferRef>,
@@ -172,6 +447,20 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
     ensure_ffmpeg_initialized()?;
 
     let mut codecs = Vec::new();
+    // YUYV and MJPEG are now first-class encoder inputs. The encoder
+    // either copies (YUYV) or runs libavcodec's MJPEG decoder, then
+    // pushes the YUV frames straight into the codec — no camera-side
+    // colorspace conversion required.
+    let video_pixel_formats = &[
+        PixelFormat::Rgb24,
+        PixelFormat::Bgr24,
+        // Gray8 is encoded by scaling to YUV420P first (chroma planes
+        // are filled with neutral gray), which lets infrared cameras
+        // share the video codec used for color streams.
+        PixelFormat::Gray8,
+        PixelFormat::Yuyv,
+        PixelFormat::Mjpeg,
+    ];
     codecs.extend(probe_video_capabilities(
         EncoderCodec::H264,
         &[
@@ -179,10 +468,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        // Gray8 is encoded by scaling to YUV420P first (chroma planes are
-        // filled with neutral gray), which lets infrared cameras share the
-        // video codec used for color streams.
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
+        video_pixel_formats,
         &[EncoderArtifactFormat::Mp4],
     ));
     codecs.extend(probe_video_capabilities(
@@ -192,7 +478,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
+        video_pixel_formats,
         &[EncoderArtifactFormat::Mp4],
     ));
     codecs.extend(probe_video_capabilities(
@@ -202,7 +488,7 @@ pub fn probe_capabilities() -> Result<EncoderCapabilityReport> {
             EncoderBackend::Nvidia,
             EncoderBackend::Vaapi,
         ],
-        &[PixelFormat::Rgb24, PixelFormat::Bgr24, PixelFormat::Gray8],
+        video_pixel_formats,
         &[EncoderArtifactFormat::Mkv],
     ));
     codecs.push(EncoderCapability {
@@ -308,9 +594,29 @@ impl LibavSession {
             ))
         })?;
 
-        let source_pixel = pixel_format_for_libav(first_frame.header.pixel_format)?;
-        let scale_pixel = scaled_pixel_format(config.codec, actual_backend)?;
-        let encoder_pixel = encoder_pixel_format(config.codec, actual_backend)?;
+        // Reject unsupported source formats up front so we don't allocate
+        // a half-initialized session if someone configures, e.g., a depth
+        // stream on the libav path.
+        validate_source_pixel_format(first_frame.header.pixel_format)?;
+        let bus_pixel_format = first_frame.header.pixel_format;
+
+        let chroma_subsampling = resolve_chroma_subsampling(
+            codec_name,
+            actual_backend,
+            config.chroma_subsampling,
+            &config.process_id,
+        );
+        let bit_depth = resolve_bit_depth(
+            codec_name,
+            actual_backend,
+            chroma_subsampling,
+            config.bit_depth,
+            &config.process_id,
+        );
+        let scale_pixel =
+            scaled_pixel_format(config.codec, actual_backend, chroma_subsampling, bit_depth)?;
+        let encoder_pixel =
+            encoder_pixel_format(config.codec, actual_backend, chroma_subsampling, bit_depth)?;
         let mut output = ffmpeg::format::output(&output_path)?;
         let codec = ffmpeg::encoder::find_by_name(codec_name)
             .ok_or_else(|| EncoderError::message(format!("encoder {codec_name} not found")))?;
@@ -336,6 +642,30 @@ impl LibavSession {
         encoder.set_format(encoder_pixel);
         encoder.set_frame_rate(Some(fps));
         encoder.set_time_base(encoder_time_base);
+        // Force TV-range (`MPEG`) output so MJPG (full-range YUVJ*),
+        // YUYV (limited-range YUV422), and the legacy RGB->YUV420P paths
+        // all produce visually identical encoded video. swscale's default
+        // is to keep the source's range, which would let MJPG cameras
+        // emit slightly-brighter clips than YUYV cameras in the same
+        // project. The encoder-side declaration below tells x264/NVENC/
+        // VAAPI to advertise MPEG range in the bitstream metadata; the
+        // actual quantization to TV range happens in `set_swscale_color_range`
+        // when we build the scaler on the first frame.
+        unsafe {
+            (*encoder.as_mut_ptr()).color_range = ffmpeg::ffi::AVColorRange::AVCOL_RANGE_MPEG;
+        }
+        // Optional color metadata: when configured, write color
+        // primaries / transfer / matrix into the bitstream so downstream
+        // players don't have to guess. Default `Auto` leaves the fields
+        // at the libavcodec default (`UNSPECIFIED`), matching the
+        // pre-config behaviour.
+        if let Some((primaries, trc, space)) = color_space_metadata(config.color_space) {
+            unsafe {
+                (*encoder.as_mut_ptr()).color_primaries = primaries;
+                (*encoder.as_mut_ptr()).color_trc = trc;
+                (*encoder.as_mut_ptr()).colorspace = space;
+            }
+        }
         // Disable B-frames so encoded order == display order. With B-frames
         // enabled (libx264 default = 3) the encoder emits packets where
         // `packet.pts` (display time) is smaller than `packet.dts` (decode
@@ -381,7 +711,14 @@ impl LibavSession {
             }
         }
 
-        let opened_encoder = encoder.open_as(codec)?;
+        let codec_options = build_codec_options(
+            codec_name,
+            actual_backend,
+            config.crf,
+            config.preset.as_deref(),
+            config.tune.as_deref(),
+        );
+        let opened_encoder = encoder.open_as_with(codec, codec_options)?;
         let stream_index;
         {
             let mut stream = output.add_stream(codec)?;
@@ -401,16 +738,6 @@ impl LibavSession {
             .ok_or_else(|| EncoderError::message("missing video stream after write_header"))?
             .time_base();
 
-        let scaler = ffmpeg::software::scaling::context::Context::get(
-            source_pixel,
-            first_frame.header.width,
-            first_frame.header.height,
-            scale_pixel,
-            first_frame.header.width,
-            first_frame.header.height,
-            ffmpeg::software::scaling::flag::Flags::BILINEAR,
-        )?;
-
         Ok(Self {
             config,
             actual_backend,
@@ -420,8 +747,10 @@ impl LibavSession {
             encoder: opened_encoder,
             stream_index,
             stream_time_base,
-            scaler,
-            source_pixel,
+            scaler: None,
+            scaler_input_pixel: None,
+            bus_pixel_format,
+            mjpeg_decoder: None,
             scale_pixel,
             encoder_pixel,
             _hw_device: hw_device,
@@ -451,11 +780,23 @@ impl LibavSession {
 
         let started = Instant::now();
         maybe_test_encode_delay();
-        let mut source = ffmpeg::frame::Video::new(self.source_pixel, self.width, self.height);
-        copy_frame_payload(&mut source, &frame.header, &frame.payload)?;
-        source.set_pts(Some(pts_us));
-        let mut converted = None;
-        if self.source_pixel == self.scale_pixel {
+
+        // Step 1: produce a `source` AVFrame from the bus payload. For
+        // MJPG sources we decode the JPEG once via libavcodec; for
+        // YUYV/RGB/BGR/GRAY sources we copy the payload directly into a
+        // freshly-allocated frame.
+        let source = self.decode_or_copy_source(frame, pts_us)?;
+        let source_pixel = source.format();
+
+        // Step 2: ensure the scaler input format matches the actual
+        // source format. If we're processing the very first frame, or
+        // the MJPG decoder switched chroma subsampling mid-session,
+        // (re)build the scaler.
+        self.ensure_scaler(source_pixel)?;
+
+        if source_pixel == self.scale_pixel {
+            // Source already matches the codec's expected input; no
+            // colorspace conversion needed.
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
                     self.hw_frames
@@ -470,7 +811,10 @@ impl LibavSession {
             }
         } else {
             let mut frame_to_scale = ffmpeg::frame::Video::empty();
-            self.scaler.run(&source, &mut frame_to_scale)?;
+            self.scaler
+                .as_mut()
+                .expect("scaler should be initialized after ensure_scaler")
+                .run(&source, &mut frame_to_scale)?;
             frame_to_scale.set_pts(Some(pts_us));
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
@@ -482,11 +826,8 @@ impl LibavSession {
                 )?;
                 self.encoder.send_frame(&hw_frame)?;
             } else {
-                converted = Some(frame_to_scale);
+                self.encoder.send_frame(&frame_to_scale)?;
             }
-        }
-        if let Some(frame_to_send) = converted.as_ref() {
-            self.encoder.send_frame(frame_to_send)?;
         }
         self.last_pts_us = Some(pts_us);
 
@@ -495,6 +836,60 @@ impl LibavSession {
         let encoded_bytes = self.metrics.encoded_bytes - before;
         self.metrics
             .record_frame(frame.payload.len(), encoded_bytes, started.elapsed());
+        Ok(())
+    }
+
+    /// Produce a decoded-or-copied `AVFrame` for one bus payload. For
+    /// MJPG, runs the per-session libavcodec MJPEG decoder. For raw
+    /// formats (RGB/BGR/Gray8/YUYV), copies the payload row-by-row into
+    /// a fresh `AVFrame`. The returned frame already has its PTS set.
+    fn decode_or_copy_source(
+        &mut self,
+        frame: &OwnedFrame,
+        pts_us: i64,
+    ) -> Result<ffmpeg::frame::Video> {
+        let mut decoded = decode_or_copy_frame_to_av(frame, &mut self.mjpeg_decoder)?;
+        if decoded.width() != self.width || decoded.height() != self.height {
+            return Err(EncoderError::message(format!(
+                "decoded {:?} dimensions {}x{} differ from configured {}x{}",
+                frame.header.pixel_format,
+                decoded.width(),
+                decoded.height(),
+                self.width,
+                self.height
+            )));
+        }
+        decoded.set_pts(Some(pts_us));
+        Ok(decoded)
+    }
+
+    fn ensure_scaler(&mut self, source_pixel: ffmpeg::util::format::pixel::Pixel) -> Result<()> {
+        if self.scaler_input_pixel == Some(source_pixel) && self.scaler.is_some() {
+            return Ok(());
+        }
+        if source_pixel == self.scale_pixel {
+            // No scaler needed when source already equals codec input;
+            // record the format so we don't keep re-checking on every
+            // frame.
+            self.scaler_input_pixel = Some(source_pixel);
+            self.scaler = None;
+            return Ok(());
+        }
+        let mut scaler = ffmpeg::software::scaling::context::Context::get(
+            source_pixel,
+            self.width,
+            self.height,
+            self.scale_pixel,
+            self.width,
+            self.height,
+            ffmpeg::software::scaling::flag::Flags::BILINEAR,
+        )?;
+        // Force the scaler to emit limited-range YUV regardless of the
+        // source's range. This makes MJPG (full range) and YUYV (limited
+        // range) cameras produce visually identical output.
+        set_swscale_color_range_to_mpeg(&mut scaler, source_pixel, self.scale_pixel)?;
+        self.scaler = Some(scaler);
+        self.scaler_input_pixel = Some(source_pixel);
         Ok(())
     }
 
@@ -773,27 +1168,263 @@ fn codec_by_name(name: &str, encoder: bool) -> bool {
     }
 }
 
+/// Pixel format that swscale produces for the codec to consume.
+///
+/// CPU codecs take planar (`YUV420P` / `YUV422P` for 8-bit, `*P10LE`
+/// for 10-bit) input; NVENC / VAAPI take semi-planar (`NV12` / `NV16`
+/// for 8-bit, `P010LE` / `P210LE` for 10-bit). The chroma subsampling
+/// is the project-wide setting from `[encoder] chroma_subsampling`,
+/// narrowed down to `S420` when the resolved codec doesn't accept
+/// 4:2:2 (see `resolve_chroma_subsampling`); the bit depth is the
+/// project-wide setting from `[encoder] bit_depth`, narrowed to `8`
+/// when the resolved codec doesn't accept 10-bit input (see
+/// `resolve_bit_depth`).
 fn scaled_pixel_format(
     _codec: EncoderCodec,
     backend: EncoderBackend,
+    subsampling: ChromaSubsampling,
+    bit_depth: u8,
 ) -> Result<ffmpeg::util::format::pixel::Pixel> {
-    let pixel = match backend {
-        EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV420P,
-        EncoderBackend::Nvidia | EncoderBackend::Vaapi => ffmpeg::util::format::pixel::Pixel::NV12,
+    use ffmpeg::util::format::pixel::Pixel;
+    let pixel = match (backend, subsampling, bit_depth) {
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S420, 8) => Pixel::YUV420P,
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S422, 8) => Pixel::YUV422P,
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S420, 10) => {
+            Pixel::YUV420P10LE
+        }
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S422, 10) => {
+            Pixel::YUV422P10LE
+        }
+        (EncoderBackend::Nvidia | EncoderBackend::Vaapi, ChromaSubsampling::S420, 8) => Pixel::NV12,
+        (EncoderBackend::Nvidia | EncoderBackend::Vaapi, ChromaSubsampling::S422, 8) => Pixel::NV16,
+        (EncoderBackend::Nvidia | EncoderBackend::Vaapi, ChromaSubsampling::S420, 10) => {
+            Pixel::P010LE
+        }
+        (EncoderBackend::Nvidia | EncoderBackend::Vaapi, ChromaSubsampling::S422, 10) => {
+            Pixel::P210LE
+        }
+        (_, _, depth) => {
+            return Err(EncoderError::message(format!(
+                "unsupported bit_depth {depth} (must be 8 or 10); upstream validation should have rejected this"
+            )));
+        }
     };
     Ok(pixel)
 }
 
 fn encoder_pixel_format(
-    _codec: EncoderCodec,
+    codec: EncoderCodec,
     backend: EncoderBackend,
+    subsampling: ChromaSubsampling,
+    bit_depth: u8,
 ) -> Result<ffmpeg::util::format::pixel::Pixel> {
-    let pixel = match backend {
-        EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV420P,
-        EncoderBackend::Nvidia => ffmpeg::util::format::pixel::Pixel::NV12,
-        EncoderBackend::Vaapi => ffmpeg::util::format::pixel::Pixel::VAAPI,
+    use ffmpeg::util::format::pixel::Pixel;
+    // VAAPI uploads from any sw input format end up in a hwaccel
+    // surface; the actual chroma / bit layout is set on the
+    // hw_frames_ctx sw_format, which we point at `scaled_pixel_format`.
+    if backend == EncoderBackend::Vaapi {
+        return Ok(Pixel::VAAPI);
+    }
+    // For CPU + NVENC, the encoder input format mirrors the swscale
+    // output format chosen above.
+    scaled_pixel_format(codec, backend, subsampling, bit_depth)
+}
+
+/// Pick the chroma subsampling we'll actually use for this encoder
+/// session. Starts from the project-wide config and falls back to
+/// `S420` if the resolved encoder doesn't advertise 4:2:2 input. Logs a
+/// one-line stderr warning when a fallback happens so the operator
+/// knows their `chroma_subsampling = "422"` setting was downgraded.
+fn resolve_chroma_subsampling(
+    codec_name: &str,
+    backend: EncoderBackend,
+    requested: ChromaSubsampling,
+    process_id: &str,
+) -> ChromaSubsampling {
+    if requested == ChromaSubsampling::S420 {
+        return ChromaSubsampling::S420;
+    }
+    // For VAAPI we need to check the hwaccel sw_format; the codec's
+    // pix_fmts list itself only contains `Pixel::VAAPI`. Conservatively
+    // assume 4:2:2 is unsupported on VAAPI unless / until we add a
+    // proper feature probe — most consumer Intel iGPUs only do 4:2:0.
+    if backend == EncoderBackend::Vaapi {
+        eprintln!(
+            "rollio-encoder: process={process_id} downgrading chroma_subsampling to 4:2:0 \
+             (vaapi 4:2:2 input is not currently supported by this encoder build)"
+        );
+        return ChromaSubsampling::S420;
+    }
+    let Some(codec) = ffmpeg::encoder::find_by_name(codec_name) else {
+        return ChromaSubsampling::S420;
     };
-    Ok(pixel)
+    let Ok(codec_video) = codec.video() else {
+        return ChromaSubsampling::S420;
+    };
+    let Some(formats) = codec_video.formats() else {
+        // Codec didn't advertise any pix_fmts — be conservative and
+        // stick with the universally-supported 4:2:0.
+        return ChromaSubsampling::S420;
+    };
+    let wanted = match backend {
+        EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV422P,
+        EncoderBackend::Nvidia => ffmpeg::util::format::pixel::Pixel::NV16,
+        EncoderBackend::Vaapi => unreachable!("vaapi handled above"),
+    };
+    let supports_422 = formats.into_iter().any(|fmt| fmt == wanted);
+    if supports_422 {
+        ChromaSubsampling::S422
+    } else {
+        eprintln!(
+            "rollio-encoder: process={process_id} downgrading chroma_subsampling to 4:2:0 \
+             (codec={codec_name} does not advertise {wanted:?} as a supported input format)"
+        );
+        ChromaSubsampling::S420
+    }
+}
+
+/// Pick the codec input bit depth we'll actually use. Starts from the
+/// project-wide config and falls back to `8` when the resolved encoder
+/// doesn't advertise the matching 10-bit pixel format. Logs a one-line
+/// stderr warning when a fallback happens so the operator knows their
+/// `bit_depth = 10` setting was downgraded (typically because the
+/// host's `libx264` is the 8-bit-only build, or because the hardware
+/// encoder doesn't support 10-bit input on this generation).
+fn resolve_bit_depth(
+    codec_name: &str,
+    backend: EncoderBackend,
+    subsampling: ChromaSubsampling,
+    requested: u8,
+    process_id: &str,
+) -> u8 {
+    if requested == 8 {
+        return 8;
+    }
+    if requested != 10 {
+        eprintln!(
+            "rollio-encoder: process={process_id} unexpected bit_depth={requested}; \
+             falling back to 8-bit (only 8 and 10 are supported)"
+        );
+        return 8;
+    }
+    if backend == EncoderBackend::Vaapi {
+        eprintln!(
+            "rollio-encoder: process={process_id} downgrading bit_depth to 8 \
+             (vaapi 10-bit input is not currently wired up in this encoder build)"
+        );
+        return 8;
+    }
+    let Some(codec) = ffmpeg::encoder::find_by_name(codec_name) else {
+        return 8;
+    };
+    let Ok(codec_video) = codec.video() else {
+        return 8;
+    };
+    let Some(formats) = codec_video.formats() else {
+        return 8;
+    };
+    let wanted = match (backend, subsampling) {
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S420) => {
+            ffmpeg::util::format::pixel::Pixel::YUV420P10LE
+        }
+        (EncoderBackend::Cpu | EncoderBackend::Auto, ChromaSubsampling::S422) => {
+            ffmpeg::util::format::pixel::Pixel::YUV422P10LE
+        }
+        (EncoderBackend::Nvidia, ChromaSubsampling::S420) => {
+            ffmpeg::util::format::pixel::Pixel::P010LE
+        }
+        (EncoderBackend::Nvidia, ChromaSubsampling::S422) => {
+            ffmpeg::util::format::pixel::Pixel::P210LE
+        }
+        (EncoderBackend::Vaapi, _) => unreachable!("vaapi handled above"),
+    };
+    if formats.into_iter().any(|fmt| fmt == wanted) {
+        10
+    } else {
+        eprintln!(
+            "rollio-encoder: process={process_id} downgrading bit_depth to 8 \
+             (codec={codec_name} does not advertise {wanted:?} as a supported input format; \
+             check that the host has the 10-bit build of libx264/libx265)"
+        );
+        8
+    }
+}
+
+/// Map a configured `EncoderColorSpace` to the three ffi codec context
+/// fields (`color_primaries`, `color_trc`, `colorspace`). Returns
+/// `None` for `Auto` so the caller leaves the fields at the libavcodec
+/// default of `UNSPECIFIED`.
+fn color_space_metadata(
+    color_space: EncoderColorSpace,
+) -> Option<(
+    ffmpeg::ffi::AVColorPrimaries,
+    ffmpeg::ffi::AVColorTransferCharacteristic,
+    ffmpeg::ffi::AVColorSpace,
+)> {
+    use ffmpeg::ffi::AVColorPrimaries::*;
+    use ffmpeg::ffi::AVColorSpace::*;
+    use ffmpeg::ffi::AVColorTransferCharacteristic::*;
+    match color_space {
+        EncoderColorSpace::Auto => None,
+        EncoderColorSpace::Bt709Limited => {
+            Some((AVCOL_PRI_BT709, AVCOL_TRC_BT709, AVCOL_SPC_BT709))
+        }
+        EncoderColorSpace::Bt601Limited => Some((
+            // BT.601 NTSC primaries (smpte170m); use BT.470BG primaries
+            // for PAL if a PAL-specific source ever shows up. The
+            // SMPTE170M / BT.601 transfer matches both.
+            AVCOL_PRI_SMPTE170M,
+            AVCOL_TRC_SMPTE170M,
+            AVCOL_SPC_SMPTE170M,
+        )),
+    }
+}
+
+/// Build the codec options dictionary that's passed to
+/// `open_as_with(codec, opts)`. Translates our portable `crf` /
+/// `preset` / `tune` knobs into the right per-encoder names (e.g.
+/// NVENC uses `cq` instead of `crf` and needs `rc=vbr` to honour it).
+fn build_codec_options(
+    codec_name: &str,
+    backend: EncoderBackend,
+    crf: Option<u8>,
+    preset: Option<&str>,
+    tune: Option<&str>,
+) -> ffmpeg::Dictionary<'static> {
+    let mut opts = ffmpeg::Dictionary::new();
+    if let Some(preset) = preset {
+        opts.set("preset", preset);
+    }
+    if let Some(tune) = tune {
+        opts.set("tune", tune);
+    }
+    if let Some(crf) = crf {
+        let crf_str = crf.to_string();
+        match (codec_name, backend) {
+            // NVENC has no CRF; map to constant-quality with VBR rate
+            // control. Setting `rc` ensures `cq` is actually honoured
+            // instead of being silently overridden by the default
+            // bitrate-target rate control.
+            (
+                "h264_nvenc" | "hevc_nvenc" | "av1_nvenc",
+                EncoderBackend::Nvidia | EncoderBackend::Auto,
+            ) => {
+                opts.set("rc", "vbr");
+                opts.set("cq", &crf_str);
+            }
+            // VAAPI uses constant-QP; set rc_mode + qp.
+            (_, EncoderBackend::Vaapi) => {
+                opts.set("rc_mode", "CQP");
+                opts.set("qp", &crf_str);
+            }
+            // x264 / x265 / svtav1 / librav1e / libaom-av1 all accept
+            // `crf` as a private codec option.
+            _ => {
+                opts.set("crf", &crf_str);
+            }
+        }
+    }
+    opts
 }
 
 fn create_hw_device(backend: EncoderBackend) -> Result<AvBufferRef> {
@@ -906,13 +1537,80 @@ fn pixel_format_for_libav(pixel_format: PixelFormat) -> Result<ffmpeg::util::for
         PixelFormat::Rgb24 => Ok(ffmpeg::util::format::pixel::Pixel::RGB24),
         PixelFormat::Bgr24 => Ok(ffmpeg::util::format::pixel::Pixel::BGR24),
         PixelFormat::Gray8 => Ok(ffmpeg::util::format::pixel::Pixel::GRAY8),
+        PixelFormat::Yuyv => Ok(ffmpeg::util::format::pixel::Pixel::YUYV422),
+        PixelFormat::Mjpeg => Err(EncoderError::message(
+            "MJPEG frames are decoded via libav's MJPEG decoder, not via a direct AVFrame copy; \
+             this code path should not be reached",
+        )),
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",
         )),
-        PixelFormat::Yuyv | PixelFormat::Mjpeg => Err(EncoderError::message(
-            "yuyv and mjpeg frames are not currently supported by the encoder runtime",
+    }
+}
+
+/// Validate that a bus pixel format is a supported libav source. The
+/// per-pixel-format sanity checks live here so `LibavSession::new` can
+/// reject bad configs before allocating ffmpeg handles.
+fn validate_source_pixel_format(pixel_format: PixelFormat) -> Result<()> {
+    match pixel_format {
+        PixelFormat::Rgb24
+        | PixelFormat::Bgr24
+        | PixelFormat::Gray8
+        | PixelFormat::Yuyv
+        | PixelFormat::Mjpeg => Ok(()),
+        PixelFormat::Depth16 => Err(EncoderError::message(
+            "depth16 frames are only supported via the RVL backend",
         )),
     }
+}
+
+/// Tell swscale to emit limited-range YUV (TV range, 16..235 / 16..240).
+/// MJPEG decoders produce full-range YUVJ frames; without this the encoder
+/// would propagate full range while we declare MPEG range on the encoder
+/// context, and players that honor the metadata would render brighter
+/// than expected. We force quantization to limited range here so MJPG,
+/// YUYV, and the legacy RGB->YUV420P paths all yield visually identical
+/// encoded output.
+fn set_swscale_color_range_to_mpeg(
+    scaler: &mut ffmpeg::software::scaling::context::Context,
+    source_pixel: ffmpeg::util::format::pixel::Pixel,
+    scale_pixel: ffmpeg::util::format::pixel::Pixel,
+) -> Result<()> {
+    use ffmpeg::ffi as f;
+    // BT.601 vs BT.709 doesn't matter for the range-flip we want here;
+    // both are accurate enough at standard webcam resolutions and
+    // matches what swscale would've picked by default.
+    let table = unsafe { f::sws_getCoefficients(f::SWS_CS_ITU601) };
+    let src_full_range = matches!(
+        source_pixel,
+        ffmpeg::util::format::pixel::Pixel::YUVJ420P
+            | ffmpeg::util::format::pixel::Pixel::YUVJ422P
+            | ffmpeg::util::format::pixel::Pixel::YUVJ444P
+    ) as i32;
+    let dst_full_range = matches!(
+        scale_pixel,
+        ffmpeg::util::format::pixel::Pixel::YUVJ420P
+            | ffmpeg::util::format::pixel::Pixel::YUVJ422P
+            | ffmpeg::util::format::pixel::Pixel::YUVJ444P
+    ) as i32;
+    let result = unsafe {
+        f::sws_setColorspaceDetails(
+            scaler.as_mut_ptr(),
+            table,
+            src_full_range,
+            table,
+            dst_full_range,
+            0,
+            65_536,
+            65_536,
+        )
+    };
+    if result < 0 {
+        return Err(EncoderError::message(format!(
+            "sws_setColorspaceDetails failed (rc={result})"
+        )));
+    }
+    Ok(())
 }
 
 fn ensure_frame_compatibility(header: &CameraFrameHeader, width: u32, height: u32) -> Result<()> {
@@ -932,16 +1630,28 @@ fn copy_frame_payload(
 ) -> Result<()> {
     let bytes_per_pixel = match header.pixel_format {
         PixelFormat::Rgb24 | PixelFormat::Bgr24 => 3,
+        PixelFormat::Yuyv => 2,
         PixelFormat::Gray8 => 1,
         other => {
             return Err(EncoderError::message(format!(
-                "unsupported libav source format: {:?}",
+                "unsupported libav source format for direct AVFrame copy: {:?}",
                 other
             )))
         }
     };
     let row_bytes = header.width as usize * bytes_per_pixel;
     let stride = frame.stride(0);
+    let expected_bytes = row_bytes * header.height as usize;
+    if payload.len() < expected_bytes {
+        return Err(EncoderError::message(format!(
+            "{:?} payload too short: expected at least {} bytes for {}x{}, got {}",
+            header.pixel_format,
+            expected_bytes,
+            header.width,
+            header.height,
+            payload.len()
+        )));
+    }
     for row in 0..header.height as usize {
         let src_offset = row * row_bytes;
         let dst_offset = row * stride;
@@ -1283,5 +1993,368 @@ mod pts_tests {
             Some(0)
         );
         assert_eq!(last_pts_us, Some(0));
+    }
+
+    #[test]
+    fn validate_source_pixel_format_accepts_supported_inputs() {
+        for pf in [
+            PixelFormat::Rgb24,
+            PixelFormat::Bgr24,
+            PixelFormat::Gray8,
+            PixelFormat::Yuyv,
+            PixelFormat::Mjpeg,
+        ] {
+            validate_source_pixel_format(pf)
+                .unwrap_or_else(|err| panic!("{pf:?} should validate: {err}"));
+        }
+    }
+
+    #[test]
+    fn validate_source_pixel_format_rejects_depth16() {
+        let err = validate_source_pixel_format(PixelFormat::Depth16)
+            .expect_err("depth16 must be rejected on the libav path");
+        assert!(
+            err.to_string().contains("depth16"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn pixel_format_for_libav_maps_yuyv_to_yuyv422() {
+        assert_eq!(
+            pixel_format_for_libav(PixelFormat::Yuyv).expect("yuyv should map"),
+            ffmpeg::util::format::pixel::Pixel::YUYV422,
+        );
+    }
+
+    #[test]
+    fn preview_builder_throttles_to_preview_fps() {
+        // 10 fps preview rate -> 100_000 us interval. Frames spaced 50_000
+        // us apart should drop every other one.
+        ensure_ffmpeg_initialized().expect("ffmpeg init");
+        let mut builder = PreviewBuilder::new(8, 8, 10);
+
+        // First frame at t=0 always emits.
+        let frame0 = make_rgb_frame(8, 8, 0);
+        let preview0 = builder.build(&frame0).expect("first frame should build");
+        assert!(preview0.is_some(), "first frame should always emit");
+
+        // Second frame at t=50_000 (50ms later) is below the 100ms
+        // throttle interval and must drop.
+        let mut frame1 = make_rgb_frame(8, 8, 0);
+        frame1.header.timestamp_us = 50_000;
+        frame1.header.frame_index = 1;
+        let preview1 = builder
+            .build(&frame1)
+            .expect("second frame call should not error");
+        assert!(
+            preview1.is_none(),
+            "frame within throttle interval must drop"
+        );
+
+        // Third frame at t=100_000 (100ms later) is exactly at the
+        // throttle interval and must emit.
+        let mut frame2 = make_rgb_frame(8, 8, 0);
+        frame2.header.timestamp_us = 100_000;
+        frame2.header.frame_index = 2;
+        let preview2 = builder.build(&frame2).expect("third frame should build");
+        assert!(preview2.is_some(), "frame at throttle boundary should emit");
+    }
+
+    #[test]
+    fn scaled_pixel_format_picks_planar_yuv422_for_cpu_when_requested() {
+        let pix = scaled_pixel_format(
+            EncoderCodec::H264,
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            8,
+        )
+        .expect("cpu+422 should resolve");
+        assert_eq!(pix, ffmpeg::util::format::pixel::Pixel::YUV422P);
+    }
+
+    #[test]
+    fn scaled_pixel_format_keeps_yuv420p_for_cpu_when_s420() {
+        let pix = scaled_pixel_format(
+            EncoderCodec::H264,
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S420,
+            8,
+        )
+        .expect("cpu+420 should resolve");
+        assert_eq!(pix, ffmpeg::util::format::pixel::Pixel::YUV420P);
+    }
+
+    #[test]
+    fn scaled_pixel_format_picks_nv16_for_nvidia_422() {
+        let pix = scaled_pixel_format(
+            EncoderCodec::H264,
+            EncoderBackend::Nvidia,
+            ChromaSubsampling::S422,
+            8,
+        )
+        .expect("nvidia+422 should resolve");
+        assert_eq!(pix, ffmpeg::util::format::pixel::Pixel::NV16);
+    }
+
+    #[test]
+    fn scaled_pixel_format_picks_yuv422p10le_for_cpu_when_10_bit() {
+        let pix = scaled_pixel_format(
+            EncoderCodec::H264,
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            10,
+        )
+        .expect("cpu+422+10 should resolve");
+        assert_eq!(pix, ffmpeg::util::format::pixel::Pixel::YUV422P10LE);
+    }
+
+    #[test]
+    fn scaled_pixel_format_picks_p010le_for_nvidia_when_10_bit_420() {
+        let pix = scaled_pixel_format(
+            EncoderCodec::H264,
+            EncoderBackend::Nvidia,
+            ChromaSubsampling::S420,
+            10,
+        )
+        .expect("nvidia+420+10 should resolve");
+        assert_eq!(pix, ffmpeg::util::format::pixel::Pixel::P010LE);
+    }
+
+    #[test]
+    fn resolve_bit_depth_passes_through_8_unchanged() {
+        let resolved = resolve_bit_depth(
+            "libx264",
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            8,
+            "test",
+        );
+        assert_eq!(resolved, 8);
+    }
+
+    #[test]
+    fn resolve_bit_depth_downgrades_unknown_value() {
+        let resolved = resolve_bit_depth(
+            "libx264",
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            12,
+            "test",
+        );
+        assert_eq!(resolved, 8);
+    }
+
+    #[test]
+    fn resolve_bit_depth_always_downgrades_for_vaapi() {
+        let resolved = resolve_bit_depth(
+            "h264_vaapi",
+            EncoderBackend::Vaapi,
+            ChromaSubsampling::S420,
+            10,
+            "test",
+        );
+        assert_eq!(resolved, 8);
+    }
+
+    #[test]
+    fn build_codec_options_maps_crf_to_cq_for_nvenc() {
+        let opts = build_codec_options(
+            "h264_nvenc",
+            EncoderBackend::Nvidia,
+            Some(20),
+            Some("p5"),
+            None,
+        );
+        assert_eq!(opts.get("cq"), Some("20"));
+        assert_eq!(opts.get("rc"), Some("vbr"));
+        assert_eq!(opts.get("preset"), Some("p5"));
+        assert_eq!(opts.get("crf"), None);
+    }
+
+    #[test]
+    fn build_codec_options_maps_crf_to_qp_for_vaapi() {
+        let opts = build_codec_options("h264_vaapi", EncoderBackend::Vaapi, Some(22), None, None);
+        assert_eq!(opts.get("qp"), Some("22"));
+        assert_eq!(opts.get("rc_mode"), Some("CQP"));
+    }
+
+    #[test]
+    fn build_codec_options_uses_crf_for_libx264() {
+        let opts = build_codec_options(
+            "libx264",
+            EncoderBackend::Cpu,
+            Some(18),
+            Some("slow"),
+            Some("film"),
+        );
+        assert_eq!(opts.get("crf"), Some("18"));
+        assert_eq!(opts.get("preset"), Some("slow"));
+        assert_eq!(opts.get("tune"), Some("film"));
+    }
+
+    #[test]
+    fn build_codec_options_emits_nothing_when_all_unset() {
+        let opts = build_codec_options("libx264", EncoderBackend::Cpu, None, None, None);
+        assert_eq!(opts.get("crf"), None);
+        assert_eq!(opts.get("preset"), None);
+        assert_eq!(opts.get("tune"), None);
+    }
+
+    #[test]
+    fn color_space_metadata_maps_bt709_correctly() {
+        let mapped = color_space_metadata(EncoderColorSpace::Bt709Limited)
+            .expect("bt709 should produce metadata");
+        assert_eq!(mapped.0, ffmpeg::ffi::AVColorPrimaries::AVCOL_PRI_BT709);
+        assert_eq!(
+            mapped.1,
+            ffmpeg::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709
+        );
+        assert_eq!(mapped.2, ffmpeg::ffi::AVColorSpace::AVCOL_SPC_BT709);
+    }
+
+    #[test]
+    fn color_space_metadata_returns_none_for_auto() {
+        assert!(color_space_metadata(EncoderColorSpace::Auto).is_none());
+    }
+
+    #[test]
+    fn resolve_chroma_subsampling_downgrades_for_unsupported_codec() {
+        ensure_ffmpeg_initialized().expect("ffmpeg init");
+        // libsvtav1 only supports 4:2:0, so requesting 4:2:2 must
+        // downgrade. If libsvtav1 isn't built into this ffmpeg, the
+        // codec lookup fails and we still return S420.
+        let resolved = resolve_chroma_subsampling(
+            "libsvtav1",
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            "test-process",
+        );
+        assert_eq!(resolved, ChromaSubsampling::S420);
+    }
+
+    #[test]
+    fn resolve_chroma_subsampling_passes_through_s420_unchanged() {
+        let resolved = resolve_chroma_subsampling(
+            "libx264",
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S420,
+            "test-process",
+        );
+        assert_eq!(resolved, ChromaSubsampling::S420);
+    }
+
+    #[test]
+    fn resolve_chroma_subsampling_keeps_s422_for_libx264_cpu() {
+        ensure_ffmpeg_initialized().expect("ffmpeg init");
+        // libx264 supports YUV422P natively. The session would happily
+        // ingest 4:2:2 input on this codec/backend pair.
+        let resolved = resolve_chroma_subsampling(
+            "libx264",
+            EncoderBackend::Cpu,
+            ChromaSubsampling::S422,
+            "test-process",
+        );
+        assert_eq!(resolved, ChromaSubsampling::S422);
+    }
+
+    #[test]
+    fn resolve_chroma_subsampling_always_downgrades_for_vaapi() {
+        // VAAPI 4:2:2 input is currently not wired up; conservative
+        // fallback so a misconfigured project doesn't fail mid-encode.
+        let resolved = resolve_chroma_subsampling(
+            "h264_vaapi",
+            EncoderBackend::Vaapi,
+            ChromaSubsampling::S422,
+            "test-process",
+        );
+        assert_eq!(resolved, ChromaSubsampling::S420);
+    }
+
+    #[test]
+    fn preview_builder_outputs_rgb24_at_target_dimensions() {
+        ensure_ffmpeg_initialized().expect("ffmpeg init");
+        // High preview_fps so throttling never blocks us; we just want to
+        // verify the output dims and channel count.
+        let mut builder = PreviewBuilder::new(16, 12, 1000);
+
+        let frame = make_rgb_frame(64, 48, 1);
+        let preview = builder
+            .build(&frame)
+            .expect("build should succeed")
+            .expect("first frame should emit");
+        assert_eq!(preview.width, 16);
+        assert_eq!(preview.height, 12);
+        // 16 x 12 x 3 channels.
+        assert_eq!(preview.rgb.len(), 16 * 12 * 3);
+    }
+
+    /// Regression: depth16 frames have no libav pixel format, so the
+    /// PreviewBuilder used to error and the visualizer's depth tile went
+    /// dark forever. The encoder now does the depth->grayscale RGB
+    /// conversion on its preview tap path.
+    #[test]
+    fn preview_builder_handles_depth16_frames() {
+        ensure_ffmpeg_initialized().expect("ffmpeg init");
+        let mut builder = PreviewBuilder::new(16, 16, 1000);
+        let width = 32u32;
+        let height = 32u32;
+        // Linear depth ramp from 0 to 1024; values >= 1000 clamp to 0
+        // intensity (far / out of preview range), value 0 stays 0
+        // (invalid sample), and values in [1, 999] map to a non-zero
+        // intensity.
+        let mut payload = Vec::with_capacity((width * height * 2) as usize);
+        for i in 0..(width * height) as u32 {
+            let depth = (i % 1024) as u16;
+            payload.extend_from_slice(&depth.to_le_bytes());
+        }
+        let frame = OwnedFrame {
+            header: CameraFrameHeader {
+                timestamp_us: 0,
+                width,
+                height,
+                pixel_format: PixelFormat::Depth16,
+                frame_index: 0,
+            },
+            payload,
+        };
+
+        let preview = builder
+            .build(&frame)
+            .expect("depth16 preview should not error")
+            .expect("depth16 frame should emit");
+        assert_eq!(preview.width, 16);
+        assert_eq!(preview.height, 16);
+        assert_eq!(preview.rgb.len(), 16 * 16 * 3);
+        // The middle of the source ramp has values around ~500 -> ~127
+        // intensity, so at least one preview pixel should be neither 0
+        // nor 255.
+        assert!(
+            preview.rgb.iter().any(|&v| v > 0 && v < 255),
+            "depth preview should contain mid-range intensity values"
+        );
+    }
+
+    fn make_rgb_frame(width: u32, height: u32, frame_index: u64) -> OwnedFrame {
+        let pixels = (width as usize) * (height as usize);
+        let mut payload = Vec::with_capacity(pixels * 3);
+        for i in 0..pixels {
+            // Cheap repeating colour so tests are deterministic.
+            payload.extend_from_slice(&[
+                (i % 256) as u8,
+                ((i + 64) % 256) as u8,
+                ((i + 128) % 256) as u8,
+            ]);
+        }
+        OwnedFrame {
+            header: CameraFrameHeader {
+                timestamp_us: 0,
+                width,
+                height,
+                pixel_format: PixelFormat::Rgb24,
+                frame_index,
+            },
+            payload,
+        }
     }
 }

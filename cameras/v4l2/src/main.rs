@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use iceoryx2::prelude::*;
-use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat as JpegPixelFormat};
 use rollio_bus::{channel_frames_service_name, CONTROL_EVENTS_SERVICE};
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, DeviceQueryChannel, DeviceQueryDevice,
@@ -11,7 +10,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
-use std::io::{self, Cursor};
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use v4l::buffer::Type;
@@ -132,6 +131,14 @@ struct CapabilityProfile {
     fps: f64,
 }
 
+/// Converts (or passes through) V4L2 mmap buffers into the configured bus
+/// pixel format. The driver no longer JPEG-decodes or YUV-converts on the
+/// camera side: those formats are now published verbatim and decoded by
+/// the encoder, which uses libavcodec (orders of magnitude faster than the
+/// previous pure-Rust paths). Only the cheap RGB byte-swap and grayscale
+/// expansion remain, used when an RGB-native camera is configured to
+/// publish a different RGB ordering or when an IR sensor publishes
+/// `gray8` over `rgb24`.
 #[derive(Debug)]
 struct FrameConverter {
     width: u32,
@@ -172,10 +179,11 @@ impl TryFrom<BinaryDeviceConfig> for RunConfig {
         let pixel_format = profile.pixel_format;
 
         match pixel_format {
-            PixelFormat::Rgb24 | PixelFormat::Bgr24 => {}
+            PixelFormat::Rgb24 | PixelFormat::Bgr24 | PixelFormat::Yuyv | PixelFormat::Mjpeg => {}
             other => {
                 return Err(format!(
-                    "v4l2 driver requires pixel_format to be rgb24 or bgr24, got {}",
+                    "v4l2 driver requires pixel_format to be one of \
+                     rgb24, bgr24, yuyv, mjpeg; got {}",
                     other.as_ref()
                 )
                 .into())
@@ -195,39 +203,117 @@ impl TryFrom<BinaryDeviceConfig> for RunConfig {
     }
 }
 
+/// One frame from V4L2, ready to publish on the bus. The slice may either
+/// reference the V4L2 mmap buffer directly (passthrough fast path) or the
+/// converter's internal `scratch` buffer (cheap byte swap / GRAY expansion).
+#[derive(Debug)]
+enum ConvertedFrame<'a> {
+    /// The V4L2 native format already matches the configured bus format —
+    /// publish the mmap slice verbatim. Used for YUYV→YUYV, MJPG→MJPG,
+    /// RGB→RGB, BGR→BGR and GRAY→GRAY (although GRAY is not currently a
+    /// supported bus format).
+    Passthrough(&'a [u8]),
+    /// One of the cheap RGB-byte-swap or GRAY8→RGB24 expansion paths
+    /// produced this slice.
+    Converted(&'a [u8]),
+}
+
+impl ConvertedFrame<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            ConvertedFrame::Passthrough(slice) | ConvertedFrame::Converted(slice) => slice,
+        }
+    }
+}
+
 impl FrameConverter {
     fn new(width: u32, height: u32, output_pixel_format: PixelFormat) -> Result<Self, DynError> {
-        let payload_len = payload_len(width, height)?;
+        // The scratch buffer only holds RGB-like output (RGB24 or BGR24).
+        // YUYV / MJPG paths use passthrough and never touch this buffer.
+        let scratch_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or("frame payload size overflow")?;
         Ok(Self {
             width,
             height,
             output_pixel_format,
-            scratch: vec![0; payload_len],
+            scratch: vec![0; scratch_len],
         })
     }
 
-    fn convert(&mut self, frame_data: &[u8], native_fourcc: FourCC) -> Result<&[u8], DynError> {
-        if native_fourcc.repr == RGB3_BYTES {
-            self.copy_rgb_like(frame_data, false)
-        } else if native_fourcc.repr == BGR3_BYTES {
-            self.copy_rgb_like(frame_data, true)
-        } else if native_fourcc.repr == YUYV_BYTES || native_fourcc.repr == YUY2_BYTES {
-            self.convert_yuyv(frame_data)
-        } else if native_fourcc.repr == MJPG_BYTES || native_fourcc.repr == JPEG_BYTES {
-            self.decode_mjpeg(frame_data)
-        } else if native_fourcc.repr == GREY_BYTES {
-            self.expand_gray(frame_data)
-        } else {
-            Err(format!(
-                "unsupported negotiated V4L2 pixel format {}",
-                fourcc_to_string(native_fourcc)
-            )
-            .into())
+    /// Map a V4L2 native fourcc to its corresponding bus `PixelFormat`, if
+    /// any. Used to detect when the bus format matches the V4L2 native
+    /// format so we can take the passthrough fast path.
+    fn fourcc_to_bus_format(fourcc: FourCC) -> Option<PixelFormat> {
+        match fourcc.repr {
+            RGB3_BYTES => Some(PixelFormat::Rgb24),
+            BGR3_BYTES => Some(PixelFormat::Bgr24),
+            YUYV_BYTES | YUY2_BYTES => Some(PixelFormat::Yuyv),
+            MJPG_BYTES | JPEG_BYTES => Some(PixelFormat::Mjpeg),
+            // V4L2 GREY (Y8) maps to bus `Gray8`, but no current driver
+            // configuration publishes Gray8 over the V4L2 bus topic — IR
+            // streams come from RealSense.
+            _ => None,
         }
     }
 
-    fn copy_rgb_like(&mut self, frame_data: &[u8], input_is_bgr: bool) -> Result<&[u8], DynError> {
-        let expected_len = payload_len(self.width, self.height)?;
+    /// Returns true when the per-frame converter can produce `bus_format`
+    /// from a V4L2 buffer in `native_fourcc`. Either the formats match
+    /// (passthrough fast path) or we have one of the cheap conversions
+    /// (RGB<->BGR memcpy, GREY->RGB expansion). Used by `configure_capture`
+    /// to fail at startup instead of dropping every frame at runtime.
+    fn can_publish_native_as(native_fourcc: FourCC, bus_format: PixelFormat) -> bool {
+        if Self::fourcc_to_bus_format(native_fourcc) == Some(bus_format) {
+            return true;
+        }
+        matches!(
+            (native_fourcc.repr, bus_format),
+            (RGB3_BYTES, PixelFormat::Bgr24)
+                | (BGR3_BYTES, PixelFormat::Rgb24)
+                | (GREY_BYTES, PixelFormat::Rgb24)
+                | (GREY_BYTES, PixelFormat::Bgr24)
+        )
+    }
+
+    fn convert<'a>(
+        &'a mut self,
+        frame_data: &'a [u8],
+        native_fourcc: FourCC,
+    ) -> Result<ConvertedFrame<'a>, DynError> {
+        // Fast path: V4L2 native already matches the bus format; publish
+        // the mmap buffer verbatim. The encoder (or any other subscriber)
+        // is responsible for decoding YUYV/MJPG when needed.
+        if Self::fourcc_to_bus_format(native_fourcc) == Some(self.output_pixel_format) {
+            return Ok(ConvertedFrame::Passthrough(frame_data));
+        }
+
+        // Cheap converters: only RGB↔BGR swaps and GREY→RGB expansion are
+        // kept on the camera side. Everything else (YUYV→RGB, JPEG decode)
+        // moved to the encoder so we don't burn CPU on the hot capture
+        // thread.
+        match (native_fourcc.repr, self.output_pixel_format) {
+            (RGB3_BYTES, PixelFormat::Bgr24) => self.copy_rgb_swapped(frame_data),
+            (BGR3_BYTES, PixelFormat::Rgb24) => self.copy_rgb_swapped(frame_data),
+            (GREY_BYTES, PixelFormat::Rgb24) | (GREY_BYTES, PixelFormat::Bgr24) => {
+                self.expand_gray(frame_data)
+            }
+            (native, _) => Err(format!(
+                "v4l2 native pixel format {} cannot be converted to bus format {} on the camera side. \
+                 Set `pixel_format = \"yuyv\"` or `pixel_format = \"mjpeg\"` so the raw frames \
+                 are published verbatim and decoded downstream by the encoder.",
+                fourcc_to_string(FourCC::new(&native)),
+                self.output_pixel_format.as_ref()
+            )
+            .into()),
+        }
+    }
+
+    fn copy_rgb_swapped<'a>(
+        &'a mut self,
+        frame_data: &[u8],
+    ) -> Result<ConvertedFrame<'a>, DynError> {
+        let expected_len = self.scratch.len();
         if frame_data.len() < expected_len {
             return Err(format!(
                 "frame payload too short for {}x{} RGB frame: expected at least {} bytes, got {}",
@@ -238,14 +324,6 @@ impl FrameConverter {
             )
             .into());
         }
-
-        if (input_is_bgr && self.output_pixel_format == PixelFormat::Bgr24)
-            || (!input_is_bgr && self.output_pixel_format == PixelFormat::Rgb24)
-        {
-            self.scratch.copy_from_slice(&frame_data[..expected_len]);
-            return Ok(&self.scratch);
-        }
-
         for (dst, chunk) in self
             .scratch
             .chunks_exact_mut(3)
@@ -255,93 +333,10 @@ impl FrameConverter {
             dst[1] = chunk[1];
             dst[2] = chunk[0];
         }
-        Ok(&self.scratch)
+        Ok(ConvertedFrame::Converted(&self.scratch))
     }
 
-    fn convert_yuyv(&mut self, frame_data: &[u8]) -> Result<&[u8], DynError> {
-        let expected_len = self.width as usize * self.height as usize * 2;
-        if frame_data.len() < expected_len {
-            return Err(format!(
-                "frame payload too short for {}x{} YUYV frame: expected at least {} bytes, got {}",
-                self.width,
-                self.height,
-                expected_len,
-                frame_data.len()
-            )
-            .into());
-        }
-
-        for (dst, chunk) in self
-            .scratch
-            .chunks_exact_mut(6)
-            .zip(frame_data[..expected_len].chunks_exact(4))
-        {
-            let y0 = chunk[0];
-            let u = chunk[1];
-            let y1 = chunk[2];
-            let v = chunk[3];
-
-            let [r0, g0, b0] = yuv_to_rgb(y0, u, v);
-            let [r1, g1, b1] = yuv_to_rgb(y1, u, v);
-
-            if self.output_pixel_format == PixelFormat::Rgb24 {
-                dst.copy_from_slice(&[r0, g0, b0, r1, g1, b1]);
-            } else {
-                dst.copy_from_slice(&[b0, g0, r0, b1, g1, r1]);
-            }
-        }
-
-        Ok(&self.scratch)
-    }
-
-    fn decode_mjpeg(&mut self, frame_data: &[u8]) -> Result<&[u8], DynError> {
-        let mut decoder = JpegDecoder::new(Cursor::new(frame_data));
-        let pixels = decoder.decode()?;
-        let info = decoder
-            .info()
-            .ok_or("mjpeg decoder did not report image metadata")?;
-
-        if info.width as u32 != self.width || info.height as u32 != self.height {
-            return Err(format!(
-                "decoded MJPEG frame dimensions {}x{} do not match configured {}x{}",
-                info.width, info.height, self.width, self.height
-            )
-            .into());
-        }
-
-        match info.pixel_format {
-            JpegPixelFormat::RGB24 => {
-                if pixels.len() != self.scratch.len() {
-                    return Err("decoded RGB MJPEG frame length mismatch".into());
-                }
-                if self.output_pixel_format == PixelFormat::Rgb24 {
-                    self.scratch.copy_from_slice(&pixels);
-                } else {
-                    for (dst, chunk) in self.scratch.chunks_exact_mut(3).zip(pixels.chunks_exact(3))
-                    {
-                        dst[0] = chunk[2];
-                        dst[1] = chunk[1];
-                        dst[2] = chunk[0];
-                    }
-                }
-                Ok(&self.scratch)
-            }
-            JpegPixelFormat::L8 => {
-                if pixels.len() != self.width as usize * self.height as usize {
-                    return Err("decoded grayscale MJPEG frame length mismatch".into());
-                }
-                for (dst, value) in self.scratch.chunks_exact_mut(3).zip(pixels.iter().copied()) {
-                    dst[0] = value;
-                    dst[1] = value;
-                    dst[2] = value;
-                }
-                Ok(&self.scratch)
-            }
-            other => Err(format!("unsupported MJPEG decoder pixel format: {other:?}").into()),
-        }
-    }
-
-    fn expand_gray(&mut self, frame_data: &[u8]) -> Result<&[u8], DynError> {
+    fn expand_gray<'a>(&'a mut self, frame_data: &[u8]) -> Result<ConvertedFrame<'a>, DynError> {
         let expected_len = self.width as usize * self.height as usize;
         if frame_data.len() < expected_len {
             return Err(format!(
@@ -364,7 +359,7 @@ impl FrameConverter {
             dst[2] = value;
         }
 
-        Ok(&self.scratch)
+        Ok(ConvertedFrame::Converted(&self.scratch))
     }
 }
 
@@ -510,10 +505,14 @@ fn query_device(path: &str) -> Result<DeviceQueryResponse, DynError> {
             width: profile.width,
             height: profile.height,
             fps: profile.fps.round() as u32,
-            pixel_format: match profile.native_pixel_format.as_str() {
-                "BGR3" => PixelFormat::Bgr24,
-                _ => PixelFormat::Rgb24,
-            },
+            // Each native V4L2 format must be advertised with the bus
+            // pixel_format the driver can actually publish for it. The
+            // driver only does cheap conversions (RGB<->BGR, GREY->RGB);
+            // MJPG/YUYV must be published verbatim and decoded by the
+            // encoder. Defaulting non-BGR3 natives to rgb24 (the
+            // pre-plan behaviour) silently wired discovery to a config
+            // that crashes the runtime per-frame.
+            pixel_format: bus_pixel_format_for_native(&profile.native_pixel_format),
             native_pixel_format: Some(profile.native_pixel_format),
         })
         .collect::<Vec<_>>();
@@ -611,7 +610,18 @@ fn capabilities_for_device(path: &str) -> Result<CapabilitiesOutput, DynError> {
 fn run_camera(config: RunConfig) -> Result<(), DynError> {
     let (device, caps) = open_capture_device(&config.id)?;
     let configured = configure_capture(&device, &config)?;
-    let payload_len = payload_len(configured.width, configured.height)?;
+    // Slot sizing: the iceoryx2 publisher needs an `initial_max_slice_len`
+    // that's >= every payload it will ever publish. Sizing strategy:
+    //   * RGB24/BGR24 fill the slot exactly (`width*height*3`)
+    //   * YUYV uses `width*height*2`
+    //   * MJPG is usually well under YUYV (<= ~10% of YUV422 at q=85)
+    //     but a pathological JPEG can briefly exceed it; we let
+    //     `AllocationStrategy::PowerOfTwo` grow the slot if needed.
+    // The `width*height*3` upper bound covers RGB24 *and* leaves headroom
+    // for any JPEG smaller than 3 bytes per pixel — which is essentially
+    // every reasonable JPEG.
+    let initial_payload_len =
+        initial_payload_len(configured.width, configured.height, config.pixel_format)?;
 
     let node = NodeBuilder::new().create::<ipc::Service>()?;
     let frame_service_name = channel_frames_service_name(&config.bus_root, &config.channel_type);
@@ -623,7 +633,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
         .open_or_create()?;
     let publisher = frame_service
         .publisher_builder()
-        .initial_max_slice_len(payload_len)
+        .initial_max_slice_len(initial_payload_len)
         .allocation_strategy(AllocationStrategy::PowerOfTwo)
         .create()?;
 
@@ -743,7 +753,8 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
         let timestamp_us = clock_offset
             .timeval_to_unix_us(metadata.timestamp.sec, metadata.timestamp.usec)
             .unwrap_or_else(|| wallclock_timestamp_us().unwrap_or(0));
-        let mut sample = publisher.loan_slice_uninit(payload_len)?;
+        let payload = converted.as_slice();
+        let mut sample = publisher.loan_slice_uninit(payload.len())?;
         *sample.user_header_mut() = CameraFrameHeader {
             timestamp_us,
             width: configured.width,
@@ -751,7 +762,7 @@ fn run_camera(config: RunConfig) -> Result<(), DynError> {
             pixel_format: config.pixel_format,
             frame_index,
         };
-        let sample = sample.write_from_slice(converted);
+        let sample = sample.write_from_slice(payload);
         sample.send()?;
 
         frame_index += 1;
@@ -795,6 +806,28 @@ fn configure_capture(device: &Device, config: &RunConfig) -> Result<ConfiguredCa
             last_mismatch = Some(format!(
                 "device negotiated unsupported native format {}",
                 fourcc_to_string(active.fourcc)
+            ));
+            continue;
+        }
+        // Reject native formats the per-frame converter can't actually
+        // produce for this bus format. Without this guard, a webcam that
+        // only supports MJPG with `pixel_format = "rgb24"` configured
+        // would pass `configure_capture` and then drop every single
+        // frame in the converter. Failing here gives the operator an
+        // immediate, actionable error.
+        if !FrameConverter::can_publish_native_as(active.fourcc, config.pixel_format) {
+            last_mismatch = Some(format!(
+                "device negotiated native format {} which cannot be published as bus \
+                 pixel_format = \"{}\". The camera-side converter only handles RGB<->BGR \
+                 and GREY->RGB. Either set pixel_format to \"yuyv\" / \"mjpeg\" \
+                 (matching the V4L2 native), or pin native_pixel_format to one of {}.",
+                fourcc_to_string(active.fourcc),
+                config.pixel_format.as_ref(),
+                cheap_native_formats_for(config.pixel_format)
+                    .iter()
+                    .map(|fc| fourcc_to_string(*fc))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
             continue;
         }
@@ -871,27 +904,13 @@ fn is_likely_realsense(caps: &v4l::Capabilities) -> bool {
 }
 
 fn preferred_native_formats(output_pixel_format: PixelFormat) -> Vec<FourCC> {
-    match output_pixel_format {
-        PixelFormat::Rgb24 => vec![
-            FourCC::new(&RGB3_BYTES),
-            FourCC::new(&BGR3_BYTES),
-            FourCC::new(&YUYV_BYTES),
-            FourCC::new(&YUY2_BYTES),
-            FourCC::new(&MJPG_BYTES),
-            FourCC::new(&JPEG_BYTES),
-            FourCC::new(&GREY_BYTES),
-        ],
-        PixelFormat::Bgr24 => vec![
-            FourCC::new(&BGR3_BYTES),
-            FourCC::new(&RGB3_BYTES),
-            FourCC::new(&YUYV_BYTES),
-            FourCC::new(&YUY2_BYTES),
-            FourCC::new(&MJPG_BYTES),
-            FourCC::new(&JPEG_BYTES),
-            FourCC::new(&GREY_BYTES),
-        ],
-        _ => Vec::new(),
-    }
+    // Only return native formats the per-frame converter can actually
+    // produce as the requested bus format. Listing YUYV/MJPG here for
+    // an RGB24 bus would cause the driver to negotiate one of them,
+    // pass `is_supported_native_format`, and then drop every frame in
+    // the converter (no slow YUYV->RGB or JPEG decode is supported on
+    // the camera side anymore — the encoder owns those decodes).
+    cheap_native_formats_for(output_pixel_format)
 }
 
 fn preferred_native_formats_for_config(config: &RunConfig) -> Vec<FourCC> {
@@ -929,11 +948,74 @@ fn is_supported_native_format(fourcc: FourCC) -> bool {
     )
 }
 
-fn payload_len(width: u32, height: u32) -> Result<usize, DynError> {
-    let pixels = width as usize * height as usize;
-    pixels
-        .checked_mul(3)
-        .ok_or_else(|| "frame payload size overflow".into())
+/// Iceoryx2 publisher slot size for the configured bus pixel format.
+///
+/// The slot must be >= the largest payload we'll ever publish:
+///   * RGB24 / BGR24 → `width*height*3`
+///   * YUYV → `width*height*2`
+///   * MJPG → varies, capped via `AllocationStrategy::PowerOfTwo` (the
+///     publisher grows its slot if a JPEG happens to exceed the initial
+///     hint). We pick the YUV422 worst case as a starting point because
+///     real-world MJPGs are typically much smaller.
+fn initial_payload_len(
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+) -> Result<usize, DynError> {
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("frame payload size overflow")?;
+    let bytes = match pixel_format {
+        PixelFormat::Rgb24 | PixelFormat::Bgr24 => pixels.checked_mul(3),
+        PixelFormat::Yuyv | PixelFormat::Mjpeg => pixels.checked_mul(2),
+        // The driver rejects other formats earlier; fall back to RGB24
+        // sizing so an accidental new variant doesn't underflow the slot.
+        _ => pixels.checked_mul(3),
+    };
+    bytes.ok_or_else(|| "frame payload size overflow".into())
+}
+
+/// Map the V4L2 native pixel format string (as it appears in the
+/// driver's `query --json` output, e.g. "MJPG", "YUYV", "RGB3", "BGR3",
+/// "GREY") to the bus pixel format the driver can actually publish for
+/// it without per-frame conversion (MJPG/YUYV) or with a cheap
+/// converter step (BGR3 -> bgr24, GREY -> rgb24-via-expand). Used by
+/// `query_device` so the setup wizard's "discover and pick a default
+/// profile" path produces a working config out of the box, rather than
+/// defaulting every non-BGR3 native to rgb24 (which made MJPG-only
+/// webcams like the Logitech C270 spawn a runtime that immediately
+/// drops every frame).
+fn bus_pixel_format_for_native(native: &str) -> PixelFormat {
+    match native {
+        "BGR3" => PixelFormat::Bgr24,
+        "RGB3" => PixelFormat::Rgb24,
+        "MJPG" | "JPEG" => PixelFormat::Mjpeg,
+        "YUYV" | "YUY2" => PixelFormat::Yuyv,
+        // GREY and any other native format we don't have a direct bus
+        // mapping for falls back to rgb24 with the cheap GREY->RGB
+        // expansion (or a clear startup error for unsupported natives).
+        _ => PixelFormat::Rgb24,
+    }
+}
+
+/// Native V4L2 fourccs that the per-frame converter can produce as a
+/// given bus format (used for the actionable startup error message).
+fn cheap_native_formats_for(bus_format: PixelFormat) -> Vec<FourCC> {
+    match bus_format {
+        PixelFormat::Rgb24 => vec![
+            FourCC::new(&RGB3_BYTES),
+            FourCC::new(&BGR3_BYTES),
+            FourCC::new(&GREY_BYTES),
+        ],
+        PixelFormat::Bgr24 => vec![
+            FourCC::new(&BGR3_BYTES),
+            FourCC::new(&RGB3_BYTES),
+            FourCC::new(&GREY_BYTES),
+        ],
+        PixelFormat::Yuyv => vec![FourCC::new(&YUYV_BYTES), FourCC::new(&YUY2_BYTES)],
+        PixelFormat::Mjpeg => vec![FourCC::new(&MJPG_BYTES), FourCC::new(&JPEG_BYTES)],
+        _ => Vec::new(),
+    }
 }
 
 fn wallclock_timestamp_us() -> Result<u64, DynError> {
@@ -1101,21 +1183,6 @@ fn drain_control_events(
     }
 }
 
-fn yuv_to_rgb(y: u8, u: u8, v: u8) -> [u8; 3] {
-    let c = y as i32 - 16;
-    let d = u as i32 - 128;
-    let e = v as i32 - 128;
-
-    let r = clamp_to_u8((298 * c + 409 * e + 128) >> 8);
-    let g = clamp_to_u8((298 * c - 100 * d - 208 * e + 128) >> 8);
-    let b = clamp_to_u8((298 * c + 516 * d + 128) >> 8);
-    [r, g, b]
-}
-
-fn clamp_to_u8(value: i32) -> u8 {
-    value.clamp(0, 255) as u8
-}
-
 trait PixelFormatExt {
     fn as_ref(&self) -> &'static str;
 }
@@ -1143,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn run_config_requires_rgb_or_bgr_output() {
+    fn run_config_accepts_mjpeg_output() {
         let config = r#"
 name = "cam"
 driver = "v4l2"
@@ -1156,9 +1223,45 @@ kind = "camera"
 profile = { width = 640, height = 480, fps = 30, pixel_format = "mjpeg" }
 "#;
 
-        let error = parse_run_config(config).expect_err("mjpeg output should be rejected");
+        let parsed = parse_run_config(config).expect("mjpeg should be accepted as bus format");
+        assert_eq!(parsed.pixel_format, PixelFormat::Mjpeg);
+    }
+
+    #[test]
+    fn run_config_accepts_yuyv_output() {
+        let config = r#"
+name = "cam"
+driver = "v4l2"
+id = "/dev/video0"
+bus_root = "cam"
+
+[[channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "yuyv" }
+"#;
+
+        let parsed = parse_run_config(config).expect("yuyv should be accepted as bus format");
+        assert_eq!(parsed.pixel_format, PixelFormat::Yuyv);
+    }
+
+    #[test]
+    fn run_config_rejects_depth16_output() {
+        let config = r#"
+name = "cam"
+driver = "v4l2"
+id = "/dev/video0"
+bus_root = "cam"
+
+[[channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "depth16" }
+"#;
+
+        let error = parse_run_config(config).expect_err("depth16 should be rejected");
         assert!(
-            error.to_string().contains("rgb24 or bgr24"),
+            error.to_string().contains("rgb24, bgr24, yuyv, mjpeg"),
             "unexpected error: {error}"
         );
     }
@@ -1182,14 +1285,51 @@ profile = { width = 640, height = 480, fps = 30, pixel_format = "bgr24" }
     }
 
     #[test]
-    fn yuyv_conversion_matches_expected_grayscale_extremes() {
+    fn yuyv_native_passes_through_when_bus_format_matches() {
+        let mut converter =
+            FrameConverter::new(2, 1, PixelFormat::Yuyv).expect("converter should initialize");
+        let payload = [16u8, 128, 235, 128];
+        let converted = converter
+            .convert(&payload, FourCC::new(&YUYV_BYTES))
+            .expect("YUYV passthrough should succeed");
+        assert_eq!(converted.as_slice(), &payload);
+        assert!(matches!(converted, ConvertedFrame::Passthrough(_)));
+    }
+
+    #[test]
+    fn mjpeg_native_passes_through_when_bus_format_matches() {
+        // A two-byte stub stands in for a JPEG payload; the converter
+        // doesn't decode anything in passthrough mode.
+        let mut converter =
+            FrameConverter::new(2, 1, PixelFormat::Mjpeg).expect("converter should initialize");
+        let payload = [0xFFu8, 0xD8];
+        let converted = converter
+            .convert(&payload, FourCC::new(&MJPG_BYTES))
+            .expect("MJPG passthrough should succeed");
+        assert_eq!(converted.as_slice(), &payload);
+        assert!(matches!(converted, ConvertedFrame::Passthrough(_)));
+    }
+
+    #[test]
+    fn yuyv_to_rgb_request_is_rejected_with_actionable_error() {
         let mut converter =
             FrameConverter::new(2, 1, PixelFormat::Rgb24).expect("converter should initialize");
-        let converted = converter
-            .convert(&[16, 128, 235, 128], FourCC::new(&YUYV_BYTES))
-            .expect("YUYV should convert");
+        let error = converter
+            .convert(&[0u8; 4], FourCC::new(&YUYV_BYTES))
+            .expect_err("YUYV->RGB on the camera side is no longer supported");
+        let msg = error.to_string();
+        assert!(msg.contains("yuyv"), "missing actionable hint: {msg}");
+    }
 
-        assert_eq!(converted, &[0, 0, 0, 255, 255, 255]);
+    #[test]
+    fn mjpeg_to_rgb_request_is_rejected_with_actionable_error() {
+        let mut converter =
+            FrameConverter::new(2, 1, PixelFormat::Rgb24).expect("converter should initialize");
+        let error = converter
+            .convert(&[0xFFu8, 0xD8], FourCC::new(&MJPG_BYTES))
+            .expect_err("MJPG->RGB on the camera side is no longer supported");
+        let msg = error.to_string();
+        assert!(msg.contains("mjpeg"), "missing actionable hint: {msg}");
     }
 
     #[test]
@@ -1200,7 +1340,50 @@ profile = { width = 640, height = 480, fps = 30, pixel_format = "bgr24" }
             .convert(&[10, 20, 30], FourCC::new(&BGR3_BYTES))
             .expect("BGR frame should convert");
 
-        assert_eq!(converted, &[30, 20, 10]);
+        assert_eq!(converted.as_slice(), &[30, 20, 10]);
+        assert!(matches!(converted, ConvertedFrame::Converted(_)));
+    }
+
+    #[test]
+    fn rgb_input_passes_through_for_rgb_bus_format() {
+        let mut converter =
+            FrameConverter::new(1, 1, PixelFormat::Rgb24).expect("converter should initialize");
+        let payload = [10u8, 20, 30];
+        let converted = converter
+            .convert(&payload, FourCC::new(&RGB3_BYTES))
+            .expect("RGB passthrough should succeed");
+        assert_eq!(converted.as_slice(), &payload);
+        assert!(matches!(converted, ConvertedFrame::Passthrough(_)));
+    }
+
+    #[test]
+    fn gray_input_expands_to_rgb_output() {
+        let mut converter =
+            FrameConverter::new(2, 1, PixelFormat::Rgb24).expect("converter should initialize");
+        let converted = converter
+            .convert(&[10, 200], FourCC::new(&GREY_BYTES))
+            .expect("GREY -> RGB expansion should succeed");
+        assert_eq!(converted.as_slice(), &[10, 10, 10, 200, 200, 200]);
+    }
+
+    #[test]
+    fn initial_payload_len_for_yuyv_uses_yuv422_worst_case() {
+        let len = initial_payload_len(640, 480, PixelFormat::Yuyv).expect("yuyv sizing");
+        assert_eq!(len, 640 * 480 * 2);
+    }
+
+    #[test]
+    fn initial_payload_len_for_mjpeg_uses_yuv422_worst_case() {
+        // Sanity check: MJPG is variable-length, but the initial slot is
+        // sized to YUYV's worst case.
+        let len = initial_payload_len(640, 480, PixelFormat::Mjpeg).expect("mjpeg sizing");
+        assert_eq!(len, 640 * 480 * 2);
+    }
+
+    #[test]
+    fn initial_payload_len_for_rgb24_matches_pixel_count_times_three() {
+        let len = initial_payload_len(640, 480, PixelFormat::Rgb24).expect("rgb24 sizing");
+        assert_eq!(len, 640 * 480 * 3);
     }
 
     #[test]

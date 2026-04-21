@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 iceoryx2 = { version = "0.8.1", path = "../../third_party/iceoryx2/iceoryx2" }
-jpeg-decoder = "0.3.2"
 libc = "0.2"
 rollio-bus = { version = "1.0.0", path = "../../rollio-bus" }
 rollio-types = { version = "1.0.0", path = "../../rollio-types" }

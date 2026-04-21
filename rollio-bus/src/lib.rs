@@ -83,6 +83,14 @@ pub fn channel_frames_service_name(bus_root: &str, channel_type: &str) -> String
     format!("{bus_root}/{channel_type}/frames")
 }
 
+/// Topic for the always-on RGB24 preview tap that the encoder publishes for
+/// the visualizer to subscribe to. Mirrors `channel_frames_service_name` but
+/// carries downsized frames at the visualizer's preview cadence regardless
+/// of whether an episode is being recorded.
+pub fn channel_preview_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/preview")
+}
+
 pub fn channel_state_service_name(bus_root: &str, channel_type: &str, state_kind: &str) -> String {
     format!("{bus_root}/{channel_type}/states/{state_kind}")
 }

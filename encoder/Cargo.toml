@@ -15,3 +15,8 @@ ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Direct ffmpeg access in integration tests for building synthetic
+# JPEG payloads (mjpeg round-trip test). The lib already depends on
+# this; the dev-dep declaration just makes it visible to the test
+# crate's separate compilation unit.
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }

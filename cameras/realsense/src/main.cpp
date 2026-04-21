@@ -193,16 +193,34 @@ auto validate_channel_types(const std::vector<std::string>& requested) -> bool {
                        [](const std::string& t) { return channel_type_supported(t); });
 }
 
-auto expected_pixel_format_for_channel_type(const std::string& channel_type)
-    -> rollio::PixelFormat {
+auto pixel_format_allowed_for_channel_type(const std::string& channel_type,
+                                           rollio::PixelFormat pixel_format) -> bool {
     if (channel_type == "color") {
-        return rollio::PixelFormat::Rgb24;
+        // Color sensors can publish either RGB24 (librealsense converts
+        // YUYV->RGB internally on every frame) or raw YUYV (skips that
+        // conversion; the encoder decodes natively). The latter is the
+        // recommended fast path; RGB24 stays for backward compatibility.
+        return pixel_format == rollio::PixelFormat::Rgb24 ||
+               pixel_format == rollio::PixelFormat::Yuyv;
     }
     if (channel_type == "depth") {
-        return rollio::PixelFormat::Depth16;
+        return pixel_format == rollio::PixelFormat::Depth16;
     }
     if (channel_type == "infrared") {
-        return rollio::PixelFormat::Gray8;
+        return pixel_format == rollio::PixelFormat::Gray8;
+    }
+    throw std::runtime_error("unsupported realsense channel_type: " + channel_type);
+}
+
+auto allowed_pixel_formats_label(const std::string& channel_type) -> std::string {
+    if (channel_type == "color") {
+        return "rgb24, yuyv";
+    }
+    if (channel_type == "depth") {
+        return "depth16";
+    }
+    if (channel_type == "infrared") {
+        return "gray8";
     }
     throw std::runtime_error("unsupported realsense channel_type: " + channel_type);
 }
@@ -248,11 +266,11 @@ auto resolve_realsense_camera_channels(const rollio::BinaryDeviceConfig& config)
             throw std::runtime_error("duplicate realsense stream selection for channel \"" +
                                      ch.channel_type + "\"");
         }
-        const auto expected = expected_pixel_format_for_channel_type(ch.channel_type);
-        if (ch.profile->pixel_format != expected) {
-            throw std::runtime_error("realsense channel \"" + ch.channel_type +
-                                     "\" requires pixel_format \"" +
-                                     std::string(rollio::pixel_format_to_string(expected)) + "\"");
+        if (!pixel_format_allowed_for_channel_type(ch.channel_type, ch.profile->pixel_format)) {
+            throw std::runtime_error(
+                "realsense channel \"" + ch.channel_type + "\" requires pixel_format in {" +
+                allowed_pixel_formats_label(ch.channel_type) + "}, got \"" +
+                std::string(rollio::pixel_format_to_string(ch.profile->pixel_format)) + "\"");
         }
         out.push_back(ResolvedRealsenseCamera{ch.channel_type, *ch.profile, ch.stream_index});
     }
@@ -304,9 +322,19 @@ auto device_bus_string(const rs2::device& device) -> std::string {
 }
 
 auto rs_stream_spec_for_channel(const std::string& channel_type,
+                                rollio::PixelFormat pixel_format,
                                 std::optional<uint32_t> stream_index) -> RsStreamSpec {
     if (channel_type == "color") {
-        return RsStreamSpec{RS2_STREAM_COLOR, 0, RS2_FORMAT_RGB8};
+        // Default fast path: ask the sensor for raw YUYV so librealsense
+        // skips its internal YUYV->RGB conversion (one full frame of
+        // SIMD-light scalar work per frame). The encoder decodes the
+        // YUV422 frames directly via libavcodec / swscale. Operators that
+        // explicitly need RGB on the bus (e.g. for ad-hoc subscribers
+        // that don't run the encoder) keep `pixel_format = "rgb24"` and
+        // librealsense converts as before.
+        const auto rs_format =
+            pixel_format == rollio::PixelFormat::Yuyv ? RS2_FORMAT_YUYV : RS2_FORMAT_RGB8;
+        return RsStreamSpec{RS2_STREAM_COLOR, 0, rs_format};
     }
     if (channel_type == "depth") {
         return RsStreamSpec{RS2_STREAM_DEPTH, 0, RS2_FORMAT_Z16};
@@ -367,7 +395,10 @@ auto print_validate_output(const ValidateCli& args) -> int {
 auto profile_matches_run_command(rs2_stream stream, rs2_format format, int stream_index) -> bool {
     switch (stream) {
         case RS2_STREAM_COLOR:
-            return format == RS2_FORMAT_RGB8;
+            // Both color formats are now valid run-command inputs:
+            //   * RGB8 -> bus pixel_format = "rgb24" (legacy path)
+            //   * YUYV -> bus pixel_format = "yuyv"  (fast path)
+            return format == RS2_FORMAT_RGB8 || format == RS2_FORMAT_YUYV;
         case RS2_STREAM_DEPTH:
             return format == RS2_FORMAT_Z16;
         case RS2_STREAM_INFRARED:
@@ -405,6 +436,11 @@ auto print_capabilities_output(const std::string& serial) -> int {
             const auto stream_name = stream_type == RS2_STREAM_COLOR   ? "color"
                                      : stream_type == RS2_STREAM_DEPTH ? "depth"
                                                                        : "infrared";
+            const auto* format_name = video_profile.format() == RS2_FORMAT_RGB8  ? "rgb24"
+                                      : video_profile.format() == RS2_FORMAT_YUYV ? "yuyv"
+                                      : video_profile.format() == RS2_FORMAT_Z16  ? "depth16"
+                                      : video_profile.format() == RS2_FORMAT_Y8   ? "gray8"
+                                                                                 : "unknown";
             if (!first) {
                 std::cout << ",";
             }
@@ -413,7 +449,8 @@ auto print_capabilities_output(const std::string& serial) -> int {
                       << "\"index\":" << profile.stream_index() << ","
                       << "\"width\":" << video_profile.width() << ","
                       << "\"height\":" << video_profile.height() << ","
-                      << "\"fps\":" << profile.fps() << "}";
+                      << "\"fps\":" << profile.fps() << ","
+                      << "\"pixel_format\":\"" << format_name << "\"}";
         }
     }
     std::cout << "]}\n";
@@ -475,11 +512,19 @@ auto print_query_output(const QueryCli& args) -> int {
             const auto h = static_cast<uint32_t>(video_profile.height());
             const auto fps = static_cast<uint32_t>(profile.fps());
             if (stream_type == RS2_STREAM_COLOR) {
+                // Map the rs2 native format to the bus pixel format the
+                // operator must request to actually get this stream.
+                // Both YUYV and RGB8 share the same (w,h,fps) sets on
+                // D4xx sensors, so we emit a separate profile entry per
+                // bus format so the wizard can offer both options.
+                const auto pf = video_profile.format() == RS2_FORMAT_YUYV
+                                    ? rollio::PixelFormat::Yuyv
+                                    : rollio::PixelFormat::Rgb24;
                 if (!first_c) {
                     profiles_color << ",";
                 }
                 first_c = false;
-                append_profile_json(profiles_color, w, h, fps, rollio::PixelFormat::Rgb24);
+                append_profile_json(profiles_color, w, h, fps, pf);
             } else if (stream_type == RS2_STREAM_DEPTH) {
                 if (!first_d) {
                     profiles_depth << ",";
@@ -543,7 +588,10 @@ auto build_enabled_camera_channels(const rollio::BinaryDeviceConfig& config)
         out.push_back(EnabledCameraChannel{
             resolved.channel_type,
             resolved.profile,
-            rs_stream_spec_for_channel(resolved.channel_type, resolved.stream_index),
+            rs_stream_spec_for_channel(
+                resolved.channel_type,
+                resolved.profile.pixel_format,
+                resolved.stream_index),
         });
     }
     return out;

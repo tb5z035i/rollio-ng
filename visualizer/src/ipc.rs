@@ -74,7 +74,12 @@ impl IpcPoller {
 
         let mut camera_subs = Vec::with_capacity(camera_sources.len());
         for source in camera_sources {
-            let service_name_str = source.frame_topic.clone();
+            // The visualizer subscribes to the encoder's RGB24 preview
+            // tap (always-on, throttled to `preview_fps`), not to the
+            // raw camera frames topic. The preview is already downsized
+            // and converted from YUYV/MJPG by the encoder, so the
+            // visualizer never has to decode anything camera-side.
+            let service_name_str = source.preview_topic.clone();
             let service_name: ServiceName = service_name_str.as_str().try_into()?;
 
             let service = node
@@ -85,7 +90,7 @@ impl IpcPoller {
 
             let subscriber = service.subscriber_builder().create()?;
 
-            log::info!("subscribed to camera: {service_name_str}");
+            log::info!("subscribed to camera preview: {service_name_str}");
             camera_subs.push(CameraSubscriber {
                 name: source.channel_id.clone(),
                 subscriber,

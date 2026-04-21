@@ -409,7 +409,7 @@ jpeg_quality = 45
 preview_fps = 15
 [[camera_sources]]
 channel_id = "camera_top/color"
-frame_topic = "camera_top/color/frames"
+preview_topic = "camera_top/color/preview"
 [[robot_sources]]
 channel_id = "leader_arm/arm"
 state_kind = "joint_position"
