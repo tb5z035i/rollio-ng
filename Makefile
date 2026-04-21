@@ -9,6 +9,9 @@
 CARGO_BUILD_ARGS ?= --release
 CARGO_RUN_ARGS ?= $(CARGO_BUILD_ARGS)
 
+# C++: parallel compile jobs for `cmake --build` (override: make cpp-build CMAKE_BUILD_JOBS=8).
+CMAKE_BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 4)
+
 all: build
 
 # ── Aggregate targets ────────────────────────────────────────────────
@@ -21,11 +24,27 @@ clean:
 	cargo clean
 	rm -rf cpp/build
 	rm -rf cameras/build
+	@# Rust: remove sibling target/ for every Cargo.toml (skips .git, node_modules, target, vendor).
+	@# Uses xargs -0 (not bash read -d) so /bin/sh can be dash. Caveats: workspace members usually
+	@# share one target at the workspace root — extra paths are no-ops. Orphan target/ dirs without
+	@# a Cargo.toml nearby are not removed.
+	@echo "Removing Rust target/ directories..."
+	@find . \( -name .git -o -name node_modules -o -name target -o -name vendor \) -prune -o \
+		-name Cargo.toml -print0 | \
+		xargs -0 -n1 sh -c 'd=$$(dirname "$$1"); if [ -d "$$d/target" ]; then rm -rf "$$d/target"; fi' sh
+	@# Node: remove sibling node_modules/ for every package.json (same skips minus vendor).
+	@# Caveats: nested third_party package.json (e.g. vendored JS) loses local node_modules until
+	@# someone runs npm install there again — usually acceptable for a full clean.
+	@echo "Removing Node node_modules/ directories..."
+	@find . \( -name .git -o -name node_modules -o -name target \) -prune -o \
+		-name package.json -print0 | \
+		xargs -0 -n1 sh -c 'd=$$(dirname "$$1"); if [ -d "$$d/node_modules" ]; then rm -rf "$$d/node_modules"; fi' sh
 	rm -rf ui/terminal/dist
 	rm -rf ui/terminal/native
 	rm -rf ui/terminal/.deb-vendor
 	rm -rf ui/web/dist
 	rm -rf .deb-staging dist
+	rm -rf logs/ output/
 
 fmt: rust-fmt
 
@@ -67,7 +86,7 @@ cpp: cpp-build
 
 cpp-build:
 	cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
-	cmake --build cameras/build
+	cmake --build cameras/build -j $(CMAKE_BUILD_JOBS)
 
 cpp-test: cpp-build
 	ctest --test-dir cameras/build --output-on-failure

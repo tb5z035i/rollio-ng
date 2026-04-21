@@ -1,2 +1,0 @@
-logs
-rollio_airbot_play
