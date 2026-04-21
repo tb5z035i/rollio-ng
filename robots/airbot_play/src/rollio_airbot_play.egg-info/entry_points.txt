@@ -1,2 +1,0 @@
-[console_scripts]
-rollio-robot-airbot-play = rollio_airbot_play.cli:main
