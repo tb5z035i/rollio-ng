@@ -195,15 +195,25 @@ export interface SetupAvailableDevice {
 export type EncoderCodec = "h264" | "h265" | "av1" | "rvl";
 export type EncoderBackend = "auto" | "cpu" | "nvidia" | "vaapi";
 
+/** BT.601 / BT.709 color metadata; matches `EncoderColorSpace` (kebab-case). */
+export type EncoderColorSpaceId = "auto" | "bt709-limited" | "bt601-limited";
+
 export interface SetupConfigSnapshot {
   project_name: string;
   mode: "teleop" | "intervention";
   episode: {
     format: "lerobot-v2.1" | "lerobot-v3.0" | "mcap";
+    /** Nominal dataset frame rate (1..1000). */
+    fps: number;
   };
   /** Native project layout: one binary per row with nested channels. */
   devices: SetupBinaryDeviceConfig[];
   pairings: SetupChannelPairing[];
+  /** Present on current controllers; may be missing on very old `setup_state` payloads. */
+  visualizer?: {
+    jpeg_quality: number;
+    preview_fps: number;
+  };
   encoder: {
     video_codec: EncoderCodec;
     depth_codec: EncoderCodec;
@@ -216,6 +226,12 @@ export interface SetupConfigSnapshot {
     video_backend?: EncoderBackend;
     /** Backend used to encode depth streams (paired with `depth_codec`). */
     depth_backend?: EncoderBackend;
+    crf?: number | null;
+    preset?: string | null;
+    /** Chroma (4:2:2 vs 4:2:0). Wire format matches `ChromaSubsampling` JSON. */
+    chroma_subsampling?: string;
+    bit_depth: number;
+    color_space: EncoderColorSpaceId;
   };
   storage: {
     backend: "local" | "http";
@@ -279,6 +295,14 @@ export type CommandAction =
   | "setup_set_storage_output_path"
   | "setup_set_storage_endpoint"
   | "setup_set_ui_http_host"
+  | "setup_set_episode_fps"
+  | "setup_set_jpeg_quality"
+  | "setup_set_preview_fps"
+  | "setup_cycle_encoder_crf"
+  | "setup_cycle_encoder_preset"
+  | "setup_cycle_chroma_subsampling"
+  | "setup_cycle_encoder_bit_depth"
+  | "setup_cycle_encoder_color_space"
   | "setup_save"
   | "setup_cancel";
 
@@ -419,6 +443,14 @@ export function encodeSetupCommand(
     | "setup_set_storage_output_path"
     | "setup_set_storage_endpoint"
     | "setup_set_ui_http_host"
+    | "setup_set_episode_fps"
+    | "setup_set_jpeg_quality"
+    | "setup_set_preview_fps"
+    | "setup_cycle_encoder_crf"
+    | "setup_cycle_encoder_preset"
+    | "setup_cycle_chroma_subsampling"
+    | "setup_cycle_encoder_bit_depth"
+    | "setup_cycle_encoder_color_space"
     | "setup_save"
     | "setup_cancel"
   >,

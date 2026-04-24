@@ -202,16 +202,14 @@ parallel_mit_kp = []
 parallel_mit_kd = []
 
 [encoder]
-video_codec = "h265"
+video_codec = "h264"
 depth_codec = "rvl"
 backend = "auto"
-video_backend = "nvidia"
+video_backend = "auto"
 depth_backend = "auto"
 artifact_format = "auto"
 chroma_subsampling = "s422"
-crf = 18
-preset = "fast"
-bit_depth = 10
+bit_depth = 8
 color_space = "auto"
 queue_size = 32
 
@@ -222,7 +220,7 @@ encoded_handoff = "file"
 
 [storage]
 backend = "local"
-output_path = "./output1"
+output_path = "./output"
 queue_size = 32
 
 [monitor]

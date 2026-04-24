@@ -1,5 +1,6 @@
 mod cli;
 mod collect;
+mod dataset_resume;
 mod device_query;
 mod discovery;
 mod episode;

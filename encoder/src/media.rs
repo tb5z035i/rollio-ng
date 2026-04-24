@@ -1144,7 +1144,14 @@ fn backend_is_usable(backend: EncoderBackend) -> bool {
                 || Path::new("/proc/driver/nvidia/version").exists()
         }
         EncoderBackend::Vaapi => {
-            Path::new("/dev/dri/renderD128").exists() || Path::new("/dev/dri/card0").exists()
+            // Any render node (not just renderD128) or legacy card0.
+            fs::read_dir("/dev/dri")
+                .map(|dir| {
+                    dir.filter_map(|e| e.ok())
+                        .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+                })
+                .unwrap_or(false)
+                || Path::new("/dev/dri/card0").exists()
         }
     }
 }
@@ -1314,6 +1321,22 @@ fn resolve_bit_depth(
         );
         return 8;
     }
+    // NVENC's H.264 encoder is hard-coded to 8-bit YUV 4:2:0 in NVIDIA's
+    // hardware: 10-bit is only available on `hevc_nvenc` and `av1_nvenc`.
+    // libavcodec's `nvenc.c` shares one pix_fmts list across all three
+    // NVENC codecs, so `h264_nvenc` (incorrectly) advertises `P010` as a
+    // supported input. Trusting that list opens the encoder happily and
+    // then NVENC fails at the first frame with `CreateInputBuffer failed:
+    // invalid param (8)`. Downgrade up front so the silent fallback
+    // mirrors the VAAPI handling above.
+    if codec_name == "h264_nvenc" {
+        eprintln!(
+            "rollio-encoder: process={process_id} downgrading bit_depth to 8 \
+             (codec=h264_nvenc does not support 10-bit encoding; \
+             use video_codec = \"h265\" or \"av1\" for 10-bit on NVIDIA)"
+        );
+        return 8;
+    }
     let Some(codec) = ffmpeg::encoder::find_by_name(codec_name) else {
         return 8;
     };
@@ -1431,14 +1454,16 @@ fn create_hw_device(backend: EncoderBackend) -> Result<AvBufferRef> {
     let device_type = backend_hw_device_type(backend)
         .ok_or_else(|| EncoderError::message("requested backend does not use a hardware device"))?;
     let mut device_ref = ptr::null_mut();
-    let device_path = vaapi_device_path()
-        .map(CString::new)
-        .transpose()
-        .map_err(|error| EncoderError::message(format!("invalid device path: {error}")))?;
+    // Hold CString so pointers passed to av_hwdevice_ctx_create stay valid.
+    let _vaapi_cstring: Option<CString> = if backend == EncoderBackend::Vaapi {
+        vaapi_device_cstring()?
+    } else {
+        None
+    };
     let device_name = if backend == EncoderBackend::Vaapi {
-        device_path
+        _vaapi_cstring
             .as_ref()
-            .map(|name| name.as_ptr())
+            .map(|c| c.as_ptr())
             .unwrap_or(ptr::null())
     } else {
         ptr::null()
@@ -1453,6 +1478,18 @@ fn create_hw_device(backend: EncoderBackend) -> Result<AvBufferRef> {
         )
     };
     if error < 0 {
+        if backend == EncoderBackend::Vaapi {
+            // Common case: ROLLIO picked renderD128 but that node is NVIDIA DRM while
+            // the operator wants libva+Intel/AMD. Help them fix config or DRI.
+            return Err(EncoderError::message(format!(
+                "VAAPI hardware init failed: {}. \
+                 On hybrid Intel+NVIDIA (or AMD+NVIDIA) systems the first render node is often the discrete GPU, \
+                 which is not a usable libva target for h264_vaapi. \
+                 Set video_backend = \"nvidia\" for NVENC, or set ROLLIO_VAAPI_DRI to an Intel/AMD node (e.g. /dev/dri/renderD129). \
+                 On NVIDIA-only hardware VAAPI encode is not available; use the nvidia backend.",
+                ffmpeg::Error::from(error)
+            )));
+        }
         return Err(ffmpeg::Error::from(error).into());
     }
     AvBufferRef::new(device_ref, "create hardware device")
@@ -1522,14 +1559,84 @@ fn backend_hw_device_type(backend: EncoderBackend) -> Option<ffmpeg::ffi::AVHWDe
     })
 }
 
-fn vaapi_device_path() -> Option<&'static str> {
-    if Path::new("/dev/dri/renderD128").exists() {
-        Some("/dev/dri/renderD128")
-    } else if Path::new("/dev/dri/card0").exists() {
-        Some("/dev/dri/card0")
-    } else {
-        None
+/// DRM vendor id for **NVIDIA** (discrete on most laptops / workstations).
+const DRM_VENDOR_NVIDIA: &str = "0x10de";
+
+/// Path to DRI `renderD*` for FFmpeg VAAPI. Using `/dev/dri/renderD128` whenever it
+/// exists is wrong: on many systems that is the **NVIDIA** node; `h264_vaapi` uses
+/// **libva** (Intel/AMD), which then fails with *No VA display found* when pointed
+/// at an NVIDIA render device.
+///
+/// 1. `ROLLIO_VAAPI_DRI` if set to an existing path (e.g. `/dev/dri/renderD129`)
+/// 2. First `renderD*` in numeric order that is **not** an NVIDIA PCI device
+/// 3. `None` so `av_hwdevice_ctx_create` gets a `NULL` device and libva can try defaults
+///    (may still fail headless; override is preferred).
+fn vaapi_device_cstring() -> Result<Option<CString>> {
+    if let Ok(over) = std::env::var("ROLLIO_VAAPI_DRI") {
+        let p = over.trim();
+        if !p.is_empty() {
+            if !Path::new(p).exists() {
+                return Err(EncoderError::message(format!(
+                    "ROLLIO_VAAPI_DRI={p:?} does not exist"
+                )));
+            }
+            return Ok(Some(CString::new(p).map_err(|e| {
+                EncoderError::message(format!("invalid ROLLIO_VAAPI_DRI: {e}"))
+            })?));
+        }
     }
+    if let Some(path) = first_non_nvidia_render_node_path() {
+        return Ok(Some(CString::new(path).map_err(|e| {
+            EncoderError::message(format!("invalid VAAPI DRI path: {e}"))
+        })?));
+    }
+    Ok(None)
+}
+
+/// Sorted list of `renderD*` basenames (e.g. `renderD128`, `renderD129`).
+fn list_drm_render_d_nodes() -> Vec<String> {
+    let Ok(dir) = fs::read_dir("/dev/dri") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = dir
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("renderD") && n.len() > 7)
+        .collect();
+    names.sort_by_key(|n| n[7..].parse::<u32>().unwrap_or(u32::MAX));
+    names
+}
+
+fn drm_device_vendor_id(drm_name: &str) -> Option<String> {
+    let path = format!("/sys/class/drm/{drm_name}/device/vendor");
+    fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+}
+
+fn is_nvidia_drm_node(drm_name: &str) -> bool {
+    drm_device_vendor_id(drm_name).is_some_and(|v| v.eq_ignore_ascii_case(DRM_VENDOR_NVIDIA))
+}
+
+/// Picks a render node that libva+FFmpeg can use: skip NVIDIA DRM (NVENC is separate).
+fn first_non_nvidia_render_node_path() -> Option<String> {
+    for name in list_drm_render_d_nodes() {
+        if is_nvidia_drm_node(&name) {
+            eprintln!(
+                "rollio-encoder: skipping {name} for VAAPI (NVIDIA DRM; use video_backend = \"nvidia\" for NVENC, \
+                 or set ROLLIO_VAAPI_DRI to an Intel/AMD render node)"
+            );
+            continue;
+        }
+        let path = format!("/dev/dri/{name}");
+        if Path::new(&path).exists() {
+            eprintln!("rollio-encoder: VAAPI using {path} (set ROLLIO_VAAPI_DRI to override)");
+            return Some(path);
+        }
+    }
+    eprintln!(
+        "rollio-encoder: no non-NVIDIA DRI render node found for VAAPI; \
+         trying libva default (NULL). Set ROLLIO_VAAPI_DRI if encoding fails."
+    );
+    None
 }
 
 fn pixel_format_for_libav(pixel_format: PixelFormat) -> Result<ffmpeg::util::format::pixel::Pixel> {
@@ -2150,6 +2257,22 @@ mod pts_tests {
         let resolved = resolve_bit_depth(
             "h264_vaapi",
             EncoderBackend::Vaapi,
+            ChromaSubsampling::S420,
+            10,
+            "test",
+        );
+        assert_eq!(resolved, 8);
+    }
+
+    /// NVENC H.264 hardware does not support 10-bit encoding even though
+    /// libavcodec's shared NVENC pix_fmts list advertises `P010`. Without
+    /// the explicit downgrade, opening the encoder succeeds and the very
+    /// first frame fails with `CreateInputBuffer failed: invalid param`.
+    #[test]
+    fn resolve_bit_depth_always_downgrades_for_h264_nvenc() {
+        let resolved = resolve_bit_depth(
+            "h264_nvenc",
+            EncoderBackend::Nvidia,
             ChromaSubsampling::S420,
             10,
             "test",

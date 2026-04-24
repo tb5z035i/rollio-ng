@@ -41,7 +41,7 @@ from ..ipc.types import (
 )
 from .rate_monitor import RateMonitor
 
-MAX_WIDTH_M: float = 0.07
+MAX_WIDTH_M: float = 0.10  # 0.10 m
 IDENTIFY_PERIOD_S: float = 2.0  # 0..max..0 cycle -- matches airbot G2.
 
 

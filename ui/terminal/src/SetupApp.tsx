@@ -24,7 +24,10 @@ type StaticEditableFieldId =
   | "project_name"
   | "storage_output_path"
   | "storage_endpoint"
-  | "ui_http_host";
+  | "ui_http_host"
+  | "episode_fps"
+  | "jpeg_quality"
+  | "preview_fps";
 type EditableFieldId = StaticEditableFieldId | `device_name:${string}`;
 
 type SettingsField = {
@@ -32,6 +35,10 @@ type SettingsField = {
   label: string;
   value: string;
   kind: "text" | "cycle";
+  /** Shown as a full-width heading row immediately before this field. */
+  groupSubtitle?: string;
+  /** Seed for the text buffer when Enter opens the editor (if different from `value`). */
+  editInitialValue?: string;
   action?: Extract<
     CommandAction,
     | "setup_cycle_collection_mode"
@@ -39,6 +46,11 @@ type SettingsField = {
     | "setup_cycle_video_codec"
     | "setup_cycle_depth_codec"
     | "setup_cycle_storage_backend"
+    | "setup_cycle_encoder_crf"
+    | "setup_cycle_encoder_preset"
+    | "setup_cycle_chroma_subsampling"
+    | "setup_cycle_encoder_bit_depth"
+    | "setup_cycle_encoder_color_space"
   >;
   editableFieldId?: EditableFieldId;
 };
@@ -801,7 +813,7 @@ export function SetupApp({
           }
           if (field.kind === "text" && field.editableFieldId) {
             setEditingField(field.editableFieldId);
-            setDraftValue(field.value);
+            setDraftValue(field.editInitialValue ?? field.value);
           } else if (field.kind === "cycle" && field.action) {
             sendControl(encodeSetupCommand(field.action, { delta: 1 }));
           }
@@ -997,9 +1009,19 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       ? setupState.config.storage.output_path
       : (setupState.config.storage.endpoint ?? "");
 
+  const episodeFps = setupState.config.episode.fps ?? 30;
+  const crf = setupState.config.encoder.crf;
+  const encPreset = setupState.config.encoder.preset;
+  const bitDepth = setupState.config.encoder.bit_depth ?? 8;
+  const colorSpace = setupState.config.encoder.color_space ?? "auto";
+  const chroma = setupState.config.encoder.chroma_subsampling;
+  const jpegQ = setupState.config.visualizer?.jpeg_quality ?? 30;
+  const previewFps = setupState.config.visualizer?.preview_fps ?? 60;
+
   return [
     {
       id: "project_name",
+      groupSubtitle: "Project and mode",
       label: "Project name",
       value: setupState.config.project_name,
       kind: "text",
@@ -1014,13 +1036,22 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
     },
     {
       id: "episode_format",
+      groupSubtitle: "Episode timing & dataset format",
       label: "Episode format",
       value: setupState.config.episode.format,
       kind: "cycle",
       action: "setup_cycle_episode_format",
     },
     {
+      id: "episode_fps",
+      label: "Episode fps",
+      value: String(episodeFps),
+      kind: "text",
+      editableFieldId: "episode_fps",
+    },
+    {
       id: "video_codec",
+      groupSubtitle: "RGB & depth encoders",
       label: "RGB codec",
       value: formatCodecBackend(
         setupState.config.encoder.video_codec,
@@ -1040,7 +1071,59 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       action: "setup_cycle_depth_codec",
     },
     {
+      id: "jpeg_quality",
+      groupSubtitle: "Visualizer / preview pipeline",
+      label: "JPEG quality",
+      value: String(jpegQ),
+      kind: "text",
+      editableFieldId: "jpeg_quality",
+    },
+    {
+      id: "preview_fps",
+      label: "Preview fps",
+      value: String(previewFps),
+      kind: "text",
+      editableFieldId: "preview_fps",
+    },
+    {
+      id: "encoder_crf",
+      groupSubtitle: "Encoder quality (optional)",
+      label: "CRF",
+      value: formatCrfCycleLabel(crf),
+      kind: "cycle",
+      action: "setup_cycle_encoder_crf",
+    },
+    {
+      id: "encoder_preset",
+      label: "Preset",
+      value: formatPresetCycleLabel(encPreset),
+      kind: "cycle",
+      action: "setup_cycle_encoder_preset",
+    },
+    {
+      id: "chroma_subsampling",
+      label: "Chroma subsampling",
+      value: formatChromaShort(chroma),
+      kind: "cycle",
+      action: "setup_cycle_chroma_subsampling",
+    },
+    {
+      id: "encoder_bit_depth",
+      label: "Bit depth",
+      value: String(bitDepth),
+      kind: "cycle",
+      action: "setup_cycle_encoder_bit_depth",
+    },
+    {
+      id: "encoder_color_space",
+      label: "Color space",
+      value: colorSpace,
+      kind: "cycle",
+      action: "setup_cycle_encoder_color_space",
+    },
+    {
       id: "storage_backend",
+      groupSubtitle: "Storage",
       label: "Storage backend",
       value: setupState.config.storage.backend,
       kind: "cycle",
@@ -1064,6 +1147,7 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
     },
     {
       id: "ui_http_host",
+      groupSubtitle: "Browser UI",
       label: "UI host",
       value: setupState.config.ui?.http_host ?? "",
       kind: "text",
@@ -1086,6 +1170,37 @@ function formatCodecBackend(
     return codec;
   }
   return `${codec} (${backend})`;
+}
+
+/** CRF options match `SetupSession::cycle_encoder_crf` in the controller. */
+function formatCrfCycleLabel(crf: number | null | undefined): string {
+  if (crf == null) {
+    return "(default)";
+  }
+  return String(crf);
+}
+
+/** Preset options match `SetupSession::cycle_encoder_preset` (libx264-style). */
+function formatPresetCycleLabel(preset: string | null | undefined): string {
+  if (preset == null || preset === "") {
+    return "(default)";
+  }
+  return preset;
+}
+
+/** 4:2:2 → `422`, 4:2:0 → `420` (see `ChromaSubsampling` JSON / TOML aliases). */
+function formatChromaShort(raw: string | null | undefined): string {
+  if (raw == null) {
+    return "422";
+  }
+  const s = String(raw).toLowerCase();
+  if (s === "s422" || s === "422" || s.includes("422")) {
+    return "422";
+  }
+  if (s === "s420" || s === "420" || s.includes("420")) {
+    return "420";
+  }
+  return s;
 }
 
 /** Flatten every selected robot channel's supported_states into a single
@@ -1647,13 +1762,18 @@ function buildDetailLines(
         const renderedValue = field.value || (field.kind === "text" ? "(empty)" : "");
         return Math.max(acc, renderedValue.length);
       }, 0);
-      return [
-        textLine(
-          "storage-title",
-          "Configure project metadata, collection mode, codecs, and storage target.",
-          { color: "cyan", bold: true },
-        ),
-        ...settingsFields.map((field, index) =>
+      const storageFieldLines: DetailLine[] = [];
+      for (let index = 0; index < settingsFields.length; index += 1) {
+        const field = settingsFields[index]!;
+        if (field.groupSubtitle) {
+          storageFieldLines.push(
+            textLine(`storage-group:${field.id}`, field.groupSubtitle, {
+              color: "magenta",
+              bold: true,
+            }),
+          );
+        }
+        storageFieldLines.push(
           settingsFieldLine(
             field,
             index === focusedIndex,
@@ -1662,7 +1782,15 @@ function buildDetailLines(
             settingsLabelWidth,
             settingsValueWidth,
           ),
+        );
+      }
+      return [
+        textLine(
+          "storage-title",
+          "Configure project metadata, episode timing, encoders, preview, storage, and UI.",
+          { color: "cyan", bold: true },
         ),
+        ...storageFieldLines,
         ...warningLines,
         ...messageLines,
       ];
@@ -1949,6 +2077,9 @@ function editCommandForField(
   | "setup_set_storage_output_path"
   | "setup_set_storage_endpoint"
   | "setup_set_ui_http_host"
+  | "setup_set_episode_fps"
+  | "setup_set_jpeg_quality"
+  | "setup_set_preview_fps"
 > {
   switch (field) {
     case "project_name":
@@ -1959,6 +2090,12 @@ function editCommandForField(
       return "setup_set_storage_endpoint";
     case "ui_http_host":
       return "setup_set_ui_http_host";
+    case "episode_fps":
+      return "setup_set_episode_fps";
+    case "jpeg_quality":
+      return "setup_set_jpeg_quality";
+    case "preview_fps":
+      return "setup_set_preview_fps";
   }
 }
 

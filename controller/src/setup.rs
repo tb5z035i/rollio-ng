@@ -16,9 +16,10 @@ use rollio_bus::{
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, CollectionMode,
-    DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec, EpisodeFormat,
-    MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
+    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChromaSubsampling,
+    CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
+    EncoderColorSpace, EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode,
+    RobotStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -1790,6 +1791,191 @@ impl SetupSession {
         Ok(true)
     }
 
+    fn set_episode_fps(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.message = Some("Episode fps must not be empty.".into());
+            return Ok(false);
+        }
+        let fps: u32 = match trimmed.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.message = Some(format!(
+                    "Episode fps must be an integer (1..1000), got {trimmed:?}."
+                ));
+                return Ok(false);
+            }
+        };
+        if fps == 0 || fps > 1000 {
+            self.message = Some(format!("Episode fps must be 1..1000, got {fps}."));
+            return Ok(false);
+        }
+        if self.config.episode.fps == fps {
+            return Ok(false);
+        }
+        self.config.episode.fps = fps;
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    fn set_jpeg_quality(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.message = Some("Preview JPEG quality must not be empty.".into());
+            return Ok(false);
+        }
+        let quality: i32 = match trimmed.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.message = Some(format!(
+                    "Preview JPEG quality must be an integer, got {trimmed:?}."
+                ));
+                return Ok(false);
+            }
+        };
+        if !(1..=100).contains(&quality) {
+            self.message = Some(format!(
+                "Preview JPEG quality must be 1..100, got {quality}."
+            ));
+            return Ok(false);
+        }
+        if self.config.visualizer.jpeg_quality == quality {
+            return Ok(false);
+        }
+        self.config.visualizer.jpeg_quality = quality;
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    fn set_preview_fps(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.message = Some("Preview fps must not be empty.".into());
+            return Ok(false);
+        }
+        let fps: u32 = match trimmed.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                self.message = Some(format!("Preview fps must be an integer, got {trimmed:?}."));
+                return Ok(false);
+            }
+        };
+        if fps > 1000 {
+            self.message = Some(format!("Preview fps must be <= 1000, got {fps}."));
+            return Ok(false);
+        }
+        if self.config.visualizer.preview_fps == fps {
+            return Ok(false);
+        }
+        self.config.visualizer.preview_fps = fps;
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    /// Wizard-only CRF presets (optional `None` = libav default). See
+    /// `config/config.example.toml` for what each band roughly means.
+    fn cycle_encoder_crf(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
+        const OPTIONS: [Option<u8>; 9] = [
+            None,
+            Some(0),
+            Some(15),
+            Some(18),
+            Some(20),
+            Some(23),
+            Some(28),
+            Some(35),
+            Some(51),
+        ];
+        let current = self.config.encoder.crf;
+        let current_index = OPTIONS.iter().position(|&v| v == current).unwrap_or(0);
+        let next_index = rotate_index(current_index, OPTIONS.len(), delta);
+        self.config.encoder.crf = OPTIONS[next_index];
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    /// x264/x265-style `preset` strings; `None` keeps libavcodec default.
+    fn cycle_encoder_preset(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
+        const OPTIONS: [Option<&str>; 8] = [
+            None,
+            Some("ultrafast"),
+            Some("veryfast"),
+            Some("fast"),
+            Some("medium"),
+            Some("slow"),
+            Some("slower"),
+            Some("veryslow"),
+        ];
+        let current = self.config.encoder.preset.as_deref();
+        let current_index = OPTIONS
+            .iter()
+            .position(|opt| match *opt {
+                None => current.is_none(),
+                Some(preset) => current == Some(preset),
+            })
+            .unwrap_or(0);
+        let next_index = rotate_index(current_index, OPTIONS.len(), delta);
+        self.config.encoder.preset = OPTIONS[next_index].map(str::to_owned);
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    fn cycle_chroma_subsampling(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
+        let options = [ChromaSubsampling::S422, ChromaSubsampling::S420];
+        let current_index = options
+            .iter()
+            .position(|c| *c == self.config.encoder.chroma_subsampling)
+            .unwrap_or(0);
+        let next_index = rotate_index(current_index, options.len(), delta);
+        self.config.encoder.chroma_subsampling = options[next_index];
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    fn cycle_encoder_bit_depth(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
+        let options = [8u8, 10u8];
+        let current_index = options
+            .iter()
+            .position(|d| *d == self.config.encoder.bit_depth)
+            .unwrap_or(0);
+        let next_index = rotate_index(current_index, options.len(), delta);
+        self.config.encoder.bit_depth = options[next_index];
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    fn cycle_encoder_color_space(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
+        let options = [
+            EncoderColorSpace::Auto,
+            EncoderColorSpace::Bt709Limited,
+            EncoderColorSpace::Bt601Limited,
+        ];
+        let current_index = options
+            .iter()
+            .position(|s| *s == self.config.encoder.color_space)
+            .unwrap_or(0);
+        let next_index = rotate_index(current_index, options.len(), delta);
+        self.config.encoder.color_space = options[next_index];
+        if let Err(error) = self.config.validate() {
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
     fn jump_to_step(&mut self, value: &str) -> bool {
         let target = match value {
             "devices" | "discovery" | "selection" | "parameters" => SetupStep::Devices,
@@ -2008,6 +2194,45 @@ impl SetupSession {
                     self.set_ui_http_host(value)?,
                 ))
             }
+            "setup_set_episode_fps" => {
+                let Some(value) = command.value.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_episode_fps(value)?,
+                ))
+            }
+            "setup_set_jpeg_quality" => {
+                let Some(value) = command.value.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_jpeg_quality(value)?,
+                ))
+            }
+            "setup_set_preview_fps" => {
+                let Some(value) = command.value.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_preview_fps(value)?,
+                ))
+            }
+            "setup_cycle_encoder_crf" => Ok(SessionMutation::config_changed(
+                self.cycle_encoder_crf(delta)?,
+            )),
+            "setup_cycle_encoder_preset" => Ok(SessionMutation::config_changed(
+                self.cycle_encoder_preset(delta)?,
+            )),
+            "setup_cycle_chroma_subsampling" => Ok(SessionMutation::config_changed(
+                self.cycle_chroma_subsampling(delta)?,
+            )),
+            "setup_cycle_encoder_bit_depth" => Ok(SessionMutation::config_changed(
+                self.cycle_encoder_bit_depth(delta)?,
+            )),
+            "setup_cycle_encoder_color_space" => Ok(SessionMutation::config_changed(
+                self.cycle_encoder_color_space(delta)?,
+            )),
             "setup_save" => {
                 save_project_config(&self.config, &self.output_path)?;
                 self.mark_saved();

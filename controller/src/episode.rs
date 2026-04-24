@@ -38,6 +38,18 @@ impl EpisodeLifecycle {
         }
     }
 
+    /// After probing an on-disk dataset, align the in-memory counters so new
+    /// recordings continue past the last stored episode instead of restarting
+    /// at index 0 (which would overwrite merged LeRobot shards).
+    pub fn resume_from_prior_recordings(
+        &mut self,
+        next_episode_index: u32,
+        prior_stored_episode_count: u32,
+    ) {
+        self.next_episode_index = next_episode_index;
+        self.episode_count = prior_stored_episode_count;
+    }
+
     pub fn record_episode_stored(&mut self, episode_index: u32) -> bool {
         if episode_index >= self.next_episode_index {
             return false;
@@ -259,5 +271,22 @@ mod tests {
     fn record_episode_stored_ignores_unknown_episode_indices() {
         let mut lifecycle = EpisodeLifecycle::default();
         assert!(!lifecycle.record_episode_stored(0));
+    }
+
+    #[test]
+    fn resume_from_prior_recordings_advances_next_index() {
+        let now = Instant::now();
+        let mut lifecycle = EpisodeLifecycle::default();
+        lifecycle.resume_from_prior_recordings(7, 7);
+        let event = lifecycle
+            .handle_command(EpisodeCommand::Start, now)
+            .expect("start after resume");
+        assert!(matches!(
+            event,
+            ControlEvent::RecordingStart {
+                episode_index: 7,
+                ..
+            }
+        ));
     }
 }

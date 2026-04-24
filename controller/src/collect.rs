@@ -104,6 +104,14 @@ fn run_with_config(
     )?;
 
     let mut lifecycle = EpisodeLifecycle::default();
+    if let Some(hint) = crate::dataset_resume::probe_resume(&config, invocation_cwd)? {
+        eprintln!(
+            "rollio: resuming dataset at episode_index {} ({} episodes already on disk)",
+            hint.next_episode_index, hint.prior_stored_episode_count
+        );
+        lifecycle
+            .resume_from_prior_recordings(hint.next_episode_index, hint.prior_stored_episode_count);
+    }
     controller_ipc.publish_status(lifecycle.status(Instant::now()))?;
 
     let trigger = run_collect_loop(
