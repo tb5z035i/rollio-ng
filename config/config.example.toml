@@ -1,35 +1,150 @@
+# =============================================================================
+# Rollio project configuration — annotated example.
+#
+# This file is the canonical reference for every supported `[section]` and key
+# the `rollio` controller reads, together with their default values. In daily
+# use you usually generate `config.toml` interactively via
+#
+#     cargo run -p rollio -- setup --config config.toml
+#
+# (or whatever output path you pass to `--output`); this file is a single
+# always-runnable showcase. It uses the in-repo `pseudo` driver so it works on
+# any host without hardware.
+#
+# Keys flagged "(default: ...)" can be omitted; they are spelled out here so you
+# can see exactly what value the loader would pick. Every example value below
+# is parseable by the running build; the integration tests in
+# `rollio-types/tests/config.rs` and `controller/src/collect.rs` load this file
+# verbatim.
+#
+# Run `cargo run -p rollio -- collect --config config/config.example.toml` for
+# a quick end-to-end smoke test.
+# =============================================================================
+
+# Display name surfaced in the wizard and `meta/info.json`. (default: "default")
 project_name = "default"
+
+# Collection mode — "teleop" runs the full leader/follower teleoperation
+# pipeline (with the [[pairings]] section below); "intervention" disables
+# pairings and lets the operator drive a single robot per channel directly.
+# (default: "teleop")
 mode = "teleop"
 
+# -----------------------------------------------------------------------------
+# Episode timing & dataset format
+# -----------------------------------------------------------------------------
 [episode]
+# Output dataset format. Supported values: "lerobot-v2.1" (default),
+# "lerobot-v3.0", "mcap".
 format = "lerobot-v2.1"
+
+# Reference frame rate stamped into the dataset metadata. The raw recordings
+# are VFR (each frame carries its real capture timestamp) but episode-level
+# tooling needs a nominal fps for indexing. Range: 1..=1000.
 fps = 30
+
+# Episodes are grouped on disk under `chunk-XXX/` directories of this size.
+# (default: 1000)
 chunk_size = 1000
 
+# -----------------------------------------------------------------------------
+# Controller process supervisor
+# -----------------------------------------------------------------------------
 [controller]
+# How long to wait for child processes (devices, encoders, assembler, …) to
+# exit cleanly after the controller asks them to shut down. The example uses
+# 3000 ms because the in-repo pseudo devices respond very quickly; production
+# defaults to 30000 ms which gives real cameras / robots time to flush their
+# state. (default: 30000)
 shutdown_timeout_ms = 3000
+
+# Polling interval used by the supervisor to check for child exit, IPC
+# events, and signals. Lower = snappier, higher = less CPU. (default: 100)
 child_poll_interval_ms = 100
 
+# -----------------------------------------------------------------------------
+# Visualizer / preview pipeline
+# -----------------------------------------------------------------------------
 [visualizer]
+# WebSocket port the visualizer publishes preview frames + robot state on.
+# The web UI proxies this internally. (default: 19090)
 port = 19090
+
+# Maximum dimensions of the RGB24 preview tap the encoder publishes for each
+# camera. Larger = sharper preview but more downscale work per frame.
+# (default: 320 / 240)
 max_preview_width = 320
 max_preview_height = 240
+
+# JPEG quality for the WebSocket preview broadcast. Range 1..=100.
+# (default: 30)
 jpeg_quality = 30
+
+# Throttle for the encoder's preview tap publish rate. Range 0..=1000; the
+# encoder caps preview emission to this rate per camera regardless of the
+# camera's native fps. (default: 60)
 preview_fps = 30
 
+# Optional override of the visualizer's preview compression worker pool size.
+# `None` lets the visualizer pick a sensible per-host default. (default: unset)
+# preview_workers = 4
+
+# -----------------------------------------------------------------------------
+# Devices — one [[devices]] block per device process the controller spawns.
+# Each device must declare at least one [[devices.channels]] entry.
+# -----------------------------------------------------------------------------
 [[devices]]
+# User-facing name surfaced in the wizard, log files, dataset paths,
+# and bus topics derived from this device.
 name = "camera_top"
+
+# Driver identifier — picks the device executable. Built-in drivers:
+#   "pseudo"        — synthetic in-repo driver (cameras + robots; no hardware)
+#   "v4l2"          — Linux V4L2 webcams (Logitech, ZED X over GMSL, …)
+#   "realsense"     — Intel RealSense depth cameras (D435if, D455, …)
+#   "airbot-play"   — AIRBOT Play 6-DoF arms (`rollio-device-airbot-play`)
+#   "nero"          — Nero arms (`rollio-device-nero`)
 driver = "pseudo"
+
+# Driver-specific identifier. v4l2: "/dev/videoN". realsense: serial number.
+# airbot-play: "PZ..." board ID. pseudo: any unique string.
 id = "pseudo_camera_0"
+
+# Iceoryx2 topic prefix. Every channel's frame / state / command service name
+# is derived as "{bus_root}/{channel_type}/...". Must be unique per device.
 bus_root = "camera_top"
 
+# Optional per-device `[devices.extra]` block for driver-specific knobs
+# (transport, interface, end-effector model, …). The pseudo driver only
+# uses `transport`. Real drivers document their own keys.
 [devices.extra]
 transport = "simulated"
 
 [[devices.channels]]
+# Channel identifier within this device. For cameras, conventionally
+# "color" / "depth" / "infrared". For robots, a vendor-specific name like
+# "arm" or "e2".
 channel_type = "color"
+
+# Channel kind: "camera" or "robot". Camera channels require a `profile`;
+# robot channels require `dof`, `mode`, and `publish_states`.
 kind = "camera"
+
+# When false the channel is configured but no device process subscribes to
+# it. Useful for keeping per-stream tuning around without recording it.
+# (default: true)
 enabled = true
+
+# Camera capture profile. `pixel_format` controls what the driver publishes
+# on the bus; the encoder decodes if needed.
+#   "rgb24"  — packed 8-bit RGB (legacy default; works for any camera)
+#   "bgr24"  — packed 8-bit BGR
+#   "yuyv"   — packed YUV 4:2:2 (RealSense / V4L2 native fast path)
+#   "mjpeg"  — MJPEG (V4L2 native fast path; encoder decodes via libavcodec)
+#   "depth16"— 16-bit depth (RealSense depth)
+#   "gray8"  — 8-bit luma (RealSense IR, monochrome cameras)
+# Optional `native_pixel_format` pins the V4L2 driver to a specific fourcc
+# when the camera supports several (e.g. "MJPG" or "YUYV").
 profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
 
 [[devices]]
@@ -37,7 +152,6 @@ name = "camera_side"
 driver = "pseudo"
 id = "pseudo_camera_1"
 bus_root = "camera_side"
-
 [devices.extra]
 transport = "simulated"
 
@@ -52,7 +166,6 @@ name = "leader_arm"
 driver = "pseudo"
 id = "pseudo_robot_0_dof_6"
 bus_root = "leader_arm"
-
 [devices.extra]
 transport = "simulated"
 
@@ -60,22 +173,45 @@ transport = "simulated"
 channel_type = "arm"
 kind = "robot"
 enabled = true
+
+# Robot mode at startup. Allowed values: "free-drive", "command-following",
+# "identifying", "disabled". Required when `enabled = true` for robot
+# channels. The wizard cycles between values the driver advertises.
 mode = "free-drive"
+
+# Number of joints the robot exposes. Range 1..=15.
 dof = 6
+
+# State kinds the driver publishes on this channel. Allowed values:
+#   "joint_position", "joint_velocity", "joint_effort",
+#   "end_effector_pose", "end_effector_twist", "end_effector_wrench",
+#   "parallel_position", "parallel_velocity", "parallel_effort"
+# Required when `enabled = true` for robot channels.
 publish_states = ["joint_position", "joint_velocity", "joint_effort", "end_effector_pose"]
+
+# Subset of `publish_states` that the assembler writes into the dataset.
+# Defaults to empty; the wizard mirrors `publish_states` here. Must be a
+# strict subset.
 recorded_states = ["joint_position", "joint_velocity", "joint_effort"]
+
+# How often the device drives its control loop. Lower than the publish
+# rate is fine (driver may down-sample). Required > 0 when set.
 control_frequency_hz = 60.0
 
+# Per-channel command-loop defaults. The driver consumes these for the
+# matching command kind ("joint_mit" -> joint_mit_kp/kd, "parallel_mit"
+# -> parallel_mit_kp/kd). Length must match `dof` when non-empty.
 [devices.channels.command_defaults]
 joint_mit_kp = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 joint_mit_kd = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+# parallel_mit_kp = []
+# parallel_mit_kd = []
 
 [[devices]]
 name = "follower_arm"
 driver = "pseudo"
 id = "pseudo_robot_1_dof_6"
 bus_root = "follower_arm"
-
 [devices.extra]
 transport = "simulated"
 
@@ -93,57 +229,184 @@ control_frequency_hz = 60.0
 joint_mit_kp = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 joint_mit_kd = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 
+# -----------------------------------------------------------------------------
+# Pairings — connect a leader robot channel to a follower channel under one
+# teleoperation policy. Empty when `mode = "intervention"`.
+# -----------------------------------------------------------------------------
 [[pairings]]
 leader_device = "leader_arm"
 leader_channel_type = "arm"
 follower_device = "follower_arm"
 follower_channel_type = "arm"
+
+# Teleop policy:
+#   "direct-joint" — joint-space pass-through (requires DOF match + driver
+#                    whitelist via `direct_joint_compatibility`)
+#   "cartesian"    — end-effector pose pass-through (FK on leader, IK on
+#                    follower; both drivers must opt in)
+#   "parallel"     — single-DoF parallel-gripper teleop (both channels
+#                    must have `dof = 1`; ratio in joint_scales[0])
+# (default: "direct-joint")
 mapping = "direct-joint"
+
+# State kind the leader broadcasts; must be in the leader's `publish_states`.
 leader_state = "joint_position"
+
+# Command kind the follower accepts; must be in the follower driver's
+# `supported_commands` (refreshed at startup from the driver `query --json`).
 follower_command = "joint_position"
+
+# Optional per-policy parameters:
+#   joint_index_map — direct-joint only, map leader joints to follower
+#                     joints (must be a permutation of 0..dof when set).
+#   joint_scales    — direct-joint: per-joint scale factor; parallel: a
+#                     single-element [ratio] vector.
 joint_index_map = [0, 1, 2, 3, 4, 5]
 joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
+# -----------------------------------------------------------------------------
+# UI keybindings & web server
+# -----------------------------------------------------------------------------
 [ui]
+# Single-character keys for the live-preview UI. Each must be unique and not
+# collide with the reserved shortcuts ("d", "r"). All four default to the
+# values shown.
 start_key = "s"
 stop_key = "e"
 keep_key = "k"
 discard_key = "x"
 
+# (the web UI server listens on these — the controller fills the WebSocket
+# URLs at runtime; only override these to point the UI at a custom port.)
+# http_host = "0.0.0.0"   # (default: "0.0.0.0")
+# http_port = 3000        # (default: 3000)
+
+# -----------------------------------------------------------------------------
+# Encoder
+# -----------------------------------------------------------------------------
 [encoder]
+# Codec for color / IR / RGB-like streams. Aliases accepted: "libx264" /
+# "h264_nvenc" / "h264_vaapi" → "h264", same for h265 and av1.
+# (default: "h264")
 video_codec = "h264"
+
+# Codec for 16-bit depth streams. "rvl" is the in-repo lossless depth
+# codec (CPU-only); "h264"/"h265"/"av1" route depth through libav (lossy).
+# (default: "rvl")
 depth_codec = "rvl"
+
+# Backend hints. `backend` is a legacy fallback; per-codec
+# `video_backend` / `depth_backend` override it.
+#   "auto"   — pick the best available (NVENC > VAAPI > CPU)
+#   "cpu"    — libavcodec software encoder
+#   "nvidia" — NVENC (requires CUDA + NVENC-capable GPU)
+#   "vaapi"  — VAAPI (Intel/AMD)
+# RVL is CPU-only by construction; pairing rvl with nvidia/vaapi is a
+# validation error. (defaults: "auto" everywhere)
+backend = "auto"
+video_backend = "auto"
+depth_backend = "auto"
+
+# Output container override. "auto" picks .mp4 for h264/h265, .mkv for
+# av1, .rvl for rvl. (default: "auto")
+artifact_format = "auto"
+
+# Per-encoder bus → encode queue depth (number of pending frames before
+# the encoder publishes a backpressure event). (default: 32)
 queue_size = 32
-# Codec input chroma subsampling: "422" (default) keeps native chroma
-# resolution from YUYV / MJPG-422 sources, "420" matches legacy 4:2:0.
-# Auto-falls back to "420" for codec/backend pairs without 4:2:2 input
-# support.
+
+# Codec input chroma subsampling.
+#   "422" (default) preserves YUYV / MJPG-422 native chroma; one less
+#                   swscale pass per frame compared to 4:2:0.
+#   "420"           legacy, smallest files, broadest player compatibility.
+# Auto-falls back to "420" when the resolved codec/backend pair can't
+# accept 4:2:2 input (libsvtav1, older NVENC, VAAPI).
 chroma_subsampling = "422"
-# Optional quality knobs — omit any field to keep the libavcodec default.
-# crf:        0..=51 (lower = better quality, larger files).
-#             18 ≈ visually lossless ; 15 ≈ archive ; 0 = lossless.
-# preset:     codec-specific speed/quality preset
-#             ("ultrafast".."veryslow" for x264/x265, "0".."13" for
-#             SVT-AV1, "p1".."p7" for NVENC).
-# tune:       psychovisual hint ("film", "animation", "grain", ...).
-# bit_depth:  8 (default) or 10.
-# color_space:"auto" (default), "bt709-limited", or "bt601-limited".
+
+# Optional quality knobs. Each defaults to `None` so libavcodec applies
+# its own defaults (matches the legacy pre-config behaviour).
+#
+# crf:        constant-quality target, 0..=51. Lower = better quality,
+#             larger files. libx264 default ≈ 23; 18 ≈ visually lossless;
+#             15 ≈ archive; 0 = mathematically lossless. Mapped to "cq"
+#             with rc=vbr for NVENC and to "qp" with rc_mode=CQP for VAAPI.
+# preset:     codec speed/quality preset. "ultrafast".."veryslow" for
+#             libx264 / libx265, numeric "0".."13" for SVT-AV1, "p1".."p7"
+#             for NVENC.
+# tune:       psychovisual hint passed verbatim to the codec ("film",
+#             "animation", "grain", "stillimage", …).
+# bit_depth:  8 (default) or 10. 10-bit eliminates banding in dark scenes
+#             at ~25% larger files; requires the host's libx264/libx265 to
+#             be the 10-bit-capable build. Auto-falls back to 8.
+# color_space: "auto" (default; players guess), "bt709-limited" (modern
+#             HD), or "bt601-limited" (SD).
 # crf = 18
 # preset = "slow"
 # tune = "film"
 # bit_depth = 8
 # color_space = "bt709-limited"
 
+# -----------------------------------------------------------------------------
+# Episode assembler
+# -----------------------------------------------------------------------------
 [assembler]
+# How long the assembler waits for each per-camera VideoReady event after
+# the recording stops. Cameras whose encoders fail to produce a video in
+# time are dropped from the episode (with the rest of the episode still
+# saved). (default: 5000)
+missing_video_timeout_ms = 5000
+
+# Where the assembler builds episodes before storage moves them to their
+# final location. /dev/shm on Linux gives the lowest latency. The setup
+# wizard fills this with a host-appropriate temp dir.
+# (default on linux: "/dev/shm/rollio")
+staging_dir = "/dev/shm/rollio"
+
+# How encoder → assembler hand-off works:
+#   "file"     — encoder writes mp4/rvl to disk, assembler reads it back
+#   "iceoryx2" — (future) zero-copy in-memory hand-off
+# (default: "file")
 encoded_handoff = "file"
 
+# -----------------------------------------------------------------------------
+# Storage — where the assembler-staged episodes are persisted.
+# -----------------------------------------------------------------------------
 [storage]
+# Backend: "local" (filesystem) or "http" (POST to `endpoint`).
+# (default: "local")
 backend = "local"
+
+# Required when `backend = "local"`. Relative paths resolve against the
+# controller's invocation cwd.
 output_path = "./output"
 
+# Required when `backend = "http"`. Ignored otherwise.
+# endpoint = "https://uploads.example.com/rollio"
+
+# Per-storage bus → storage queue depth. (default: 32)
+queue_size = 32
+
+# -----------------------------------------------------------------------------
+# Monitor & threshold-based warnings
+# -----------------------------------------------------------------------------
 [monitor]
+# How often the monitor compares each child process's published metrics
+# against the thresholds below. (default: 1.0)
 metrics_frequency_hz = 1.0
 
+# Thresholds are grouped first by process_id (e.g. a device name like
+# "camera_top" or an encoder process id like "encoder.camera_top.color"),
+# then by metric name. Each ThresholdDef must include `explanation` plus
+# at least one comparison key (`gt`, `lt`, `gte`, `lte`, `outside`,
+# `inside`, `occurred`, `gap`, `repeated`).
 [monitor.thresholds."camera_top".actual_fps]
 explanation = "Top camera FPS dropped below target"
 lt = 28.0
+# gte = 0.0
+# lte = 60.0
+# inside = [10.0, 60.0]
+# outside = [0.0, 100.0]
+# gt = 0.0
+# occurred = true
+# gap = 5.0
+# repeated = false

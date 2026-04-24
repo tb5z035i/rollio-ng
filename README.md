@@ -71,7 +71,8 @@ cargo test --offline --manifest-path third_party/airbot-play-rust/Cargo.toml tra
 cargo run --manifest-path third_party/airbot-play-rust/Cargo.toml --bin airbot-play-iceoryx2 -- --interface can0
 
 # AIRBOT hardware smoke (requires a configured CAN-connected arm)
-cargo run -p rollio -- collect --config config/config.hardware.example.toml
+# Generate `config.toml` once via `cargo run -p rollio -- setup`, then:
+cargo run -p rollio -- collect --config config.toml
 ```
 
 If `cargo build --workspace`, `make build`, or `make` fails while compiling `turbojpeg-sys`
