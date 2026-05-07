@@ -95,6 +95,13 @@ pub fn channel_state_service_name(bus_root: &str, channel_type: &str, state_kind
     format!("{bus_root}/{channel_type}/states/{state_kind}")
 }
 
+/// IMU state service. Sibling of [`channel_state_service_name`] but with the
+/// state kind pinned to `imu` since IMU streams aren't enumerated as a
+/// `RobotStateKind` (they're a separate `DeviceType::Imu`).
+pub fn channel_imu_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/states/imu")
+}
+
 pub fn channel_command_service_name(
     bus_root: &str,
     channel_type: &str,

@@ -237,6 +237,7 @@ struct PreviewPipeline {
     builder: PreviewBuilder,
     output_width: u32,
     output_height: u32,
+    h264_warning_logged: bool,
 }
 
 impl PreviewPipeline {
@@ -272,6 +273,7 @@ impl PreviewPipeline {
             builder,
             output_width: config.preview_width,
             output_height: config.preview_height,
+            h264_warning_logged: false,
         })
     }
 
@@ -280,6 +282,21 @@ impl PreviewPipeline {
     /// are logged but never propagated; the recording path must keep
     /// running even if a preview frame fails.
     fn publish_if_due(&mut self, frame: &OwnedFrame, process_id: &str) {
+        // H264 input bypasses the preview tap entirely. Decoding H264 to
+        // RGB24 every frame just to feed the visualizer's preview pipeline
+        // defeats the point of accepting pre-encoded frames; operators
+        // who need a preview for these channels should run a separate
+        // decoder process (or look at the source-side preview).
+        if frame.header.pixel_format == PixelFormat::H264 {
+            if !self.h264_warning_logged {
+                eprintln!(
+                    "rollio-encoder: process={process_id} preview disabled for H264 input \
+                     (passthrough mode); visualizer will not show this channel."
+                );
+                self.h264_warning_logged = true;
+            }
+            return;
+        }
         match self.builder.build(frame) {
             Ok(Some(preview)) => {
                 if let Err(error) = self.publish(preview) {

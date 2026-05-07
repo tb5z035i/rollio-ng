@@ -231,9 +231,16 @@ pub enum PixelFormat {
     Mjpeg = 3,
     Depth16 = 4,
     Gray8 = 5,
+    // The kebab-case default would emit "h-264" which is not the canonical
+    // codec name; pin it to "h264" explicitly.
+    #[serde(rename = "h264")]
+    H264 = 6,
 }
 
 impl PixelFormat {
+    /// Bytes-per-pixel for raw formats. Returns 0 for compressed formats
+    /// (Mjpeg, H264) where the payload size is variable; consumers must
+    /// read the slice length directly instead of multiplying width*height.
     pub fn bytes_per_pixel(&self) -> usize {
         match self {
             Self::Rgb24 | Self::Bgr24 => 3,
@@ -241,6 +248,7 @@ impl PixelFormat {
             Self::Mjpeg => 0, // variable-length compressed
             Self::Depth16 => 2,
             Self::Gray8 => 1,
+            Self::H264 => 0, // variable-length compressed
         }
     }
 }
@@ -360,6 +368,45 @@ impl Default for Pose7 {
         Self {
             timestamp_us: 0,
             values: [0.0; 7],
+        }
+    }
+}
+
+/// Inertial-measurement sample. Layout-faithful subset of cora's
+/// `sensor_msgs::msg::Imu` IDL minus the unbounded `frame_id` string
+/// (channel identity comes through the iceoryx2 service name
+/// `{bus_root}/{channel_type}/states/imu`). Covariances are kept as the
+/// canonical row-major 3x3 matrices to preserve fidelity for downstream
+/// fusion algorithms.
+#[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
+#[type_name("Imu")]
+#[repr(C)]
+pub struct Imu {
+    pub timestamp_us: u64,
+    /// Quaternion components in `[x, y, z, w]` order (matches `geometry_msgs/Quaternion`).
+    pub orientation: [f64; 4],
+    /// Body-frame angular velocity in rad/s `[x, y, z]`.
+    pub angular_velocity: [f64; 3],
+    /// Body-frame linear acceleration in m/s^2 `[x, y, z]`.
+    pub linear_acceleration: [f64; 3],
+    /// Row-major 3x3 covariance for `orientation` (rad^2). All zeros means
+    /// the source did not provide one.
+    pub orientation_covariance: [f64; 9],
+    pub angular_velocity_covariance: [f64; 9],
+    pub linear_acceleration_covariance: [f64; 9],
+}
+
+impl Default for Imu {
+    fn default() -> Self {
+        Self {
+            timestamp_us: 0,
+            // Identity quaternion (no rotation).
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            angular_velocity: [0.0; 3],
+            linear_acceleration: [0.0; 3],
+            orientation_covariance: [0.0; 9],
+            angular_velocity_covariance: [0.0; 9],
+            linear_acceleration_covariance: [0.0; 9],
         }
     }
 }

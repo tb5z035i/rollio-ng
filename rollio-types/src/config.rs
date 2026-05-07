@@ -98,6 +98,13 @@ pub enum DeviceType {
     Camera,
     #[default]
     Robot,
+    /// Sensor channel carrying inertial data (orientation, angular velocity,
+    /// linear acceleration). Backed by the `Imu` POD message in
+    /// [`crate::messages`] and published on `{bus_root}/{channel_type}/states/imu`.
+    /// Used by bridge devices like `rollio-device-umi` that ingest IMU streams
+    /// from external middlewares (FastDDS, ROS2) and republish them as
+    /// first-class rollio channels.
+    Imu,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +286,11 @@ pub enum EncoderBackend {
     Cpu,
     Nvidia,
     Vaapi,
+    /// Pseudo-backend: the input frames already carry compressed bytes
+    /// (currently only H264 from the UMI bridge), so the encoder mux'es
+    /// them straight into MP4 without invoking any encoder. Reported in
+    /// telemetry to make it observable that no real encode happened.
+    Passthrough,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1534,6 +1546,38 @@ impl DeviceChannelConfigV2 {
                 self.command_defaults
                     .validate(device, &self.channel_type, dof as usize)?;
             }
+            DeviceType::Imu => {
+                if let Some(profile) = &self.profile {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": imu channels do not accept profile ({:?})",
+                        device.name, self.channel_type, profile
+                    )));
+                }
+                if self.dof.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": imu channels do not accept dof",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.mode.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": imu channels do not accept mode",
+                        device.name, self.channel_type
+                    )));
+                }
+                if !self.publish_states.is_empty() || !self.recorded_states.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": imu channels do not accept publish_states or recorded_states (the IMU service is implicit)",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.control_frequency_hz.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": imu channels do not accept control_frequency_hz",
+                        device.name, self.channel_type
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -2183,6 +2227,15 @@ pub struct VisualizerRobotSourceConfig {
     pub value_max: Vec<f64>,
 }
 
+/// Visualizer subscriber descriptor for an IMU channel. The visualizer
+/// currently only plumbs the subscription so IMU data is observable via
+/// bus-tap; rendering is a follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualizerImuSourceConfig {
+    pub channel_id: String,
+    pub state_topic: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerRuntimeConfigV2 {
     pub port: u16,
@@ -2190,6 +2243,8 @@ pub struct VisualizerRuntimeConfigV2 {
     pub camera_sources: Vec<VisualizerCameraSourceConfig>,
     #[serde(default)]
     pub robot_sources: Vec<VisualizerRobotSourceConfig>,
+    #[serde(default)]
+    pub imu_sources: Vec<VisualizerImuSourceConfig>,
     pub max_preview_width: u32,
     pub max_preview_height: u32,
     pub jpeg_quality: i32,
@@ -2710,6 +2765,21 @@ pub struct ResolvedRobotChannel {
     pub value_limits: Vec<StateValueLimitsEntry>,
 }
 
+/// Resolved view of an IMU channel — used by the visualizer / bus-tap to
+/// subscribe to inertial streams published by bridge devices like
+/// `rollio-device-umi`.
+#[derive(Debug, Clone)]
+pub struct ResolvedImuChannel {
+    pub channel_id: String,
+    pub device_name: String,
+    pub driver: String,
+    pub bus_root: String,
+    pub channel_type: String,
+    /// Topic where the bridge publishes `Imu` POD samples
+    /// (`{bus_root}/{channel_type}/states/imu`).
+    pub state_topic: String,
+}
+
 impl ProjectConfig {
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path)?;
@@ -2823,6 +2893,29 @@ impl ProjectConfig {
         channels
     }
 
+    /// Walk every `[[devices.channels]]` entry whose `kind = "imu"` is enabled and
+    /// produce a flat list of subscribe-ready descriptors. Mirrors the
+    /// pattern of [`Self::resolved_camera_channels`] / [`Self::resolved_robot_channels`].
+    pub fn resolved_imu_channels(&self) -> Vec<ResolvedImuChannel> {
+        let mut channels = Vec::new();
+        for device in &self.devices {
+            for channel in &device.channels {
+                if channel.kind != DeviceType::Imu || !channel.enabled {
+                    continue;
+                }
+                channels.push(ResolvedImuChannel {
+                    channel_id: device_channel_id(&device.name, &channel.channel_type),
+                    device_name: device.name.clone(),
+                    driver: device.driver.clone(),
+                    bus_root: device.bus_root.clone(),
+                    channel_type: channel.channel_type.clone(),
+                    state_topic: imu_state_topic_v2(&device.bus_root, &channel.channel_type),
+                });
+            }
+        }
+        channels
+    }
+
     pub fn resolved_robot_channels(&self) -> Vec<ResolvedRobotChannel> {
         let mut channels = Vec::new();
         for device in &self.devices {
@@ -2913,10 +3006,19 @@ impl ProjectConfig {
                     })
             })
             .collect();
+        let imu_sources = self
+            .resolved_imu_channels()
+            .into_iter()
+            .map(|imu| VisualizerImuSourceConfig {
+                channel_id: imu.channel_id,
+                state_topic: imu.state_topic,
+            })
+            .collect();
         VisualizerRuntimeConfigV2 {
             port: self.visualizer.port,
             camera_sources,
             robot_sources,
+            imu_sources,
             max_preview_width: self.visualizer.max_preview_width,
             max_preview_height: self.visualizer.max_preview_height,
             jpeg_quality: self.visualizer.jpeg_quality,
@@ -3165,6 +3267,13 @@ fn robot_state_topic_v2(bus_root: &str, channel_type: &str, state: RobotStateKin
         channel_prefix_v2(bus_root, channel_type),
         state.topic_suffix()
     )
+}
+
+/// IMU state topic. Sibling of [`robot_state_topic_v2`] but with the suffix
+/// pinned to `imu` since IMU streams aren't represented as a `RobotStateKind`
+/// (they're a separate `DeviceType::Imu`).
+fn imu_state_topic_v2(bus_root: &str, channel_type: &str) -> String {
+    format!("{}/states/imu", channel_prefix_v2(bus_root, channel_type))
 }
 
 fn robot_command_topic_v2(bus_root: &str, channel_type: &str, command: RobotCommandKind) -> String {

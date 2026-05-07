@@ -10,10 +10,11 @@ use rollio_bus::{
     STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
-    RobotStateKind, VisualizerCameraSourceConfig, VisualizerRobotSourceConfig,
+    RobotStateKind, VisualizerCameraSourceConfig, VisualizerImuSourceConfig,
+    VisualizerRobotSourceConfig,
 };
 use rollio_types::messages::{
-    CameraFrameHeader, ControlEvent, JointVector15, ParallelVector2, Pose7,
+    CameraFrameHeader, ControlEvent, Imu, JointVector15, ParallelVector2, Pose7,
 };
 
 /// A message received from iceoryx2.
@@ -31,13 +32,28 @@ pub enum IpcMessage {
         value_min: Vec<f64>,
         value_max: Vec<f64>,
     },
+    /// Inertial sample. Covariances are dropped before forwarding to the UI;
+    /// downstream consumers that need them can subscribe to the underlying
+    /// iceoryx2 service directly via the channel id. Most fields are
+    /// `#[allow(dead_code)]` for now because the visualizer's IMU rendering
+    /// is a follow-up; the data is plumbed through so bus-tap and external
+    /// consumers see it without further plumbing.
+    #[allow(dead_code)]
+    ImuSample {
+        name: String,
+        timestamp_us: u64,
+        orientation: [f64; 4],
+        angular_velocity: [f64; 3],
+        linear_acceleration: [f64; 3],
+    },
 }
 
-/// Manages iceoryx2 subscribers for camera and robot topics.
+/// Manages iceoryx2 subscribers for camera, robot, and IMU topics.
 pub struct IpcPoller {
     node: Node<ipc::Service>,
     camera_subs: Vec<CameraSubscriber>,
     robot_subs: Vec<RobotSubscriber>,
+    imu_subs: Vec<ImuSubscriber>,
     control_subscriber: iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>,
 }
 
@@ -60,6 +76,11 @@ enum RobotStateSubscriber {
     Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
 }
 
+struct ImuSubscriber {
+    name: String,
+    subscriber: iceoryx2::port::subscriber::Subscriber<ipc::Service, Imu, ()>,
+}
+
 impl IpcPoller {
     /// Create a new IpcPoller that subscribes to the given camera and robot topics.
     ///
@@ -67,6 +88,7 @@ impl IpcPoller {
     pub fn new(
         camera_sources: &[VisualizerCameraSourceConfig],
         robot_sources: &[VisualizerRobotSourceConfig],
+        imu_sources: &[VisualizerImuSourceConfig],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node = NodeBuilder::new()
             .signal_handling_mode(SignalHandlingMode::Disabled)
@@ -161,6 +183,27 @@ impl IpcPoller {
             });
         }
 
+        let mut imu_subs = Vec::with_capacity(imu_sources.len());
+        for source in imu_sources {
+            let service_name_str = source.state_topic.clone();
+            let service_name: ServiceName = service_name_str.as_str().try_into()?;
+            let service = node
+                .service_builder(&service_name)
+                .publish_subscribe::<Imu>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
+                .open_or_create()?;
+            let subscriber = service.subscriber_builder().create()?;
+            log::info!("subscribed to imu: {service_name_str}");
+            imu_subs.push(ImuSubscriber {
+                name: source.channel_id.clone(),
+                subscriber,
+            });
+        }
+
         // Listen for ControlEvent::Shutdown so the controller can stop us
         // promptly during a preview-runtime swap. Without this, identify
         // would block on `terminate_children` for the full 30 s timeout.
@@ -175,6 +218,7 @@ impl IpcPoller {
             node,
             camera_subs,
             robot_subs,
+            imu_subs,
             control_subscriber,
         })
     }
@@ -276,6 +320,30 @@ impl IpcPoller {
             }
             if let Some(msg) = latest {
                 messages.push(msg);
+            }
+        }
+
+        // For IMU, drain every buffered sample (high-rate but small POD) so
+        // downstream consumers get the full stream.
+        for imu in &self.imu_subs {
+            loop {
+                match imu.subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        let payload = *sample.payload();
+                        messages.push(IpcMessage::ImuSample {
+                            name: imu.name.clone(),
+                            timestamp_us: payload.timestamp_us,
+                            orientation: payload.orientation,
+                            angular_velocity: payload.angular_velocity,
+                            linear_acceleration: payload.linear_acceleration,
+                        });
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        log::warn!("imu {} receive error: {e}", imu.name);
+                        break;
+                    }
+                }
             }
         }
 

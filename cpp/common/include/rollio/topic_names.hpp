@@ -30,6 +30,13 @@ inline auto channel_mode_control_service_name(const std::string& bus_root,
     return bus_root + "/" + channel_type + "/control/mode";
 }
 
+/// IMU state service: `{bus_root}/{channel_type}/states/imu`. Mirror of
+/// rollio_bus::channel_imu_service_name.
+inline auto channel_imu_service_name(const std::string& bus_root,
+                                     const std::string& channel_type) -> std::string {
+    return bus_root + "/" + channel_type + "/states/imu";
+}
+
 inline auto robot_state_service_name(const std::string& device_name) -> std::string {
     return "robot/" + device_name + "/state";
 }

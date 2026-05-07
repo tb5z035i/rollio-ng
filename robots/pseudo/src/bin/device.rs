@@ -257,6 +257,11 @@ fn run_device(device: BinaryDeviceConfig) -> Result<(), Box<dyn Error>> {
                     DeviceType::Robot => {
                         run_robot_channel(bus_root, channel, Arc::clone(&stop_flag))
                     }
+                    DeviceType::Imu => Err(format!(
+                        "rollio-device-pseudo does not synthesize imu channels (channel \"{}\")",
+                        channel.channel_type
+                    )
+                    .into()),
                 };
                 if result.is_err() {
                     stop_flag.store(true, Ordering::Relaxed);
@@ -914,6 +919,7 @@ fn kind_name(kind: DeviceType) -> &'static str {
     match kind {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
+        DeviceType::Imu => "imu",
     }
 }
 

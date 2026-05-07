@@ -34,6 +34,12 @@ struct DeviceChannelConfigV2 {
     std::optional<CameraChannelProfile> profile;
     /// RealSense infrared sensor index (1-based RS convention); unset uses 1.
     std::optional<uint32_t> stream_index;
+    /// Channel-level keys not consumed by the well-known fields above
+    /// (matches the serde `extra: toml::Table` flatten on the Rust side).
+    /// Stored verbatim so device-specific drivers like rollio-device-umi
+    /// can pull bridge-only knobs (e.g. `dds_topic`) without modifying the
+    /// shared schema.
+    std::unordered_map<std::string, std::string> extra;
 };
 
 struct BinaryDeviceConfig {
@@ -43,6 +49,12 @@ struct BinaryDeviceConfig {
     std::string id;
     std::string bus_root;
     std::vector<DeviceChannelConfigV2> channels;
+    /// Device-level extra keys at the document root not consumed by the
+    /// well-known fields above. Mirror of `BinaryDeviceConfig.extra` on
+    /// the Rust side. Note: keys nested under sub-tables like `[dds]` are
+    /// stored as dotted paths (e.g. "dds.domain_id") so callers don't
+    /// need to walk the toml AST themselves.
+    std::unordered_map<std::string, std::string> extra;
 };
 
 // ---------------------------------------------------------------------------
@@ -317,8 +329,12 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
     // sub-table (e.g. `[channels.command_defaults]`, `[channels.extra]`)
     // without crashing — these are emitted by the Rust `toml` serializer for
     // fields the C++ drivers don't need.
-    enum class Section { Root, Channel, ChannelProfile, ChannelSkip };
+    // `RootSubTable` captures keys under root-level `[xxx]` (e.g. `[dds]`)
+    // into `device.extra` as dotted-path keys ("dds.domain_id" etc.) so
+    // device-specific drivers can read them without walking the AST.
+    enum class Section { Root, Channel, ChannelProfile, ChannelSkip, RootSubTable };
     auto section = Section::Root;
+    std::string current_root_subtable;  // e.g. "dds" while in `[dds]`
 
     std::size_t cursor = 0;
     while (cursor <= text.size()) {
@@ -336,6 +352,7 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             if (trimmed == "[[channels]]" || trimmed == "[[devices.channels]]") {
                 device.channels.emplace_back();
                 section = Section::Channel;
+                current_root_subtable.clear();
                 continue;
             }
             // Sub-tables of the most recent channel are produced by the Rust
@@ -359,6 +376,15 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
                 }
                 continue;
             }
+            // Root-level `[<name>]` table — capture into device.extra under
+            // the dotted-path prefix (e.g. `[dds]` -> "dds.<key>"). Skip
+            // array tables `[[name]]` (already handled above for channels).
+            if (trimmed.size() >= 2 && trimmed.front() == '[' && trimmed.back() == ']' &&
+                trimmed[1] != '[') {
+                current_root_subtable = trimmed.substr(1, trimmed.size() - 2);
+                section = Section::RootSubTable;
+                continue;
+            }
             throw std::runtime_error("unsupported TOML table header: " + trimmed);
         }
 
@@ -376,8 +402,17 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             } else if (key == "bus_root") {
                 device.bus_root = strip_quotes(raw_value);
             } else {
-                // Forward-compatible: ignore unknown root keys (matches serde flatten/extra usage).
+                // Capture unknown root keys into device.extra so device-
+                // specific consumers (e.g. rollio-device-umi reading
+                // `dds_topic`) can pick them up without modifying the
+                // shared schema.
+                device.extra[key] = strip_quotes(raw_value);
             }
+        } else if (section == Section::RootSubTable) {
+            if (current_root_subtable.empty()) {
+                throw std::runtime_error("root sub-table key without active table header");
+            }
+            device.extra[current_root_subtable + "." + key] = strip_quotes(raw_value);
         } else if (section == Section::Channel) {
             if (device.channels.empty()) {
                 throw std::runtime_error("channel key before first [[channels]] table");
@@ -398,7 +433,10 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             } else if (key == "stream_index") {
                 ch.stream_index = parse_u32_value(raw_value);
             } else {
-                // Ignore unknown channel keys (extra / future fields).
+                // Capture unknown channel-level keys into the channel's
+                // `extra` map (mirrors the serde `extra: toml::Table`
+                // flatten on the Rust side).
+                ch.extra[key] = strip_quotes(raw_value);
             }
         } else if (section == Section::ChannelProfile) {
             if (device.channels.empty() || !device.channels.back().profile.has_value()) {

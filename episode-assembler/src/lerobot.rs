@@ -576,6 +576,11 @@ fn channels_for_pixel_format(pixel_format: PixelFormat) -> usize {
         PixelFormat::Gray8 => 1,
         PixelFormat::Yuyv => 2,
         PixelFormat::Mjpeg => 3,
+        // H264 frames are mux'd to MP4 by the encoder's passthrough mode;
+        // by the time the assembler reads them they're already video files,
+        // not raw frames. The "channels" metadata still treats decoded
+        // output as 3-channel RGB (the canonical LeRobot expectation).
+        PixelFormat::H264 => 3,
     }
 }
 

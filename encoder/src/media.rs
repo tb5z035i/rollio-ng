@@ -332,6 +332,9 @@ fn decode_or_copy_frame_to_av(
 pub(crate) enum SessionEncoder {
     Libav(LibavSession),
     Rvl(RvlSession),
+    /// H264 frames mux'd into MP4 without re-encoding. Selected by
+    /// [`open_session`] when the first frame's `pixel_format == H264`.
+    Passthrough(crate::passthrough::PassthroughSession),
 }
 
 pub(crate) struct LibavSession {
@@ -525,6 +528,29 @@ pub(crate) fn open_session(
 ) -> Result<SessionEncoder> {
     fs::create_dir_all(&runtime.output_dir)?;
     let path = Path::new(&runtime.output_dir).join(runtime.output_file_name(episode_index));
+    // Passthrough is gated purely by the first frame's pixel_format. When
+    // a UMI bridge republishes cora's H264 video onto iceoryx2, every
+    // frame is already encoded; we mux it into MP4 instead of feeding it
+    // back through ffmpeg's encoder. This sidesteps the operator's
+    // configured `encoder.codec` (a one-shot warning is logged below if
+    // the configuration disagrees).
+    if first_frame.header.pixel_format == PixelFormat::H264 {
+        if runtime.codec != EncoderCodec::H264 {
+            eprintln!(
+                "rollio-encoder: process_id={} configured codec={:?} but first frame is H264; \
+                 using passthrough mux (the configured codec is ignored).",
+                runtime.process_id, runtime.codec
+            );
+        }
+        return Ok(SessionEncoder::Passthrough(
+            crate::passthrough::PassthroughSession::new(
+                runtime.clone(),
+                path,
+                recording_start_us,
+                first_frame,
+            )?,
+        ));
+    }
     match runtime.codec {
         EncoderCodec::Rvl => Ok(SessionEncoder::Rvl(RvlSession::new(
             runtime.clone(),
@@ -542,6 +568,7 @@ pub(crate) fn encode_frame(session: &mut SessionEncoder, frame: &OwnedFrame) -> 
     match session {
         SessionEncoder::Libav(session) => session.encode_frame(frame),
         SessionEncoder::Rvl(session) => session.encode_frame(frame),
+        SessionEncoder::Passthrough(session) => session.encode_frame(frame),
     }
 }
 
@@ -549,6 +576,7 @@ pub(crate) fn finish_session(session: SessionEncoder) -> Result<EncodedArtifact>
     match session {
         SessionEncoder::Libav(session) => session.finish(),
         SessionEncoder::Rvl(session) => session.finish(),
+        SessionEncoder::Passthrough(session) => session.finish(),
     }
 }
 
@@ -573,6 +601,10 @@ pub(crate) fn record_dropped_frame(session: &mut SessionEncoder) {
     match session {
         SessionEncoder::Libav(session) => session.metrics.dropped_frames += 1,
         SessionEncoder::Rvl(session) => session.metrics.dropped_frames += 1,
+        SessionEncoder::Passthrough(session) => {
+            session.metrics_mut().dropped_frames =
+                session.metrics_mut().dropped_frames.saturating_add(1)
+        }
     }
 }
 
@@ -1060,6 +1092,9 @@ fn availability_note(backend: EncoderBackend, available: bool) -> Option<String>
                 Some("requires CUDA/NVENC capable host libraries".to_string())
             }
             EncoderBackend::Vaapi => Some("requires VAAPI-capable host libraries".to_string()),
+            EncoderBackend::Passthrough => {
+                Some("mux pre-encoded H264 frames into MP4 without re-encoding".to_string())
+            }
         }
     } else {
         None
@@ -1139,6 +1174,8 @@ fn select_decoder_name(codec: EncoderCodec, backend: EncoderBackend) -> Option<&
 fn backend_is_usable(backend: EncoderBackend) -> bool {
     match backend {
         EncoderBackend::Auto | EncoderBackend::Cpu => true,
+        // Passthrough has no host requirement: it's a pure software mux.
+        EncoderBackend::Passthrough => true,
         EncoderBackend::Nvidia => {
             Path::new("/dev/nvidiactl").exists()
                 || Path::new("/proc/driver/nvidia/version").exists()
@@ -1277,6 +1314,7 @@ fn resolve_chroma_subsampling(
         EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV422P,
         EncoderBackend::Nvidia => ffmpeg::util::format::pixel::Pixel::NV16,
         EncoderBackend::Vaapi => unreachable!("vaapi handled above"),
+        EncoderBackend::Passthrough => unreachable!("passthrough sessions never reach LibavSession"),
     };
     let supports_422 = formats.into_iter().any(|fmt| fmt == wanted);
     if supports_422 {
@@ -1360,6 +1398,9 @@ fn resolve_bit_depth(
             ffmpeg::util::format::pixel::Pixel::P210LE
         }
         (EncoderBackend::Vaapi, _) => unreachable!("vaapi handled above"),
+        (EncoderBackend::Passthrough, _) => {
+            unreachable!("passthrough sessions never reach LibavSession")
+        }
     };
     if formats.into_iter().any(|fmt| fmt == wanted) {
         10
@@ -1555,7 +1596,7 @@ fn backend_hw_device_type(backend: EncoderBackend) -> Option<ffmpeg::ffi::AVHWDe
     Some(match backend {
         EncoderBackend::Nvidia => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
         EncoderBackend::Vaapi => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-        EncoderBackend::Cpu | EncoderBackend::Auto => return None,
+        EncoderBackend::Cpu | EncoderBackend::Auto | EncoderBackend::Passthrough => return None,
     })
 }
 
@@ -1652,6 +1693,9 @@ fn pixel_format_for_libav(pixel_format: PixelFormat) -> Result<ffmpeg::util::for
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",
         )),
+        PixelFormat::H264 => Err(EncoderError::message(
+            "H264 frames are routed to the passthrough mux; this code path should not be reached",
+        )),
     }
 }
 
@@ -1667,6 +1711,9 @@ fn validate_source_pixel_format(pixel_format: PixelFormat) -> Result<()> {
         | PixelFormat::Mjpeg => Ok(()),
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",
+        )),
+        PixelFormat::H264 => Err(EncoderError::message(
+            "H264 frames are routed to the passthrough mux, not the libav encoder",
         )),
     }
 }

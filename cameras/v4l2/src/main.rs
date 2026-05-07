@@ -1196,6 +1196,7 @@ impl PixelFormatExt for PixelFormat {
             PixelFormat::Mjpeg => "mjpeg",
             PixelFormat::Depth16 => "depth16",
             PixelFormat::Gray8 => "gray8",
+            PixelFormat::H264 => "h264",
         }
     }
 }

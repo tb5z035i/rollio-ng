@@ -158,7 +158,7 @@ fn preview_rgb_bytes<'a>(
             Ok(Cow::Owned(rgb))
         }
         PixelFormat::Depth16 => Ok(Cow::Owned(depth16_to_rgb(header, frame_data)?)),
-        PixelFormat::Yuyv | PixelFormat::Mjpeg => Err(format!(
+        PixelFormat::Yuyv | PixelFormat::Mjpeg | PixelFormat::H264 => Err(format!(
             "preview compression does not support {:?} frames yet",
             header.pixel_format
         )

@@ -25,6 +25,12 @@ pub(crate) fn known_device_executables() -> &'static [&'static str] {
         "rollio-device-realsense",
         "rollio-device-v4l2",
         "rollio-device-agx-nero",
+        // UMI bridge: subscribes to cora's FastDDS topics and republishes
+        // onto rollio's iceoryx2 bus. Always probed (probe is fast and
+        // requires no DDS contact); when no operator config is provided
+        // `query --json` returns an empty channel list and the controller
+        // skips it during setup-wizard rendering.
+        "rollio-device-umi",
     ]
 }
 

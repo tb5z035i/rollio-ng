@@ -17,6 +17,7 @@ constexpr uint32_t MAX_JOINTS = 16;
 enum class DeviceKind : uint32_t {
     Camera = 0,
     Robot = 1,
+    Imu = 2,
 };
 
 inline auto device_kind_from_string(const std::string_view value) -> std::optional<DeviceKind> {
@@ -25,6 +26,9 @@ inline auto device_kind_from_string(const std::string_view value) -> std::option
     }
     if (value == "robot") {
         return DeviceKind::Robot;
+    }
+    if (value == "imu") {
+        return DeviceKind::Imu;
     }
     return std::nullopt;
 }
@@ -35,6 +39,8 @@ inline auto device_kind_to_string(const DeviceKind kind) -> const char* {
             return "camera";
         case DeviceKind::Robot:
             return "robot";
+        case DeviceKind::Imu:
+            return "imu";
     }
     return "camera";
 }
@@ -66,6 +72,7 @@ enum class PixelFormat : uint32_t {
     Mjpeg = 3,
     Depth16 = 4,
     Gray8 = 5,
+    H264 = 6,
 };
 
 inline auto pixel_format_to_string(const PixelFormat pixel_format) -> const char* {
@@ -82,6 +89,8 @@ inline auto pixel_format_to_string(const PixelFormat pixel_format) -> const char
             return "depth16";
         case PixelFormat::Gray8:
             return "gray8";
+        case PixelFormat::H264:
+            return "h264";
     }
 
     return "rgb24";
@@ -106,6 +115,9 @@ inline auto pixel_format_from_string(const std::string_view value) -> std::optio
     if (value == "gray8") {
         return PixelFormat::Gray8;
     }
+    if (value == "h264") {
+        return PixelFormat::H264;
+    }
 
     return std::nullopt;
 }
@@ -121,6 +133,23 @@ struct CameraFrameHeader {
     uint32_t height;
     PixelFormat pixel_format;
     uint64_t frame_index;
+};
+
+// ---------------------------------------------------------------------------
+// Imu — inertial-measurement sample (mirror of rollio_types::messages::Imu)
+// ---------------------------------------------------------------------------
+
+struct Imu {
+    static constexpr const char* IOX2_TYPE_NAME = "Imu";
+    uint64_t timestamp_us;
+    // Quaternion in [x, y, z, w] order; identity quaternion is {0, 0, 0, 1}.
+    double orientation[4];
+    double angular_velocity[3];
+    double linear_acceleration[3];
+    // Row-major 3x3 covariance matrices; all zeros means "unknown".
+    double orientation_covariance[9];
+    double angular_velocity_covariance[9];
+    double linear_acceleration_covariance[9];
 };
 
 // ---------------------------------------------------------------------------

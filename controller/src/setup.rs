@@ -3083,6 +3083,24 @@ fn build_channel_config_from_meta(
                 extra: toml::Table::new(),
             }
         }
+        DeviceType::Imu => DeviceChannelConfigV2 {
+            channel_type: channel_type.to_owned(),
+            kind: DeviceType::Imu,
+            enabled: true,
+            name: channel_name,
+            channel_label: meta.channel_label.clone(),
+            mode: None,
+            dof: None,
+            publish_states: Vec::new(),
+            recorded_states: Vec::new(),
+            control_frequency_hz: None,
+            profile: None,
+            command_defaults: meta.defaults.clone(),
+            value_limits: Vec::new(),
+            direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
+            supported_commands: Vec::new(),
+            extra: toml::Table::new(),
+        },
         DeviceType::Robot => {
             let mode = Some(select_supported_mode(&meta.modes, preferred_mode));
             let publish_states =
@@ -4230,6 +4248,7 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                 .and_then(|s| match s.as_str() {
                     "camera" => Some(DeviceType::Camera),
                     "robot" => Some(DeviceType::Robot),
+                    "imu" => Some(DeviceType::Imu),
                     _ => None,
                 })
                 .unwrap_or(DeviceType::Robot);
@@ -4411,6 +4430,7 @@ fn parse_pixel_format_name(value: &str) -> Option<PixelFormat> {
         "mjpeg" => Some(PixelFormat::Mjpeg),
         "depth16" => Some(PixelFormat::Depth16),
         "gray8" => Some(PixelFormat::Gray8),
+        "h264" => Some(PixelFormat::H264),
         _ => None,
     }
 }
@@ -4448,6 +4468,7 @@ fn parse_pixel_format(value: &str) -> Option<PixelFormat> {
         "mjpeg" | "mjpg" => Some(PixelFormat::Mjpeg),
         "depth16" | "z16" => Some(PixelFormat::Depth16),
         "gray8" | "grey" | "gray" | "y8" => Some(PixelFormat::Gray8),
+        "h264" | "avc1" => Some(PixelFormat::H264),
         _ => None,
     }
 }
@@ -4562,6 +4583,7 @@ fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> String {
     let kind = match ch.kind {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
+        DeviceType::Imu => "imu",
     };
     format!(
         "{kind}|{}|{}|{}|-",

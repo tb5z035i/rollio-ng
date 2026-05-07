@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use iceoryx2::node::NodeWaitFailure;
 use rollio_types::config::{
-    VisualizerCameraSourceConfig, VisualizerRobotSourceConfig, VisualizerRuntimeConfigV2,
+    VisualizerCameraSourceConfig, VisualizerImuSourceConfig, VisualizerRobotSourceConfig,
+    VisualizerRuntimeConfigV2,
 };
 use tokio::sync::broadcast;
 
@@ -76,6 +77,7 @@ fn legacy_runtime_config(args: &Args) -> VisualizerRuntimeConfigV2 {
         port: 19090,
         camera_sources: Vec::new(),
         robot_sources: Vec::new(),
+        imu_sources: Vec::new(),
         max_preview_width: 320,
         max_preview_height: 240,
         jpeg_quality: 30,
@@ -86,6 +88,7 @@ fn legacy_runtime_config(args: &Args) -> VisualizerRuntimeConfigV2 {
         port: args.port.unwrap_or(defaults.port),
         camera_sources: Vec::new(),
         robot_sources: Vec::new(),
+        imu_sources: Vec::new(),
         max_preview_width: args.max_preview_width.unwrap_or(defaults.max_preview_width),
         max_preview_height: args
             .max_preview_height
@@ -220,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = ipc_poll_loop(
                 &runtime_config.camera_sources,
                 &runtime_config.robot_sources,
+                &runtime_config.imu_sources,
                 ipc_config,
                 ipc_broadcast_tx,
                 ipc_stream_info,
@@ -267,13 +271,14 @@ async fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
 fn ipc_poll_loop(
     camera_sources: &[VisualizerCameraSourceConfig],
     robot_sources: &[VisualizerRobotSourceConfig],
+    imu_sources: &[VisualizerImuSourceConfig],
     config: IpcPollConfig,
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
     preview_config: Arc<RuntimePreviewConfig>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let poller = IpcPoller::new(camera_sources, robot_sources)?;
+    let poller = IpcPoller::new(camera_sources, robot_sources, imu_sources)?;
     let camera_names = camera_sources
         .iter()
         .map(|source| source.channel_id.clone())
@@ -346,6 +351,13 @@ fn ipc_poll_loop(
                         &value_max,
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(json)));
+                }
+                IpcMessage::ImuSample { name, .. } => {
+                    // IMU rendering in the visualizer UI is a follow-up item;
+                    // for now the sample is observable via bus-tap and the
+                    // subscription keeps the iceoryx2 publisher's history
+                    // pipeline draining so it doesn't accumulate stale data.
+                    log::trace!("dropped IMU sample for visualizer channel {name}");
                 }
             }
         }

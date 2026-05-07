@@ -72,6 +72,10 @@ CORE_BINS=(
 # discoverable by the controller (see cameras/README.md).
 CAMERA_BINS=(
     "realsense/rollio-device-realsense"
+    # rollio-device-umi: FastDDS->iceoryx2 bridge for cora's H264 cameras
+    # and IMU streams. Built under devices/umi/ but staged from the same
+    # cmake build tree as cameras/, so the path mirrors the realsense one.
+    "devices/umi/rollio-device-umi"
 )
 
 CORE_STAGING="$STAGING/rollio"

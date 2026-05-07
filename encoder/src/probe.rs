@@ -73,6 +73,7 @@ fn backend_label(backend: EncoderBackend) -> &'static str {
         EncoderBackend::Cpu => "cpu",
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
+        EncoderBackend::Passthrough => "passthrough",
     }
 }
 
@@ -82,6 +83,7 @@ fn backend_order(backend: EncoderBackend) -> u8 {
         EncoderBackend::Nvidia => 1,
         EncoderBackend::Vaapi => 2,
         EncoderBackend::Auto => 3,
+        EncoderBackend::Passthrough => 4,
     }
 }
 

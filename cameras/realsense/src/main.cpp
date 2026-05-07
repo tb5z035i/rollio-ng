@@ -134,6 +134,10 @@ auto pixel_format_byte_size(const rollio::PixelFormat pixel_format) -> uint32_t 
         case rollio::PixelFormat::Gray8:
             return 1;
         case rollio::PixelFormat::Mjpeg:
+        case rollio::PixelFormat::H264:
+            // Compressed formats: bytes-per-pixel is meaningless. Realsense
+            // never produces these but we still need a well-defined return
+            // value to keep the switch exhaustive (-Wswitch-enum).
             return 1;
     }
     return 1;
@@ -180,6 +184,8 @@ auto pixel_format_json_name(const rollio::PixelFormat fmt) -> const char* {
             return "depth16";
         case rollio::PixelFormat::Gray8:
             return "gray8";
+        case rollio::PixelFormat::H264:
+            return "h264";
     }
     return "rgb24";
 }

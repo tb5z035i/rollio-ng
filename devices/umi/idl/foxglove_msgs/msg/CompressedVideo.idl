@@ -1,0 +1,32 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from foxglove_msgs/msg/CompressedVideo.msg
+// generated code does not contain a copyright notice
+
+#include "builtin_interfaces/msg/Time.idl"
+
+module foxglove_msgs {
+  module msg {
+    @verbatim(language="comment", text=
+      "A compressed video frame that can be decoded directly by Foxglove." "\n"
+      "The payload must contain exactly one encoded frame.")
+    struct CompressedVideo {
+      @verbatim(language="comment", text=
+        "Timestamp of the source video frame.")
+      builtin_interfaces::msg::Time timestamp;
+
+      @verbatim(language="comment", text=
+        "Frame identifier associated with this stream.")
+      string frame_id;
+
+      @verbatim(language="comment", text=
+        "Exactly one encoded frame in Annex-B byte-stream format.")
+      // Use a bounded sequence so generated Fast DDS types allocate
+      // sufficient payload buffer for H264 frames by default.
+      sequence<uint8, 4194304> data;
+
+      @verbatim(language="comment", text=
+        "Codec format, for example h264 or h265.")
+      string format;
+    };
+  };
+};
