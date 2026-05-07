@@ -54,7 +54,7 @@ sudo apt-get install -y \
   libswscale-dev
 
 # Rust (debug). For release binaries, use `cargo build --workspace --release`
-# or `make rust-build` / `make build` — the Makefile defaults `CARGO_BUILD_ARGS=--release`.
+# or `make build BUILD_TYPE=release`.
 cargo build --workspace
 cargo test --workspace
 # Camera drivers (C++)
@@ -112,23 +112,26 @@ and general file hygiene (trailing whitespace, TOML/YAML syntax, etc.).
 make test
 
 # Controller-managed pseudo-device smoke
-make smoke-pseudo
+cargo run -p rollio -- collect --config config/config.example.toml
 ```
 
-`make smoke-pseudo` launches the Sprint 2 stack through the new `rollio collect`
-entrypoint using `config/config.example.toml`. The expected checkpoint is that
-the pseudo camera previews and robot status appear in the TUI, and the stack
-shuts down cleanly when you press `Ctrl+C`.
+The smoke run launches the Sprint 2 stack through `rollio collect` using
+`config/config.example.toml`. The expected checkpoint is that the pseudo
+camera previews and robot status appear in the TUI, and the stack shuts
+down cleanly when you press `Ctrl+C`.
 
 ## Packaging (Ubuntu 24.04)
 
-Rust and Node on `PATH` (rustup, nvm), `dpkg-dev` for `dpkg-deb` + `dpkg-shlibdeps`, and `uv` (e.g. `pipx install uv`) for the wheel. Optional convenience: `make package-deps` for the apt side.
+Rust and Node on `PATH` (rustup, nvm), `dpkg-dev` for `dpkg-deb` + `dpkg-shlibdeps`, and `uv` (e.g. `pipx install uv`) for the wheel. Optional convenience: `make deps` for the apt side.
 
 ```bash
-make build                  # rust + C++ + UI
-make package                # ./build.sh all
-# or one shot:
-make package-all
+make build BUILD_TYPE=release             # rust + C++ + UI (optimized)
+make package BUILD_TYPE=release           # pack -> deb + wheel (no recompile)
+
+# Cross-compile to linux/arm64 (deb only; the Nero wheel is py3-none-any):
+make deps    TARGET_ARCH=arm64                       # one-time cross toolchain + :arm64 dev libs
+make build   BUILD_TYPE=release TARGET_ARCH=arm64
+make package BUILD_TYPE=release TARGET_ARCH=arm64
 ```
 
 Produces in `dist/`:

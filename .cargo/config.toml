@@ -1,0 +1,70 @@
+# Toolchain pinning: clang as the C/C++ compiler and as Rust's linker
+# frontend (rustc invokes `cc` for final link; we override that to clang).
+# Used by both the host build (x86_64) and the aarch64 cross build.
+#
+# The aarch64 cross relies on a *single* host clang acting as a cross
+# compiler via `--target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu`,
+# with lld doing the actual linking (`-fuse-ld=lld`). No separate
+# `aarch64-linux-gnu-clang` binary is needed -- clang ships every backend.
+#
+# Prerequisites are installed by `make deps` (and the `:arm64`
+# multiarch additions when `TARGET_ARCH=arm64`):
+#   * clang / clang++                    -> /usr/bin/clang*
+#   * lld                                -> /usr/bin/lld (auto-picked via -fuse-ld=lld)
+#   * libstdc++-13-dev (+ :arm64)        -> C++ headers + libstdc++.so symlinks
+#   * crossbuild-essential-arm64         -> aarch64-linux-gnu-{ar,strip,...} binutils
+#                                          (the gcc-aarch64 binaries it pulls go unused)
+#   * dpkg multiarch + :arm64 dev libs   -> /usr/lib/aarch64-linux-gnu/**
+#                                          /usr/aarch64-linux-gnu/include/**
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+    "-Clink-arg=--target=aarch64-linux-gnu",
+    "-Clink-arg=-fuse-ld=lld",
+]
+
+[env]
+# Host (x86_64): cc-crate and cmake-rs use clang for any build script
+# that compiles C/C++ (e.g. iceoryx2-pal-posix's socket_macros.c, the
+# Pinocchio sub-build, ffmpeg-sys-next's bindgen invocations).
+CC_x86_64-unknown-linux-gnu  = "clang"
+CXX_x86_64-unknown-linux-gnu = "clang++"
+AR_x86_64-unknown-linux-gnu  = "llvm-ar"
+
+# aarch64 cross: clang's gcc-detection auto-finds the sysroot from
+# crossbuild-essential-arm64 (via /usr/lib/gcc/aarch64-linux-gnu/13/...)
+# AND the multiarch :arm64 includes at /usr/include/aarch64-linux-gnu/.
+# DO NOT pass --sysroot=/usr/aarch64-linux-gnu explicitly: the libc.so
+# linker script there has absolute paths that conflict with sysroot
+# rewriting. `-fuse-ld=lld` routes cross-arch links through lld (which
+# natively speaks aarch64) instead of the host /usr/bin/ld.
+CC_aarch64-unknown-linux-gnu  = "clang --target=aarch64-linux-gnu -fuse-ld=lld"
+CXX_aarch64-unknown-linux-gnu = "clang++ --target=aarch64-linux-gnu -fuse-ld=lld"
+# llvm-ar is target-agnostic (operates on archive metadata); it produces
+# arm64-compatible .a files when fed arm64 .o files. aarch64-linux-gnu-ar
+# from binutils-aarch64-linux-gnu would also work.
+AR_aarch64-unknown-linux-gnu  = "llvm-ar"
+
+# Ubuntu 24.04 ships no `pkg-config-aarch64-linux-gnu` package, so route
+# cross pkg-config via env vars: the pkg-config crate honors per-target
+# PKG_CONFIG_LIBDIR_<target> / PKG_CONFIG_SYSROOT_DIR_<target>, falling
+# back to the plain `pkg-config` (pkgconf) executable on PATH.
+PKG_CONFIG_LIBDIR_aarch64-unknown-linux-gnu        = "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+PKG_CONFIG_SYSROOT_DIR_aarch64-unknown-linux-gnu   = "/"
+PKG_CONFIG_ALLOW_CROSS                             = "1"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64-unknown-linux-gnu = "--target=aarch64-linux-gnu"
+
+# Point cmake-rs (and any other cargo-driven cmake invocation) at our
+# cross toolchain file. Without this, cmake-rs strips the multi-arg
+# clang flags (-fuse-ld=lld) from CC_<target> when forwarding into
+# CMAKE_C_FLAGS, and turbojpeg-sys's libjpeg-turbo sub-build winds up
+# invoking the host x86_64 /usr/bin/ld with -m aarch64linux and fails.
+# cmake-rs probes CMAKE_TOOLCHAIN_FILE_<target> exactly for this
+# reason. `relative = true` resolves against the *workspace root* (the
+# directory containing this .cargo/config.toml), so the value is the
+# repo-relative path without any leading `../`.
+CMAKE_TOOLCHAIN_FILE_aarch64-unknown-linux-gnu     = { value = "cmake/aarch64-linux-gnu.cmake", relative = true }

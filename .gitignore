@@ -1,9 +1,14 @@
 # Rust
 target/
 
-# C++
+# C++ -- the canonical layout is `cameras/build-<arch>-<profile>/`
+# (e.g. cameras/build-amd64-debug/, cameras/build-arm64-release/) so
+# all four (TARGET_ARCH, BUILD_TYPE) combos coexist on disk. The
+# legacy paths `cpp/build/` and `cameras/build/` are also matched
+# below for backwards compat with older checkouts.
 cpp/build/
 cameras/build/
+cameras/build-*/
 
 # Node / terminal UI
 ui/node_modules/

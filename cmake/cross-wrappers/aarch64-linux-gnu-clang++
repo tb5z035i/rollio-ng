@@ -1,0 +1,3 @@
+#!/bin/sh
+# Thin clang++ wrapper, see aarch64-linux-gnu-clang for rationale.
+exec /usr/bin/clang++ --target=aarch64-linux-gnu "$@"

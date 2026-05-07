@@ -12,6 +12,34 @@ clap = { version = "4.6.0", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+# `ffmpeg-sys-next` is already pulled in transitively by `ffmpeg-next`,
+# but listing it here lets the `static-ffmpeg` feature below toggle the
+# sys-crate's `build-*` features (which don't have passthroughs in
+# `ffmpeg-next`'s own feature table).
+ffmpeg-sys-next = { version = "8.1.0", default-features = false }
+
+[features]
+default = []
+# Bundle FFmpeg + libx264/libx265/libsvtav1 statically into the binary,
+# instead of dynamically linking the host's libavcodec/libavformat. The
+# bundled FFmpeg is built against the NVENC SDK 12.1+ headers shipped by
+# `nv-codec-headers` (Ubuntu's `libffmpeg-nvenc-dev`), so `hevc_nvenc`
+# advertises 4:2:2 input formats (`NV16`/`P210LE`) on Ada/Blackwell
+# GPUs — the host's distro FFmpeg 6.x does not. Build deps required
+# (Ubuntu): `libffmpeg-nvenc-dev`, `libx264-dev`, `libsvtav1-dev`,
+# `libx265-dev`, `nasm`, plus a CUDA toolkit at `/usr/local/cuda`
+# (overridable via `CUDA_PATH`). First build is ~5–10 min; subsequent
+# rebuilds reuse the compiled artifacts under `target/.../build/`.
+# Enables GPL because libx264/libx265 are GPL.
+static-ffmpeg = [
+    "ffmpeg-next/build",
+    "ffmpeg-next/build-license-gpl",
+    "ffmpeg-sys-next/build-nvidia",
+    "ffmpeg-sys-next/build-vaapi",
+    "ffmpeg-sys-next/build-lib-x264",
+    "ffmpeg-sys-next/build-lib-x265",
+    "ffmpeg-sys-next/build-pic",
+]
 
 [dev-dependencies]
 tempfile = "3.27.0"

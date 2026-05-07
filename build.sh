@@ -134,6 +134,29 @@ assert_built() {
         || die "missing ui/terminal/.deb-vendor/node_modules/sharp -- run \`make ui-build\` (or \`make build\`) first"
     compgen -G "ui/terminal/.deb-vendor/node_modules/@img/sharp-*" >/dev/null \
         || die "missing ui/terminal/.deb-vendor/node_modules/@img/sharp-* -- run \`cd ui/terminal && npm install\` on the target arch and rebuild"
+    # Cross-build sanity: when packing arm64 the vendor tree MUST contain the
+    # arm64 sharp binding, not the host x86_64 one. npm picked whatever the
+    # build runner's --cpu/--os flags asked for (see `make ui-build-arm64`),
+    # so a mismatch here means the wrong tree got packaged. Loud failure beats
+    # a deb that segfaults on the operator's box.
+    case "$DEB_ARCH" in
+        arm64)
+            local sharp_native_glob="ui/terminal/.deb-vendor/node_modules/@img/sharp-linux-arm64"
+            local sharp_libvips_glob="ui/terminal/.deb-vendor/node_modules/@img/sharp-libvips-linux-arm64"
+            ;;
+        amd64)
+            local sharp_native_glob="ui/terminal/.deb-vendor/node_modules/@img/sharp-linux-x64"
+            local sharp_libvips_glob="ui/terminal/.deb-vendor/node_modules/@img/sharp-libvips-linux-x64"
+            ;;
+        *)
+            log "DEB_ARCH=$DEB_ARCH: skipping @img/sharp-* arch sanity check"
+            return 0
+            ;;
+    esac
+    [[ -d "$sharp_native_glob" ]] \
+        || die "missing $sharp_native_glob for DEB_ARCH=$DEB_ARCH -- run \`make ui-build-arm64\` (or set --cpu/--os on \`npm ci\`)"
+    [[ -d "$sharp_libvips_glob" ]] \
+        || die "missing $sharp_libvips_glob for DEB_ARCH=$DEB_ARCH -- run \`make ui-build-arm64\` (or set --cpu/--os on \`npm ci\`)"
 }
 
 run_shlibdeps() {
@@ -176,7 +199,78 @@ EOF
         fi
     done < <(find "$root_abs/usr/bin" -maxdepth 1 -type f -print0 2>/dev/null)
     [[ ${#elfs[@]} -gt 0 ]] || die "no ELFs found under $root/usr/bin for shlibdeps"
-    ( cd "$ctldir" && dpkg-shlibdeps -T"$subst_abs" -pshlibs "${elfs[@]}" )
+
+    # Cross-arch shlibdeps: when DEB_ARCH does not match the host arch,
+    # dpkg-shlibdeps relies on Debian multiarch (`:arm64` packages installed
+    # alongside the host's :amd64 set, registered in /var/lib/dpkg) to map
+    # foreign-arch sonames to package names. `make deps TARGET_ARCH=arm64` enables
+    # that. Even with multiarch fully wired some private/internal libs (e.g.
+    # ones loaded by FFmpeg's filters with no ldconfig record) cannot be
+    # mapped; --ignore-missing-info downgrades those from fatal to warnings,
+    # mirroring how the amd64 path tolerates `rollio-encoder` via the
+    # SHLIBDEPS_EXCLUDE_BINS list. Hermetic CI can opt into a chroot run
+    # instead by setting ROLLIO_DEB_SHLIBDEPS_CHROOT to the path of a
+    # pre-bootstrapped target-arch rootfs (qemu-user-static + binfmt handles
+    # the syscall translation transparently).
+    local host_arch
+    host_arch="$(dpkg --print-architecture 2>/dev/null || echo "$DEB_ARCH")"
+    local extra_args=()
+    if [[ "$DEB_ARCH" != "$host_arch" ]]; then
+        extra_args+=(--ignore-missing-info)
+        log "Cross-arch shlibdeps: DEB_ARCH=$DEB_ARCH host=$host_arch (multiarch :$DEB_ARCH packages required)"
+    fi
+
+    if [[ -n "${ROLLIO_DEB_SHLIBDEPS_CHROOT:-}" ]]; then
+        run_shlibdeps_in_chroot \
+            "$ROLLIO_DEB_SHLIBDEPS_CHROOT" "$ctldir" "$subst_abs" "${elfs[@]}"
+        return $?
+    fi
+
+    ( cd "$ctldir" && dpkg-shlibdeps "${extra_args[@]}" -T"$subst_abs" -pshlibs "${elfs[@]}" )
+}
+
+# Hermetic alternative for run_shlibdeps. Bind-mounts the staging tree into
+# a target-arch chroot (typically created with `debootstrap --arch=arm64`
+# pointed at /var/lib/rollio/arm64-rootfs or similar) and runs dpkg-shlibdeps
+# inside it via qemu-user-static (auto-handled by binfmt_misc when the
+# `qemu-user-static` apt package is installed).
+#
+# Used by CI to avoid relying on the host's multiarch admin DB; not normally
+# needed for local dev when `make deps TARGET_ARCH=arm64` was run.
+run_shlibdeps_in_chroot() {
+    local chroot_root="$1" ctldir="$2" subst_abs="$3"
+    shift 3
+    local elfs=("$@")
+    [[ -d "$chroot_root" ]] \
+        || die "ROLLIO_DEB_SHLIBDEPS_CHROOT=$chroot_root is not a directory"
+    command -v sudo >/dev/null 2>&1 \
+        || die "ROLLIO_DEB_SHLIBDEPS_CHROOT requires sudo to bind-mount and chroot"
+
+    log "Running dpkg-shlibdeps inside chroot $chroot_root"
+    # Stage the synthesized debian/control + the ELFs under a temp dir
+    # *inside* the chroot so the in-chroot dpkg-shlibdeps can read them.
+    local rel_workdir=".rollio-shlibdeps-$$"
+    local in_chroot_workdir="$chroot_root/$rel_workdir"
+    sudo mkdir -p "$in_chroot_workdir"
+    sudo cp -a "$ctldir/." "$in_chroot_workdir/"
+    local i=0
+    local elf_args=()
+    for elf in "${elfs[@]}"; do
+        local rel="elf-$i-$(basename "$elf")"
+        sudo cp "$elf" "$in_chroot_workdir/$rel"
+        elf_args+=("/$rel_workdir/$rel")
+        i=$((i+1))
+    done
+    sudo cp "$subst_abs" "$in_chroot_workdir/substvars" 2>/dev/null || true
+
+    sudo chroot "$chroot_root" \
+        /bin/sh -c "cd /$rel_workdir && dpkg-shlibdeps --ignore-missing-info -Tsubstvars -pshlibs $(printf ' %q' "${elf_args[@]}")"
+    local rc=$?
+    if [[ $rc -eq 0 && -f "$in_chroot_workdir/substvars" ]]; then
+        sudo cp "$in_chroot_workdir/substvars" "$subst_abs"
+    fi
+    sudo rm -rf "$in_chroot_workdir"
+    return $rc
 }
 
 extract_shlibs_depends() {

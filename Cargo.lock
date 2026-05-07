@@ -802,8 +802,6 @@ dependencies = [
 [[package]]
 name = "ffmpeg-sys-next"
 version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -2180,6 +2178,7 @@ version = "1.0.0"
 dependencies = [
  "clap",
  "ffmpeg-next",
+ "ffmpeg-sys-next",
  "iceoryx2",
  "rollio-bus",
  "rollio-types",

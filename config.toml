@@ -8,43 +8,6 @@ fps = 30
 chunk_size = 1000
 
 [[devices]]
-name = "airbot_play"
-executable = "rollio-device-airbot-play"
-driver = "airbot-play"
-id = "PZ31C02507000380"
-bus_root = "airbot_play"
-interface = "can0"
-transport = "can"
-
-[[devices.channels]]
-channel_type = "arm"
-kind = "robot"
-enabled = true
-name = "airbot_play"
-channel_label = "AIRBOT Play"
-mode = "free-drive"
-dof = 6
-publish_states = [
-    "joint_position",
-    "joint_velocity",
-    "joint_effort",
-    "end_effector_pose",
-]
-recorded_states = [
-    "joint_position",
-    "joint_velocity",
-    "joint_effort",
-    "end_effector_pose",
-]
-control_frequency_hz = 250.0
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices]]
 name = "realsense"
 executable = "rollio-device-realsense"
 driver = "realsense"
@@ -75,7 +38,7 @@ parallel_mit_kd = []
 [[devices.channels]]
 channel_type = "depth"
 kind = "camera"
-enabled = false
+enabled = true
 name = "realsense_depth"
 channel_label = "Intel RealSense Depth"
 publish_states = []
@@ -96,7 +59,7 @@ parallel_mit_kd = []
 [[devices.channels]]
 channel_type = "infrared"
 kind = "camera"
-enabled = false
+enabled = true
 name = "realsense_ir"
 channel_label = "Intel RealSense Infrared"
 publish_states = []
@@ -202,16 +165,14 @@ parallel_mit_kp = []
 parallel_mit_kd = []
 
 [encoder]
-video_codec = "h265"
+video_codec = "h264"
 depth_codec = "rvl"
 backend = "auto"
-video_backend = "nvidia"
+video_backend = "auto"
 depth_backend = "auto"
 artifact_format = "auto"
 chroma_subsampling = "s422"
-crf = 18
-preset = "fast"
-bit_depth = 10
+bit_depth = 8
 color_space = "auto"
 queue_size = 32
 
@@ -222,7 +183,7 @@ encoded_handoff = "file"
 
 [storage]
 backend = "local"
-output_path = "./output1"
+output_path = "./output"
 queue_size = 32
 
 [monitor]

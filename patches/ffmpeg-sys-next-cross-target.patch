@@ -1,0 +1,40 @@
+Compile the ffmpeg-sys-next `check.c` version-detection probe for the
+target architecture instead of forcing it to host arch.
+
+Upstream (zmwangx/rust-ffmpeg-sys 8.1.0) hard-codes
+`.target(&env::var("HOST").unwrap())` so the runtime probe binary can
+execute on the build host. This breaks cross-compilation on Linux:
+the probe is fed target-arch headers from pkg-config (e.g. arm64
+`/usr/include/aarch64-linux-gnu/libavutil/...`) but compiled by the
+host x86_64 clang, which chokes on aarch64-only attributes such as
+`__neon_vector_type__` and `__SVFloat32_t` in glibc 2.39's
+`<bits/math-vector.h>`.
+
+The fix is one line: compile the probe for the target arch. The
+resulting target-arch ELF is then executed by the build script as
+usual; on Linux hosts with `qemu-user-static` + `binfmt_misc`
+registered (Ubuntu's `qemu-user-static` apt package does this on
+install via dpkg postinst hooks) the kernel routes the foreign-arch
+binary through QEMU emulation transparently. Rollio's
+`make deps TARGET_ARCH=arm64` recipe pulls the qemu apt packages so
+this is guaranteed available whenever the cross build is being run.
+
+Patched into the vendored submodule by `make apply-vendored-patches`
+(invoked transitively by `rust-build` / `rust-test` / `rust-lint`).
+Idempotent: skipped if the patched marker is already present.
+
+--- a/build.rs
++++ b/build.rs
+@@ -788,8 +788,12 @@ fn check_features(
+     .expect("Write failed");
+
+     let executable = out_dir.join(if cfg!(windows) { "check.exe" } else { "check" });
++    // Cross-compile the probe for the target arch. The resulting binary is
++    // executed below; on Linux hosts with qemu-user-static + binfmt_misc
++    // registered, foreign-arch binaries run transparently via QEMU emulation
++    // (see Rollio's `make deps TARGET_ARCH=<arch>` recipe).
+     let mut compiler = cc::Build::new()
+-        .target(&env::var("HOST").unwrap()) // don't cross-compile this
++        .target(&env::var("TARGET").unwrap())
+         .get_compiler()
+         .to_command();

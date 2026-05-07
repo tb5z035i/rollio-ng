@@ -19,3 +19,9 @@
 [submodule "third_party/librealsense"]
 	path = third_party/librealsense
 	url = https://github.com/realsenseai/librealsense.git
+[submodule "third_party/FFmpeg"]
+	path = third_party/FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "third_party/ffmpeg-sys-next"]
+	path = third_party/ffmpeg-sys-next
+	url = https://github.com/zmwangx/rust-ffmpeg-sys

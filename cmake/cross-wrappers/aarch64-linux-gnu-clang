@@ -1,0 +1,8 @@
+#!/bin/sh
+# Thin clang wrapper that bakes --target=aarch64-linux-gnu in. Used as
+# CMAKE_C_COMPILER by cmake/aarch64-linux-gnu.cmake so that probes which
+# invoke "${CMAKE_C_COMPILER} -dumpmachine" / "-print-multi-os-directory"
+# / "-print-supported-cpus" return the *target* triple instead of the
+# host. librealsense's CMake/unix_config.cmake is the canonical example
+# (it auto-adds -mssse3 unless -dumpmachine reports aarch64-*).
+exec /usr/bin/clang --target=aarch64-linux-gnu "$@"

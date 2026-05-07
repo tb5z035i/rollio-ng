@@ -19,3 +19,16 @@ members = [
     "control-server",
 ]
 exclude = ["third_party"]
+
+# Override ffmpeg-sys-next 8.1.0 from crates.io with our vendored copy.
+# The vendored fork (third_party/ffmpeg-sys-next) carries a one-line
+# patch -- patches/ffmpeg-sys-next-cross-target.patch, applied by
+# `make apply-vendored-patches` -- that compiles the build-time
+# version-detection probe (`check.c`) for the target arch instead of
+# the host. This is required for cross-compiling rollio-encoder to
+# linux/aarch64 (the resulting target ELF runs on the host via
+# qemu-user-static + binfmt_misc, both pulled in by `make deps
+# TARGET_ARCH=arm64`). Native amd64 builds are unchanged because
+# HOST == TARGET makes the patched line behave identically to upstream.
+[patch.crates-io]
+ffmpeg-sys-next = { path = "third_party/ffmpeg-sys-next" }

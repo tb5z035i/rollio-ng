@@ -8,13 +8,11 @@ Two artifacts come out of one source tree (target: Ubuntu 24.04 / Python 3.12):
 ## Build and pack
 
 ```bash
-make build           # rust + C++ + UI (default: release)
-make package         # ./build.sh all -- stages + dpkg-deb + uv build
-# or one shot:
-make package-all
+make build BUILD_TYPE=release    # rust + C++ + UI, optimized
+make package BUILD_TYPE=release  # ./build.sh all -- stages + dpkg-deb + uv build (no recompile)
 ```
 
-`make package` does not compile. It runs `./build.sh all`, which:
+`make package` is a *pure* packaging step -- it does NOT recompile. It runs `./build.sh all` with `TARGET_DIR`/`CAMERAS_BUILD_DIR` derived from the chosen `BUILD_TYPE`+`TARGET_ARCH`. If artifacts are missing, `./build.sh assert_built` errors with the path of the missing file. `./build.sh all`:
 
 1. Asserts `target/release/rollio*`, `cameras/build/realsense/rollio-device-realsense`, `ui/web/dist`, `ui/terminal/dist`, `ui/terminal/native/rollio-native-ascii.node`, and `ui/terminal/.deb-vendor/node_modules/sharp` exist (the last is produced by `npm run build:bundle`, which vendors sharp + its runtime deps including the per-arch `@img/sharp-*` native binding).
 2. Stages the Rust binaries plus the C++ camera driver(s) into `.deb-staging/rollio/usr/bin/`, the UI bundles into `.deb-staging/rollio/usr/share/rollio/ui/{web,terminal}/dist/`, the native ASCII addon into `.deb-staging/rollio/usr/share/rollio/ui/terminal/native/`, and the vendored sharp tree into `.deb-staging/rollio/usr/share/rollio/ui/terminal/node_modules/`. Then runs `dpkg-shlibdeps` over `usr/bin/` only.
@@ -26,7 +24,7 @@ Tooling required at pack time:
 
 - `dpkg-dev` (provides `dpkg-deb`, `dpkg-shlibdeps`)
 - `uv` for the wheel (recommended): `pipx install uv` — or `python3-build` as fallback
-- `make package-deps` installs the apt-side helpers (omits Python — use `uv`)
+- `make deps` installs the apt-side helpers (omits Python — use `uv`). Pass `TARGET_ARCH=arm64` to also pull the cross toolchain + multiarch `:arm64` dev libs for cross-compile.
 
 `./build.sh` accepts subcommands when you only need one artifact: `core`, `nero`, `clean`. Env overrides: `DEB_VERSION` (default `1.0.0-1`), `DEB_ARCH` (default `dpkg --print-architecture`), `DEB_DIST` (default `dist`), `STAGING` (default `.deb-staging`), `TARGET_DIR` (default `target/release`).
 
@@ -37,6 +35,39 @@ DEB_VERSION=0.2.0-1 DEB_DIST=/tmp/out ./build.sh core
 ```
 
 Network access is required at pack time so `uv build` can resolve `pyAgxArm` from GitHub (pinned by SHA in [`robots/nero/pyproject.toml`](../robots/nero/pyproject.toml)).
+
+## Cross-compile (linux/aarch64)
+
+A second `.deb` (`rollio_<ver>_arm64.deb`) is produced on an x86_64 Ubuntu 24.04 host via a multiarch cross toolchain. The amd64 path stays untouched.
+
+```bash
+# One-time host setup (sudo): adds arm64 dpkg arch, installs cross gcc-13,
+# qemu-user-static, dpkg-cross, multiarch :arm64 dev libs.
+make deps TARGET_ARCH=arm64
+rustup target add aarch64-unknown-linux-gnu
+
+# Build + pack
+make build   BUILD_TYPE=release TARGET_ARCH=arm64  # cargo --target aarch64-unknown-linux-gnu --release + cmake toolchain + npm --cpu=arm64
+make package BUILD_TYPE=release TARGET_ARCH=arm64  # ./build.sh all with DEB_ARCH=arm64, TARGET_DIR=target/aarch64-unknown-linux-gnu/release
+```
+
+The arm64 deb has the same payload as amd64 (all Rust binaries including `rollio-encoder`, the C++ `rollio-device-realsense` driver with statically-embedded librealsense, plus the UI bundle) — only the per-arch native bits change:
+
+- Rust binaries are linked against arm64 multiarch sonames (`/usr/lib/aarch64-linux-gnu/libavcodec.so.60`, etc.).
+- `ui/terminal/native/rollio-native-ascii.node` is the arm64 N-API addon (built via `cargo build --target aarch64-unknown-linux-gnu` in [`ui/terminal/scripts/build-native-ascii.mjs`](../ui/terminal/scripts/build-native-ascii.mjs); driven by `ROLLIO_NATIVE_TARGET`).
+- `ui/terminal/.deb-vendor/node_modules/@img/sharp-linux-arm64/` ships instead of `@img/sharp-linux-x64/`. `build.sh` asserts the right one was vendored before packing.
+- `dpkg-shlibdeps` runs against the host's multiarch admin DB with `--ignore-missing-info` (needs the `:arm64` packages installed by `make deps TARGET_ARCH=arm64`). For hermetic CI, set `ROLLIO_DEB_SHLIBDEPS_CHROOT=/path/to/arm64-rootfs` to run that step inside a chroot via `qemu-aarch64-static` — `binfmt_misc` (from `qemu-user-static`) handles syscall translation transparently.
+
+Cross plumbing lives in:
+
+- [`.cargo/config.toml`](../.cargo/config.toml) — linker, `CC_<target>`, `CXX_<target>`, `BINDGEN_EXTRA_CLANG_ARGS_<target>`, `PKG_CONFIG_<target>`.
+- [`cmake/aarch64-linux-gnu.cmake`](../cmake/aarch64-linux-gnu.cmake) — CMake toolchain file (used by `cameras/CMakeLists.txt` + the librealsense + iceoryx2-cxx sub-builds).
+- [`third_party/airbot-play-rust/build.rs`](../third_party/airbot-play-rust/build.rs) — Pinocchio sub-build cross flags. Override the toolchain file with `AIRBOT_PINOCCHIO_CMAKE_TOOLCHAIN_FILE`; override eigen3 path with `AIRBOT_EIGEN3_INCLUDE_DIR`.
+- [`third_party/ffmpeg-sys-next/`](../third_party/ffmpeg-sys-next/) (submodule, pinned to upstream 8.1.0) — vendored fork patched by [`patches/ffmpeg-sys-next-cross-target.patch`](../patches/ffmpeg-sys-next-cross-target.patch) so `rollio-encoder` cross-compiles. Upstream 8.1's build script forces the FFmpeg version-detection probe to host arch; the patch flips it to target arch so the probe is compiled with arm64 headers consistently. The probe binary then runs on the host through QEMU emulation (`qemu-user-static` + `binfmt_misc` from `make deps TARGET_ARCH=arm64`). Native amd64 builds get identical behaviour to upstream because `HOST == TARGET`. Workspace [`Cargo.toml`](../Cargo.toml) carries the matching `[patch.crates-io]` redirect.
+
+The Nero wheel does not change — `rollio_device_nero-*-py3-none-any.whl` is shipped from the amd64 `package` job. Operators install it on the arm64 box with the usual `pip install` (Pinocchio + pyAgxArm runtime deps come as platform-tagged manylinux wheels from PyPI / the upstream GitHub).
+
+`static-ffmpeg`, Jetson CUDA-arm64 / NVENC, `aarch64-unknown-linux-musl`, and bit-for-bit reproducibility are out of scope for v1.
 
 ## Operator install
 
