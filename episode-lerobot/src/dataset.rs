@@ -1,4 +1,4 @@
-//! Shared episode-assembler data structures and the top-level
+//! Shared LeRobot episode staging data structures and the top-level
 //! `stage_episode` orchestrator.
 //!
 //! The two output flavours — the LeRobot v2.1 row-aligned view and the

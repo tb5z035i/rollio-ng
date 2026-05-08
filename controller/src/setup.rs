@@ -53,7 +53,7 @@ const SETUP_STATE_MAX_AGE: Duration = Duration::from_millis(500);
 const SETUP_UI_SUCCESS_DELAY: Duration = Duration::from_millis(300);
 const IDENTIFY_ACTIVE_MESSAGE_PREFIX: &str = "Identify active for ";
 const SETUP_DEV_RUNTIME_PACKAGES: &[&str] = &[
-    "rollio-ui-server",
+    "rollio-web-gateway",
     "rollio-visualizer",
     "rollio-control-server",
     "rollio-device-v4l2",
@@ -1768,7 +1768,7 @@ impl SetupSession {
         Ok(true)
     }
 
-    /// Update the host the browser UI server should bind to. Mutating the
+    /// Update the host `rollio-web-gateway` should bind to. Mutating the
     /// field through the wizard avoids forcing the operator to hand-edit
     /// the saved TOML when they need to expose the UI on a different
     /// interface (e.g. switching the default `0.0.0.0` to `127.0.0.1` for

@@ -125,7 +125,10 @@ pub(crate) fn build_collect_specs(
     specs.push(ChildSpec {
         id: "ui".into(),
         command: ResolvedCommand {
-            program: resolve_program(current_exe_dir.join("rollio-ui-server"), "rollio-ui-server"),
+            program: resolve_program(
+                current_exe_dir.join("rollio-web-gateway"),
+                "rollio-web-gateway",
+            ),
             args: vec![
                 OsString::from("--config-inline"),
                 OsString::from(toml::to_string(&ui_runtime_config)?),
@@ -349,8 +352,8 @@ pub(crate) fn build_assembler_spec(
         id: "assembler".into(),
         command: ResolvedCommand {
             program: resolve_program(
-                current_exe_dir.join("rollio-episode-assembler"),
-                "rollio-episode-assembler",
+                current_exe_dir.join("rollio-episode-lerobot"),
+                "rollio-episode-lerobot",
             ),
             args: vec![
                 OsString::from("run"),
@@ -381,7 +384,10 @@ pub(crate) fn build_storage_spec(
     Ok(ChildSpec {
         id: "storage".into(),
         command: ResolvedCommand {
-            program: resolve_program(current_exe_dir.join("rollio-storage"), "rollio-storage"),
+            program: resolve_program(
+                current_exe_dir.join("rollio-storage-local"),
+                "rollio-storage-local",
+            ),
             args: vec![
                 OsString::from("run"),
                 OsString::from("--config-inline"),
@@ -428,7 +434,7 @@ mod tests {
     #[test]
     fn build_storage_spec_resolves_relative_output_path_against_invocation_cwd() {
         let storage_config = StorageRuntimeConfig {
-            process_id: "storage".into(),
+            process_id: "storage-local".into(),
             backend: StorageBackend::Local,
             output_path: Some("./output".into()),
             endpoint: None,
@@ -458,7 +464,7 @@ mod tests {
     #[test]
     fn build_storage_spec_preserves_absolute_output_path() {
         let storage_config = StorageRuntimeConfig {
-            process_id: "storage".into(),
+            process_id: "storage-local".into(),
             backend: StorageBackend::Local,
             output_path: Some("/data/rollio/output".into()),
             endpoint: None,

@@ -1,5 +1,5 @@
 [package]
-name = "rollio-ui-server"
+name = "rollio-web-gateway"
 version = "1.0.0"
 edition = "2021"
 

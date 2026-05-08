@@ -6,7 +6,7 @@
 //!
 //! * Producer publishes ~250 samples back-to-back into a `JointVector15`
 //!   service opened with `STATE_BUFFER = 1024` (matching the helpers used
-//!   by every robot driver and the assembler).
+//!   by every robot driver and LeRobot staging).
 //! * Consumer, running in another thread, sleeps for 1 second to mimic
 //!   `stage_episode` blocking the main loop, then drains the subscriber.
 //!
@@ -42,7 +42,7 @@ fn state_buffer_absorbs_250_hz_burst_while_consumer_sleeps_one_second() {
     // Consumer: create its OWN node + subscriber (the iceoryx2 subscriber
     // handle is `!Send`, so it cannot move across threads). The consumer
     // signals readiness, sleeps for 1 second to mimic `stage_episode`
-    // blocking the assembler main loop, then drains the queue.
+    // blocking the staging main loop, then drains the queue.
     // ----------------------------------------------------------------------
     let consumer_service_name = service_name_str.clone();
     let consumer_handle = thread::Builder::new()

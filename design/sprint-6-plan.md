@@ -83,7 +83,7 @@ flowchart LR
   - performs hardware availability checks afterwards,
   - jumps directly to preview/edit state when the config is valid.
 - Reuse as much of the existing runtime-config derivation in [controller/src/collect.rs](controller/src/collect.rs) and [rollio-types/src/config.rs](rollio-types/src/config.rs) as possible so preview/runtime behavior stays aligned with collection.
-- Keep web-serving concerns in [ui-server/src/main.rs](ui-server/src/main.rs) out of Sprint 6 setup; setup should not depend on a browser bundle.
+- Keep web-serving concerns in [web-gateway/src/main.rs](web-gateway/src/main.rs) out of Sprint 6 setup; setup should not depend on a browser bundle.
 
 ### 3. TUI wizard in `ui/terminal`
 

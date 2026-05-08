@@ -38,7 +38,7 @@ struct TestPorts {
 /// status exit status: 1`.
 ///
 /// The fix raises the cap to 16 in both `encoder::runtime::run` and
-/// `episode_assembler::runtime::create_video_ready_subscriber`. This test
+/// `rollio_episode_lerobot::runtime::create_video_ready_subscriber`. This test
 /// re-creates the failure mode in-process: open the two shared services
 /// with the production caps once, then attach 5 publishers in succession.
 #[test]
@@ -882,7 +882,7 @@ fn create_test_ports(camera_name: &str) -> Result<TestPorts, Box<dyn std::error:
     let control_publisher = control_service.publisher_builder().create()?;
 
     // Match the production quotas in `encoder::runtime::run` and
-    // `episode_assembler::runtime::create_video_ready_subscriber`. iceoryx2
+    // `rollio_episode_lerobot::runtime::create_video_ready_subscriber`. iceoryx2
     // uses `max_publishers = 2` by default, and `open_or_create` rejects
     // services whose existing config doesn't satisfy the requested caps —
     // so if the test fixture opens these services first with defaults, the

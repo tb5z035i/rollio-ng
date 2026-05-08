@@ -1,13 +1,10 @@
-pub mod dataset;
-pub mod lerobot;
-pub mod raw;
 pub mod runtime;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "rollio-episode-assembler")]
-#[command(about = "Assemble LeRobot episodes from encoded artifacts and robot state")]
+#[command(name = "rollio-storage-local")]
+#[command(about = "Persist staged episodes to the configured local storage backend")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

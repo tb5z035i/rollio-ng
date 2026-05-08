@@ -7,15 +7,15 @@ members = [
     "visualizer",
     "teleop-router",
     "encoder",
-    "episode-assembler",
-    "storage",
+    "episode-lerobot",
+    "storage-local",
     "monitor",
     "robots/pseudo",
     "robots/airbot_play_rust",
     "test/test-publisher",
     "cameras/v4l2",
     "test/bus-tap",
-    "ui-server",
+    "web-gateway",
     "control-server",
 ]
 exclude = ["third_party"]

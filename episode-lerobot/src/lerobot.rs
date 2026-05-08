@@ -160,7 +160,7 @@ pub(crate) fn build_episode_rows(
 ///
 /// If the controller-supplied duration is zero (e.g. the user pressed
 /// record and then stop on the same loop tick), the function still emits
-/// at least one row so the assembler always produces a non-empty Parquet
+/// at least one row so staging always produces a non-empty Parquet
 /// file.
 pub(crate) fn canonical_frame_timestamps(
     controller_start_us: u64,

@@ -540,20 +540,23 @@ mod tests {
             .expect("assembler spec should exist");
         let assembler_inline = assembler_spec.command.args[2].to_string_lossy();
         assert!(assembler_inline.contains("encoded_handoff = \"file\""));
-        assert!(assembler_inline.contains("process_id = \"episode-assembler\""));
+        assert!(assembler_inline.contains("process_id = \"episode-lerobot\""));
 
         let storage_spec = specs
             .iter()
             .find(|spec| spec.id == "storage")
             .expect("storage spec should exist");
         let storage_inline = storage_spec.command.args[2].to_string_lossy();
-        assert!(storage_inline.contains("process_id = \"storage\""));
+        assert!(storage_inline.contains("process_id = \"storage-local\""));
 
         let ui_spec = specs
             .iter()
             .find(|spec| spec.id == "ui")
             .expect("ui spec should exist");
-        assert_eq!(ui_spec.command.program, OsString::from("rollio-ui-server"));
+        assert_eq!(
+            ui_spec.command.program,
+            OsString::from("rollio-web-gateway")
+        );
         assert_eq!(ui_spec.command.args[0], OsString::from("--config-inline"));
         assert_eq!(ui_spec.command.args[2], OsString::from("--asset-dir"));
         assert_eq!(

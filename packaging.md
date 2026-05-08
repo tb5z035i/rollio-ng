@@ -92,7 +92,7 @@ The venv is required because Ubuntu 24.04's system Python is PEP 668 externally-
 
 | Path | Purpose |
 |------|---------|
-| `/usr/bin/rollio`, `/usr/bin/rollio-ui-server`, `/usr/bin/rollio-control-server`, `/usr/bin/rollio-encoder`, … | Rust binaries (encoder included) |
+| `/usr/bin/rollio`, `/usr/bin/rollio-web-gateway`, `/usr/bin/rollio-control-server`, `/usr/bin/rollio-encoder`, … | Rust binaries (encoder included) |
 | `/usr/bin/rollio-device-realsense` | C++ Intel RealSense camera driver (built from [`cameras/realsense/`](../cameras/realsense/); links [`third_party/librealsense/`](../third_party/librealsense/) statically, so the only runtime deps are `libusb-1.0-0` and `libudev1` from Ubuntu apt) |
 | `/usr/share/rollio/ui/web/dist/` | Built web UI |
 | `/usr/share/rollio/ui/terminal/dist/` | Built terminal UI (esbuild bundle; run with `node /usr/share/rollio/ui/terminal/dist/index.js`). Includes a `package.json` `{"type":"module"}` ESM marker. |

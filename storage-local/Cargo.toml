@@ -1,5 +1,5 @@
 [package]
-name = "rollio-storage"
+name = "rollio-storage-local"
 version = "1.0.0"
 edition = "2021"
 

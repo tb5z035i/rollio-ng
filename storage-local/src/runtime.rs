@@ -95,14 +95,16 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
     match (&args.config, &args.config_inline) {
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
-        (None, None) => Err("storage requires --config or --config-inline".into()),
-        (Some(_), Some(_)) => Err("storage config flags are mutually exclusive".into()),
+        (None, None) => Err("rollio-storage-local requires --config or --config-inline".into()),
+        (Some(_), Some(_)) => {
+            Err("rollio-storage-local config flags are mutually exclusive".into())
+        }
     }
 }
 
 pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error>> {
     if config.backend != StorageBackend::Local {
-        return Err("storage currently supports backend=local only".into());
+        return Err("rollio-storage-local currently supports backend=local only".into());
     }
 
     let node = NodeBuilder::new()
@@ -118,11 +120,15 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
     let (event_tx, event_rx) = mpsc::channel();
     let worker_config = config.clone();
     let worker = thread::Builder::new()
-        .name("rollio-storage-worker".into())
+        .name("rollio-storage-local-worker".into())
         .spawn(move || {
             let _ = worker_main(worker_config, command_rx, event_tx);
         })
-        .map_err(|error| io::Error::other(format!("failed to spawn storage worker: {error}")))?;
+        .map_err(|error| {
+            io::Error::other(format!(
+                "failed to spawn rollio-storage-local worker: {error}"
+            ))
+        })?;
 
     let mut shutdown_sent = false;
     let mut shutdown_complete = false;
@@ -172,7 +178,7 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
 
     worker
         .join()
-        .map_err(|_| io::Error::other("storage worker panicked"))?;
+        .map_err(|_| io::Error::other("rollio-storage-local worker panicked"))?;
     Ok(())
 }
 
@@ -230,9 +236,11 @@ fn try_enqueue_request(
     match sender.try_send(WorkerCommand::Store(request)) {
         Ok(()) => Ok(true),
         Err(mpsc::TrySendError::Full(_)) => Ok(false),
-        Err(mpsc::TrySendError::Disconnected(_)) => {
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "storage worker disconnected").into())
-        }
+        Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "rollio-storage-local worker disconnected",
+        )
+        .into()),
     }
 }
 
@@ -269,7 +277,9 @@ fn store_episode(
 ) -> Result<PathBuf, Box<dyn Error>> {
     match config.backend {
         StorageBackend::Local => store_episode_local(config, request),
-        StorageBackend::Http => Err("storage backend=http is reserved for future work".into()),
+        StorageBackend::Http => {
+            Err("rollio-storage-local: backend=http is reserved for future work".into())
+        }
     }
 }
 
@@ -589,7 +599,7 @@ mod tests {
 
     fn test_config(output_path: PathBuf) -> StorageRuntimeConfig {
         StorageRuntimeConfig {
-            process_id: "storage".into(),
+            process_id: "storage-local".into(),
             backend: StorageBackend::Local,
             output_path: Some(output_path.to_string_lossy().into_owned()),
             endpoint: None,

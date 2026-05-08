@@ -276,7 +276,7 @@ stop_key = "e"
 keep_key = "k"
 discard_key = "x"
 
-# (the web UI server listens on these — the controller fills the WebSocket
+# (rollio-web-gateway listens on these — the controller fills the WebSocket
 # URLs at runtime; only override these to point the UI at a custom port.)
 # http_host = "0.0.0.0"   # (default: "0.0.0.0")
 # http_port = 3000        # (default: 3000)

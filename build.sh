@@ -46,10 +46,10 @@ CORE_BINS=(
     rollio-encoder
     rollio-visualizer
     rollio-control-server
-    rollio-ui-server
+    rollio-web-gateway
     rollio-teleop-router
-    rollio-episode-assembler
-    rollio-storage
+    rollio-episode-lerobot
+    rollio-storage-local
     rollio-monitor
     rollio-device-pseudo
     rollio-device-airbot-play

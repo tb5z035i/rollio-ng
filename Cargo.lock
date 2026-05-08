@@ -2189,7 +2189,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rollio-episode-assembler"
+name = "rollio-episode-lerobot"
 version = "1.0.0"
 dependencies = [
  "arrow-array",
@@ -2212,7 +2212,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rollio-storage"
+name = "rollio-storage-local"
 version = "1.0.0"
 dependencies = [
  "clap",
@@ -2258,21 +2258,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rollio-ui-server"
-version = "1.0.0"
-dependencies = [
- "axum",
- "clap",
- "futures-util",
- "rollio-types",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tower-http",
-]
-
-[[package]]
 name = "rollio-visualizer"
 version = "1.0.0"
 dependencies = [
@@ -2290,6 +2275,21 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "turbojpeg",
+]
+
+[[package]]
+name = "rollio-web-gateway"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "clap",
+ "futures-util",
+ "rollio-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tower-http",
 ]
 
 [[package]]

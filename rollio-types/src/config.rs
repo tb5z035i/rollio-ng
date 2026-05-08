@@ -956,7 +956,7 @@ pub struct UiRuntimeConfig {
     /// (proxied at `/ws/control`). Defaults to
     /// `ws://127.0.0.1:<controller-control-port>` when the controller
     /// derives the runtime config; runtime callers must populate it before
-    /// passing into the UI server.
+    /// passing into `rollio-web-gateway`.
     pub control_websocket_url: Option<String>,
     /// Optional explicit upstream URL for the preview plane WebSocket
     /// (proxied at `/ws/preview`). Defaults to
@@ -977,7 +977,7 @@ pub struct UiRuntimeConfig {
 }
 
 fn default_ui_http_host() -> String {
-    // `0.0.0.0` so the UI server is reachable from every interface by
+    // `0.0.0.0` so the web gateway is reachable from every interface by
     // default. Operators that want to lock it down to loopback can edit
     // the field in the wizard's settings step (or the saved TOML).
     "0.0.0.0".into()
@@ -3034,7 +3034,7 @@ impl ProjectConfig {
             })
             .collect();
         AssemblerRuntimeConfigV2 {
-            process_id: "episode-assembler".into(),
+            process_id: "episode-lerobot".into(),
             format: self.episode.format,
             fps: self.episode.fps,
             chunk_size: self.episode.chunk_size,
@@ -3124,7 +3124,7 @@ impl ProjectConfig {
 
     pub fn storage_runtime_config(&self) -> StorageRuntimeConfig {
         StorageRuntimeConfig {
-            process_id: "storage".into(),
+            process_id: "storage-local".into(),
             backend: self.storage.backend,
             output_path: self.storage.output_path.clone(),
             endpoint: self.storage.endpoint.clone(),

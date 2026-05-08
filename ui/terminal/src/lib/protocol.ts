@@ -238,7 +238,7 @@ export interface SetupConfigSnapshot {
     output_path: string;
     endpoint?: string | null;
   };
-  /** Browser UI server runtime config. Defaults are filled in by the
+  /** Web gateway (`rollio-web-gateway`) runtime config. Defaults are filled in by the
    *  controller when absent in the saved TOML. */
   ui?: {
     http_host: string;

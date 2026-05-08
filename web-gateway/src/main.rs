@@ -20,8 +20,8 @@ const BROWSER_CONTROL_WEBSOCKET_PATH: &str = "/ws/control";
 const BROWSER_PREVIEW_WEBSOCKET_PATH: &str = "/ws/preview";
 
 #[derive(Parser, Debug)]
-#[command(name = "rollio-ui-server")]
-#[command(about = "Serve the Rollio browser UI and runtime config")]
+#[command(name = "rollio-web-gateway")]
+#[command(about = "Serve the Rollio browser UI, runtime config, and WebSocket proxy")]
 struct Args {
     /// TOML file containing UiRuntimeConfig
     #[arg(long, value_name = "PATH", conflicts_with = "config_inline")]
@@ -392,7 +392,7 @@ http_port = 3000
     #[test]
     fn default_runtime_config_loads() {
         let config = load_runtime_config(&empty_args()).expect("default config should load");
-        assert_eq!(config.http_host, "127.0.0.1");
+        assert_eq!(config.http_host, "0.0.0.0");
         assert_eq!(config.http_port, 3000);
     }
 
@@ -425,7 +425,7 @@ http_port = 3000
         runtime_config.control_websocket_url = Some(format!("ws://{control_addr}"));
         runtime_config.preview_websocket_url = Some(format!("ws://{preview_addr}"));
 
-        let asset_dir = temp_asset_dir("rollio-ui-server-tests-paths");
+        let asset_dir = temp_asset_dir("rollio-web-gateway-tests-paths");
         let app = build_app(
             build_app_state(&runtime_config).expect("app state should be built"),
             asset_dir.clone(),

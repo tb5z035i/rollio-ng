@@ -77,11 +77,11 @@ fn parse_example_project_config() {
     assert_eq!(assembler_runtime.actions.len(), 1);
 
     let storage_runtime = config.storage_runtime_config();
-    assert_eq!(storage_runtime.process_id, "storage");
+    assert_eq!(storage_runtime.process_id, "storage-local");
     assert_eq!(storage_runtime.queue_size, 32);
 }
 
-/// The wizard binds the browser UI server to all interfaces by default so a
+/// The wizard binds `rollio-web-gateway` (HTTP) to all interfaces by default so a
 /// fresh project can be opened from another machine on the LAN without
 /// hand-editing the TOML. Operators that want loopback-only access can
 /// edit the field in the wizard's settings step.

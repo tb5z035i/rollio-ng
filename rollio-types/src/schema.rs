@@ -347,11 +347,11 @@ pub fn config_schema() -> ConfigSchema {
                     },
                     string_field_with_default(
                         "http_host",
-                        "HTTP host bound by the browser UI server. Defaults to 0.0.0.0 so the server is reachable from every interface.",
+                        "HTTP host bound by rollio-web-gateway. Defaults to 0.0.0.0 so the server is reachable from every interface.",
                         false,
                         "0.0.0.0",
                     ),
-                    int_field("http_port", "HTTP port bound by the browser UI server.", false, 3000),
+                    int_field("http_port", "HTTP port bound by rollio-web-gateway.", false, 3000),
                     string_field_with_default("start_key", "Episode start shortcut.", false, "s"),
                     string_field_with_default("stop_key", "Episode stop shortcut.", false, "e"),
                     string_field_with_default("keep_key", "Episode keep shortcut.", false, "k"),

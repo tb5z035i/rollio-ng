@@ -15,12 +15,12 @@ pub const BACKPRESSURE_SERVICE: &str = "encoder/backpressure";
 /// (250 Hz on AIRBOT and Nero by default — one sample every 4 ms). The
 /// iceoryx2 default `subscriber_max_buffer_size` is `2`, which gives the
 /// consumer just ~8 ms of headroom before silent overwrites — far less
-/// than the worst-case work that consumers (notably the episode-assembler
+/// than the worst-case work that consumers (notably `rollio-episode-lerobot`
 /// during `stage_episode`) can take. With a 1024-slot ring the consumer
 /// can be unresponsive for ~4 s at 250 Hz before any sample is lost.
 ///
 /// Both the producer side (`robots/*`) and the consumer side
-/// (`episode-assembler`, `teleop-router`, `visualizer`) must request at
+/// (`rollio-episode-lerobot`, `teleop-router`, `visualizer`) must request at
 /// least this depth — `open_or_create` rejects mismatches.
 pub const STATE_BUFFER: usize = 1024;
 

@@ -122,7 +122,7 @@ impl EpisodeLifecycle {
 /// Returns the controller's wall-clock timestamp in UNIX-epoch microseconds.
 ///
 /// Used as the `controller_ts_us` anchor on `ControlEvent::RecordingStart` /
-/// `RecordingStop` so every downstream subscriber (encoder, episode-assembler)
+/// `RecordingStop` so every downstream subscriber (encoder, `rollio-episode-lerobot`
 /// references the *same* moment instead of stamping their own clock on
 /// receipt.
 fn controller_now_us() -> u64 {

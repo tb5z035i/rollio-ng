@@ -1,6 +1,6 @@
 //! Per-channel raw dump of every received bus sample.
 //!
-//! For each `(channel_id, kind)` pair the assembler observed during an
+//! For each `(channel_id, kind)` pair this process observed during an
 //! episode, this module writes a single Parquet file with the schema
 //!
 //! ```text

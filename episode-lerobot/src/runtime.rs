@@ -213,14 +213,14 @@ impl EpisodeManager {
     fn on_video_ready(&mut self, ready: VideoReady) {
         let Some(channel_id) = self.camera_by_process_id.get(ready.process_id.as_str()) else {
             eprintln!(
-                "rollio-episode-assembler: ignoring video_ready from unknown process {}",
+                "rollio-episode-lerobot: ignoring video_ready from unknown process {}",
                 ready.process_id.as_str()
             );
             return;
         };
         let Some(episode) = self.episodes.get_mut(&ready.episode_index) else {
             eprintln!(
-                "rollio-episode-assembler: ignoring video_ready for unknown episode {}",
+                "rollio-episode-lerobot: ignoring video_ready for unknown episode {}",
                 ready.episode_index
             );
             return;
@@ -258,7 +258,7 @@ impl EpisodeManager {
     /// Staging (parquet write + raw dump + video file moves) used to run
     /// inline on the main loop, which blocked the iceoryx2 subscriber drain
     /// for the full duration. With Phase 6b that work moves to a dedicated
-    /// `rollio-assembler-worker` thread (see `spawn_stage_worker`) so the
+    /// `rollio-lerobot-staging-worker` thread (see `spawn_stage_worker`) so the
     /// 250 Hz state subscribers keep getting drained even while a heavy
     /// stage is in flight.
     fn dispatch_ready_episodes(
@@ -273,7 +273,7 @@ impl EpisodeManager {
         for episode_index in timed_out_episode_indices {
             if let Some(episode) = self.episodes.remove(&episode_index) {
                 eprintln!(
-                    "rollio-episode-assembler: discarding episode {} after waiting {} ms for missing videos",
+                    "rollio-episode-lerobot: discarding episode {} after waiting {} ms for missing videos",
                     episode_index, self.config.missing_video_timeout_ms
                 );
                 remove_episode_artifacts(&episode.as_assembly_input());
@@ -288,7 +288,7 @@ impl EpisodeManager {
             worker
                 .send(WorkerCommand::Stage(episode.as_assembly_input()))
                 .map_err(|error| -> Box<dyn Error> {
-                    format!("episode assembler worker disconnected: {error}").into()
+                    format!("rollio-episode-lerobot staging worker disconnected: {error}").into()
                 })?;
             changed = true;
         }
@@ -332,7 +332,7 @@ fn spawn_stage_worker(
     let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCommand>();
     let (evt_tx, evt_rx) = mpsc::channel::<WorkerEvent>();
     let handle = thread::Builder::new()
-        .name("rollio-assembler-worker".into())
+        .name("rollio-lerobot-staging-worker".into())
         .spawn(move || stage_worker_main(config, cmd_rx, evt_tx))?;
     Ok((cmd_tx, evt_rx, handle))
 }
@@ -367,17 +367,19 @@ fn load_runtime_config(args: &RunArgs) -> Result<AssemblerRuntimeConfigV2, Box<d
     match (&args.config, &args.config_inline) {
         (Some(path), None) => Ok(AssemblerRuntimeConfigV2::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<AssemblerRuntimeConfigV2>()?),
-        (None, None) => Err("episode assembler requires --config or --config-inline".into()),
-        (Some(_), Some(_)) => Err("episode assembler config flags are mutually exclusive".into()),
+        (None, None) => Err("rollio-episode-lerobot requires --config or --config-inline".into()),
+        (Some(_), Some(_)) => {
+            Err("rollio-episode-lerobot config flags are mutually exclusive".into())
+        }
     }
 }
 
 pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
     if config.encoded_handoff != EncodedHandoffMode::File {
-        return Err("episode assembler currently supports encoded_handoff=file only".into());
+        return Err("rollio-episode-lerobot currently supports encoded_handoff=file only".into());
     }
     if config.format != EpisodeFormat::LeRobotV2_1 {
-        return Err("episode assembler currently supports format=lerobot-v2.1 only".into());
+        return Err("rollio-episode-lerobot currently supports format=lerobot-v2.1 only".into());
     }
 
     let node = NodeBuilder::new()
@@ -420,10 +422,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
                     made_progress = true;
                 }
                 WorkerEvent::Error(message) => {
-                    eprintln!(
-                        "rollio-episode-assembler: staging worker error: {}",
-                        message
-                    );
+                    eprintln!("rollio-episode-lerobot: staging worker error: {}", message);
                 }
                 WorkerEvent::ShutdownComplete => {
                     break 'main_loop;

@@ -561,7 +561,7 @@ impl Default for RobotCommand {
 ///
 /// `RecordingStart` / `RecordingStop` carry the controller's wall-clock
 /// timestamp (`controller_ts_us`, UNIX-epoch microseconds) at the moment
-/// the user clicked record / stop. Subscribers (encoder, episode-assembler)
+/// the user clicked record / stop. Subscribers (encoder, `rollio-episode-lerobot`
 /// use this anchor instead of stamping their own `SystemTime::now()` on
 /// receipt so every artifact for a given episode is anchored to a single
 /// shared instant — irrespective of bus latency.
