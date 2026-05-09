@@ -1,52 +1,83 @@
-# Robots
+# Robots — device drivers (`rollio-device-*`)
 
-In-repo robot drivers live under `robots/`.
+This folder holds **hardware and simulation drivers** Rollio shells out to. Each driver is one **executable** (Rust or Python) that obeys the same four-entry CLI so **`rollio setup`** and **`rollio collect`** do not special-case vendors.
 
-## Layout
+---
 
-- `pseudo/`: synthetic Rust device driver (`rollio-device-pseudo`) used by CI
-  and smoke tests. Opt-in via the controller's `--sim-pseudo N` flag.
-- `airbot_play/`: Python AIRBOT Play wrapper.
-- `airbot_play_rust/`: Rust AIRBOT Play driver (`rollio-device-airbot-play`).
-- `nero/`: Python AGX Nero driver (`rollio-device-agx-nero`).
+## Concepts (read this first)
 
-## Add A New Robot Driver
+### Physical rig vs logical “device” in config
 
-Robot drivers are now just *device drivers* — there is no separate naming or
-registration story for cameras vs robots. A single device may expose camera
-channels, robot channels, or a mix of both.
+- A **configured device** (`BinaryDeviceConfig` in TOML) is one **`rollio`** process child: one OS process running one driver's **`run`**.
+- That logical device often represents **one physical appliance** (e.g. one AIRBOT base) but can expose **several independent channels** at once (e.g. arm + parallel gripper).
 
-1. Create a folder under `robots/<driver_name>/` (or `cameras/`, doesn't
-   matter — the framework only cares about the executable basename).
-2. Expose either:
-   - a binary named `rollio-device-<driver_name>`, or
-   - a Python package with `pyproject.toml` that installs a console script
-     called `rollio-device-<driver_name>`.
-3. Implement the device CLI contract:
-   - `probe [--json]`
-   - `validate <id> [--channel-type ...] [--json]`
-   - `query <id> [--json]` -- returns a `DeviceQueryResponse` (see
-     [rollio-types/src/config.rs](../rollio-types/src/config.rs))
-   - `run --config <path>` or `run --config-inline <toml>`
-4. Publish per-channel state to `{bus_root}/{channel_type}/states/<state>`
-   and consume commands from `{bus_root}/{channel_type}/commands/<cmd>`
-   (see [design/device-as-binaries.md](../design/device-as-binaries.md)).
-5. Listen for `control/events` and exit cleanly on shutdown.
-6. Drive your `query --json` to populate every field the controller reads:
-   `device_label`, `default_device_name`, per-channel `kind`, `channel_label`,
-   `default_name`, `modes`, `profiles`, `dof`, `default_control_frequency_hz`,
-   `defaults`, `value_limits`, `supported_states`, `supported_commands`,
-   `direct_joint_compatibility`. The framework no longer maintains any
-   per-driver lookup tables.
+### `bus_root` — namespace for IPC
 
-## Controller Resolution
+Each device has a **`bus_root`** string (e.g. `airbot_play`). **All** iceoryx2 topics for that device hang under that prefix:
 
-`rollio collect` resolves device drivers in this order:
+- Cameras: `{bus_root}/{channel_type}/frames`, …
+- Robots: `{bus_root}/{channel_type}/states/...`, `.../commands/...`, `.../control/mode`, …
 
-1. In-repo compiled binary at `target/.../rollio-device-<driver_name>`
-2. Anywhere else in the controller's directory or workspace `cameras/build`
-3. Any executable on `$PATH` whose name starts with `rollio-device-`
+Two different devices must use different `bus_root` values so their topics never collide.
 
-That means a new device driver can be installed with `pip install` /
-`cargo install` and gets picked up by `rollio setup` automatically (apart
-from `rollio-device-pseudo`, which is opt-in via `--sim-pseudo`).
+### Channels — independent units of behavior
+
+A **channel** is one row in `[[channels]]` in the device TOML:
+
+- Has a **`channel_type`** string label (`arm`, `color`, `g2`, …) — unique **within that device**.
+- Is either a **camera** or **robot** kind for data typing.
+- **Robot channels are independent:** the arm can be in **command-following** while the gripper is in **free-drive**, because each channel has its **own** `.../control/mode` and `.../info/mode` pair. Do not assume one mode bit applies to the whole physical robot.
+
+### “Mode” vs “state streams” (easy to confuse)
+
+- **Mode** (disabled / free-drive / command-following / identifying, etc.) is the **operator-level** behavior for that channel. It is carried as **`DeviceChannelMode`** on **`{bus_root}/{channel_type}/control/mode`** (commands in) and **`.../info/mode`** (telemetry out). Cameras often collapse this to enabled/disabled.
+- **State streams** are **high-rate telemetry** on **`{bus_root}/{channel_type}/states/{kind}`** — e.g. `joint_position`, `joint_velocity`, `end_effector_pose`, `parallel_position`. There can be **multiple state kinds per channel**, each on its own topic. These are *not* the same thing as “mode.”
+
+### Standard driver CLI (all four must exist)
+
+| Command | Purpose |
+|---------|---------|
+| **`probe`** | List candidate device IDs on this machine (USB paths, CAN ifaces, serials, …). |
+| **`validate <id>`** | Cheap check that `id` still exists and optional **`--channel-type`** filters pass. Used before `collect` heavy startup. |
+| **`query <id>`** | Emit a structured **`DeviceQueryResponse`** (JSON with **`--json`**) so setup can populate limits, profiles, supported modes, teleop compatibility, etc. **This is the contract** between driver and framework — no hidden tables in the controller. |
+| **`run`** | Long-lived process: publish/subscribe on the hierarchical topics, react to **`control/events`** (`Shutdown`), honor per-channel mode. |
+
+---
+
+## iceoryx2 summary
+
+Every real driver should:
+
+- **Publish** observations on `{bus_root}/{channel_type}/states/<kind>` (and camera frames on `.../frames` when applicable).
+- **Subscribe** to commands on `{bus_root}/{channel_type}/commands/<kind>` when the channel supports command-following.
+- **Subscribe** `{bus_root}/{channel_type}/control/mode` and **publish** `.../info/mode` for mode sync.
+- **Subscribe** global **`control/events`** and exit cleanly on `Shutdown`.
+
+Exact topic strings and buffer defaults: [`rollio-bus`](../rollio-bus/README.md).
+
+---
+
+## Layout in this repo
+
+- **`pseudo/`** — `rollio-device-pseudo` (CI / dev). Opt-in via `rollio setup --sim-pseudo N`.
+- **`airbot_play/`** — Python wrapper (legacy / extras).
+- **`airbot_play_rust/`** — `rollio-device-airbot-play` (CAN arm + gripper).
+- **`nero/`** — `rollio-device-agx-nero` (Python + Pinocchio).
+
+---
+
+## Adding a new driver
+
+See also [`design/device-as-binaries.md`](../design/device-as-binaries.md).
+
+1. Ship **`rollio-device-<name>`** (binary or setuptools console script).
+2. Implement **`probe` / `validate` / `query` / `run`** as above.
+3. Populate **`query --json`** fully (`value_limits`, `modes`, `supported_states`, `supported_commands`, `direct_joint_compatibility`, …) — [`rollio-types`](../rollio-types/README.md).
+
+## Controller resolution (`rollio collect`)
+
+1. `target/.../rollio-device-<name>` next to workspace build
+2. Adjacent dirs / `cameras/build`
+3. Any **`rollio-device-*`** on `$PATH`
+
+ **`rollio-device-pseudo`** is not on the default discovery PATH — use **`--sim-pseudo`**.

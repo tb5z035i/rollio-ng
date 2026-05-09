@@ -8,6 +8,7 @@ members = [
     "teleop-router",
     "encoder",
     "episode-lerobot",
+    "episode-mcap",
     "storage-local",
     "monitor",
     "robots/pseudo",

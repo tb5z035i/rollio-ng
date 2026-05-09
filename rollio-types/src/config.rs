@@ -174,26 +174,24 @@ fn default_mapping() -> MappingStrategy {
 // Assembler
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum EncodedHandoffMode {
-    #[default]
-    File,
-    Iceoryx2,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssemblerConfig {
-    #[serde(default = "default_missing_video_timeout_ms")]
-    pub missing_video_timeout_ms: u64,
+    /// Maximum wait, in milliseconds, after the controller publishes
+    /// `RecordingStop` for every camera's recording packet stream to
+    /// emit `EndOfStream`. The encoder normally sends EOS within a
+    /// frame interval; the timeout bounds how long a crashed encoder
+    /// can pin an episode in the assembler before it is removed.
+    #[serde(
+        alias = "missing_video_timeout_ms",
+        default = "default_missing_eos_timeout_ms"
+    )]
+    pub missing_eos_timeout_ms: u64,
     #[serde(default = "default_staging_dir")]
     pub staging_dir: String,
-    #[serde(default)]
-    pub encoded_handoff: EncodedHandoffMode,
 }
 
-fn default_missing_video_timeout_ms() -> u64 {
-    5_000
+fn default_missing_eos_timeout_ms() -> u64 {
+    30_000
 }
 
 fn default_staging_dir() -> String {
@@ -212,18 +210,17 @@ fn default_staging_dir() -> String {
 impl Default for AssemblerConfig {
     fn default() -> Self {
         Self {
-            missing_video_timeout_ms: default_missing_video_timeout_ms(),
+            missing_eos_timeout_ms: default_missing_eos_timeout_ms(),
             staging_dir: default_staging_dir(),
-            encoded_handoff: EncodedHandoffMode::File,
         }
     }
 }
 
 impl AssemblerConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.missing_video_timeout_ms == 0 {
+        if self.missing_eos_timeout_ms == 0 {
             return Err(ConfigError::Validation(
-                "assembler: missing_video_timeout_ms must be > 0".into(),
+                "assembler: missing_eos_timeout_ms must be > 0".into(),
             ));
         }
         if self.staging_dir.trim().is_empty() {
@@ -257,6 +254,10 @@ pub enum EncoderCodec {
         alias = "av1_vaapi"
     )]
     Av1,
+    /// Motion JPEG. Stores one self-contained JPEG per frame; useful as
+    /// a low-CPU recording option and for camera-native MJPG passthrough.
+    #[serde(alias = "mjpeg")]
+    Mjpg,
     Rvl,
 }
 
@@ -266,6 +267,7 @@ impl EncoderCodec {
             Self::H264 => "h264",
             Self::H265 => "h265",
             Self::Av1 => "av1",
+            Self::Mjpg => "mjpg",
             Self::Rvl => "rvl",
         }
     }
@@ -281,14 +283,38 @@ pub enum EncoderBackend {
     Vaapi,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Final container the assembler muxes encoded packets into for one
+/// camera. Derived from the codec via [`container_for`]; not a config
+/// knob (the operator picks the codec, the container follows).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum EncoderArtifactFormat {
-    #[default]
-    Auto,
+pub enum ContainerKind {
     Mp4,
     Mkv,
-    Rvl,
+    /// Custom RVL container produced by [`rollio_episode_lerobot::muxer::rvl_frame`].
+    /// Byte-identical to the file written by the legacy `RvlSession`.
+    RvlNative,
+}
+
+impl ContainerKind {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Mkv => "mkv",
+            Self::RvlNative => "rvl",
+        }
+    }
+}
+
+/// Map an `EncoderCodec` to the standard container the assembler uses
+/// when muxing its packets. `H264 / H265 / Mjpg` go into MP4 (mov),
+/// `Av1` into MKV (matroska), `Rvl` into the in-repo `.rvl` container.
+pub fn container_for(codec: EncoderCodec) -> ContainerKind {
+    match codec {
+        EncoderCodec::H264 | EncoderCodec::H265 | EncoderCodec::Mjpg => ContainerKind::Mp4,
+        EncoderCodec::Av1 => ContainerKind::Mkv,
+        EncoderCodec::Rvl => ContainerKind::RvlNative,
+    }
 }
 
 /// Chroma subsampling for the codec input pixel format. `S422` (the
@@ -335,17 +361,6 @@ pub enum EncoderColorSpace {
     Bt601Limited,
 }
 
-impl EncoderArtifactFormat {
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Auto => "bin",
-            Self::Mp4 => "mp4",
-            Self::Mkv => "mkv",
-            Self::Rvl => "rvl",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum EncoderImplementationFamily {
@@ -367,7 +382,6 @@ pub struct EncoderCapability {
     pub direction: EncoderCapabilityDirection,
     pub backend: EncoderBackend,
     pub pixel_formats: Vec<PixelFormat>,
-    pub artifact_formats: Vec<EncoderArtifactFormat>,
     pub available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codec_name: Option<String>,
@@ -401,8 +415,6 @@ pub struct EncoderConfig {
     /// misconfiguration early.
     #[serde(default)]
     pub depth_backend: EncoderBackend,
-    #[serde(default)]
-    pub artifact_format: EncoderArtifactFormat,
     /// Codec input chroma subsampling. Default `S422` preserves YUYV /
     /// MJPG-422 chroma; the encoder falls back to `S420` for codec /
     /// backend combinations that can't ingest 4:2:2.
@@ -442,6 +454,10 @@ pub struct EncoderConfig {
     pub color_space: EncoderColorSpace,
     #[serde(default = "default_queue_size")]
     pub queue_size: u32,
+    /// `[encoder.preview]` sub-block. Owns every preview-only
+    /// production knob (size, fps, codec, jpeg_quality, output_mode).
+    #[serde(default)]
+    pub preview: EncoderPreviewConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -459,8 +475,6 @@ struct EncoderConfigSerde {
     #[serde(default)]
     depth_backend: Option<EncoderBackend>,
     #[serde(default)]
-    artifact_format: EncoderArtifactFormat,
-    #[serde(default)]
     chroma_subsampling: ChromaSubsampling,
     #[serde(default)]
     crf: Option<u8>,
@@ -474,6 +488,8 @@ struct EncoderConfigSerde {
     color_space: EncoderColorSpace,
     #[serde(default = "default_queue_size")]
     queue_size: u32,
+    #[serde(default)]
+    preview: EncoderPreviewConfig,
 }
 
 impl From<EncoderConfigSerde> for EncoderConfig {
@@ -498,7 +514,6 @@ impl From<EncoderConfigSerde> for EncoderConfig {
             backend: value.backend,
             video_backend,
             depth_backend,
-            artifact_format: value.artifact_format,
             chroma_subsampling: value.chroma_subsampling,
             crf: value.crf,
             preset: value.preset,
@@ -506,6 +521,7 @@ impl From<EncoderConfigSerde> for EncoderConfig {
             bit_depth: value.bit_depth,
             color_space: value.color_space,
             queue_size: value.queue_size,
+            preview: value.preview,
         }
     }
 }
@@ -544,7 +560,6 @@ impl Default for EncoderConfig {
             backend,
             video_backend: backend,
             depth_backend: default_backend_for_codec(depth_codec, backend),
-            artifact_format: EncoderArtifactFormat::default(),
             chroma_subsampling: ChromaSubsampling::default(),
             crf: None,
             preset: None,
@@ -552,6 +567,7 @@ impl Default for EncoderConfig {
             bit_depth: default_bit_depth(),
             color_space: EncoderColorSpace::default(),
             queue_size: default_queue_size(),
+            preview: EncoderPreviewConfig::default(),
         }
     }
 }
@@ -598,24 +614,16 @@ impl EncoderConfig {
         }
     }
 
-    pub fn resolved_artifact_format(&self) -> EncoderArtifactFormat {
-        self.resolved_artifact_format_for(self.video_codec)
+    /// Container that the assembler will mux this encoder's video
+    /// codec into. Derived from the codec via [`container_for`]; not a
+    /// configurable knob anymore (the operator picks the codec, the
+    /// container follows).
+    pub fn resolved_container(&self) -> ContainerKind {
+        container_for(self.video_codec)
     }
 
-    pub fn resolved_depth_artifact_format(&self) -> EncoderArtifactFormat {
-        self.resolved_artifact_format_for(self.depth_codec)
-    }
-
-    pub fn resolved_artifact_format_for(&self, codec: EncoderCodec) -> EncoderArtifactFormat {
-        if self.artifact_format != EncoderArtifactFormat::Auto {
-            return self.artifact_format;
-        }
-
-        match codec {
-            EncoderCodec::H264 | EncoderCodec::H265 => EncoderArtifactFormat::Mp4,
-            EncoderCodec::Av1 => EncoderArtifactFormat::Mkv,
-            EncoderCodec::Rvl => EncoderArtifactFormat::Rvl,
-        }
+    pub fn resolved_depth_container(&self) -> ContainerKind {
+        container_for(self.depth_codec)
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -653,6 +661,7 @@ impl EncoderConfig {
         }
         self.validate_codec("video_codec", self.video_codec, self.video_backend)?;
         self.validate_codec("depth_codec", self.depth_codec, self.depth_backend)?;
+        self.preview.validate()?;
         Ok(())
     }
 
@@ -662,40 +671,211 @@ impl EncoderConfig {
         codec: EncoderCodec,
         backend: EncoderBackend,
     ) -> Result<(), ConfigError> {
-        if codec == EncoderCodec::Rvl && backend == EncoderBackend::Vaapi {
+        if codec == EncoderCodec::Rvl
+            && matches!(backend, EncoderBackend::Vaapi | EncoderBackend::Nvidia)
+        {
             return Err(ConfigError::Validation(format!(
                 "encoder: {field_name}=rvl only supports cpu or auto backends"
             )));
         }
-        if codec == EncoderCodec::Rvl && backend == EncoderBackend::Nvidia {
-            return Err(ConfigError::Validation(format!(
-                "encoder: {field_name}=rvl only supports cpu or auto backends"
-            )));
-        }
-
-        match (codec, self.resolved_artifact_format_for(codec)) {
-            (EncoderCodec::Rvl, EncoderArtifactFormat::Rvl)
-            | (EncoderCodec::H264, EncoderArtifactFormat::Mp4)
-            | (EncoderCodec::H265, EncoderArtifactFormat::Mp4)
-            | (EncoderCodec::Av1, EncoderArtifactFormat::Mkv) => Ok(()),
-            (EncoderCodec::Rvl, other) => Err(ConfigError::Validation(format!(
-                "encoder: {field_name}=rvl requires artifact_format=rvl, got {:?}",
-                other
-            ))),
-            (_, EncoderArtifactFormat::Rvl) => Err(ConfigError::Validation(format!(
-                "encoder: artifact_format=rvl requires {field_name}=rvl"
-            ))),
-            (codec, other) => Err(ConfigError::Validation(format!(
-                "encoder: {field_name}={} does not support artifact_format {:?}",
-                codec.as_str(),
-                other
-            ))),
-        }
+        Ok(())
     }
 }
 
 fn default_depth_codec() -> EncoderCodec {
     EncoderCodec::Rvl
+}
+
+// ---------------------------------------------------------------------------
+// Encoder role + preview block
+// ---------------------------------------------------------------------------
+
+/// Selects which runtime an instance of `rollio-encoder` runs. The
+/// controller spawns up to two encoders per camera channel (one
+/// recording, one preview); the role discriminator decides which
+/// fields on `EncoderRuntimeConfigV2` are required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EncoderRole {
+    /// Episode-scoped encoder: subscribes to ControlEvent, opens a
+    /// codec session on `RecordingStart`, publishes packets to the
+    /// per-camera `recording-config` / `recording-packets` topics, and
+    /// emits `EndOfStream` on `RecordingStop`.
+    #[default]
+    Recording,
+    /// Always-on encoder: ignores RecordingStart/Stop, listens to the
+    /// per-camera `preview-control` topic, and publishes either
+    /// encoded preview packets or JPEG bytes depending on
+    /// `[encoder.preview] output_mode`.
+    Preview,
+}
+
+impl EncoderRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recording => "recording",
+            Self::Preview => "preview",
+        }
+    }
+}
+
+/// Project-level preview output mode. Selects which preview transport
+/// the encoder emits and which iceoryx2 topic the visualizer
+/// subscribes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewOutputMode {
+    /// Encoder publishes one self-contained JPEG per preview frame on
+    /// `…/preview-jpeg`. Visualizer bridges JPEG bytes verbatim; web
+    /// UI renders via `<img>`.
+    #[default]
+    Jpeg,
+    /// Encoder publishes encoded packets (H.264 for color channels,
+    /// RVL for depth) on `…/preview-config` + `…/preview-packets`.
+    /// Visualizer relays as new binary WS message kinds; web UI
+    /// decodes via WebCodecs.
+    Encoded,
+}
+
+impl PreviewOutputMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::Encoded => "encoded",
+        }
+    }
+}
+
+/// `[encoder.preview]` project-config block. Owns every preview-only
+/// production setting (size, fps, quality, codec). Recording knobs
+/// stay on `[encoder]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncoderPreviewConfig {
+    #[serde(default)]
+    pub output_mode: PreviewOutputMode,
+    /// Color/IR preview codec. Only `H264` is allowed when
+    /// `output_mode = Encoded` (validated). Ignored when
+    /// `output_mode = Jpeg` (the encoder always JPEG-encodes its
+    /// internal RGB24 buffer).
+    #[serde(default = "default_preview_color_codec")]
+    pub color_codec: EncoderCodec,
+    /// Depth preview codec. Only `Rvl` is allowed when
+    /// `output_mode = Encoded` (validated). Ignored when
+    /// `output_mode = Jpeg` (depth → grayscale RGB24 → JPEG).
+    #[serde(default = "default_preview_depth_codec")]
+    pub depth_codec: EncoderCodec,
+    #[serde(default)]
+    pub backend: EncoderBackend,
+    #[serde(default = "default_preview_width")]
+    pub width: u32,
+    #[serde(default = "default_preview_height")]
+    pub height: u32,
+    #[serde(default = "default_preview_fps")]
+    pub fps: u32,
+    #[serde(default = "default_preview_gop_seconds")]
+    pub gop_seconds: u32,
+    /// CRF / quality knob for the preview codec. Tuned to favour
+    /// low-CPU low-latency encoding rather than archival quality.
+    #[serde(default = "default_preview_crf")]
+    pub crf: Option<u8>,
+    #[serde(default = "default_preview_jpeg_quality")]
+    pub jpeg_quality: i32,
+}
+
+fn default_preview_color_codec() -> EncoderCodec {
+    EncoderCodec::H264
+}
+
+fn default_preview_depth_codec() -> EncoderCodec {
+    EncoderCodec::Rvl
+}
+
+fn default_preview_width() -> u32 {
+    320
+}
+
+fn default_preview_height() -> u32 {
+    240
+}
+
+fn default_preview_fps() -> u32 {
+    15
+}
+
+fn default_preview_gop_seconds() -> u32 {
+    1
+}
+
+fn default_preview_crf() -> Option<u8> {
+    Some(32)
+}
+
+fn default_preview_jpeg_quality() -> i32 {
+    30
+}
+
+impl Default for EncoderPreviewConfig {
+    fn default() -> Self {
+        Self {
+            output_mode: PreviewOutputMode::default(),
+            color_codec: default_preview_color_codec(),
+            depth_codec: default_preview_depth_codec(),
+            backend: EncoderBackend::default(),
+            width: default_preview_width(),
+            height: default_preview_height(),
+            fps: default_preview_fps(),
+            gop_seconds: default_preview_gop_seconds(),
+            crf: default_preview_crf(),
+            jpeg_quality: default_preview_jpeg_quality(),
+        }
+    }
+}
+
+impl EncoderPreviewConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(ConfigError::Validation(
+                "encoder.preview: width and height must be > 0".into(),
+            ));
+        }
+        if self.fps == 0 || self.fps > 1000 {
+            return Err(ConfigError::Validation(format!(
+                "encoder.preview: fps must be 1..1000, got {}",
+                self.fps
+            )));
+        }
+        if self.gop_seconds == 0 {
+            return Err(ConfigError::Validation(
+                "encoder.preview: gop_seconds must be > 0".into(),
+            ));
+        }
+        if let Some(crf) = self.crf {
+            if crf > 51 {
+                return Err(ConfigError::Validation(format!(
+                    "encoder.preview: crf must be 0..=51, got {crf}"
+                )));
+            }
+        }
+        if !(1..=100).contains(&self.jpeg_quality) {
+            return Err(ConfigError::Validation(
+                "encoder.preview: jpeg_quality must be 1..100".into(),
+            ));
+        }
+        if self.output_mode == PreviewOutputMode::Encoded && self.color_codec != EncoderCodec::H264
+        {
+            return Err(ConfigError::Validation(format!(
+                "encoder.preview: output_mode=encoded requires color_codec=h264, got {}",
+                self.color_codec.as_str()
+            )));
+        }
+        if self.output_mode == PreviewOutputMode::Encoded && self.depth_codec != EncoderCodec::Rvl {
+            return Err(ConfigError::Validation(format!(
+                "encoder.preview: output_mode=encoded requires depth_codec=rvl, got {}",
+                self.depth_codec.as_str()
+            )));
+        }
+        Ok(())
+    }
 }
 
 // (Legacy `EncoderRuntimeConfig` removed; use `EncoderRuntimeConfigV2`.)
@@ -867,36 +1047,15 @@ pub struct VisualizerRuntimeConfig {
     pub cameras: Vec<String>,
     #[serde(default)]
     pub robots: Vec<String>,
-    #[serde(default = "default_max_preview_width")]
-    pub max_preview_width: u32,
-    #[serde(default = "default_max_preview_height")]
-    pub max_preview_height: u32,
-    #[serde(default = "default_jpeg_quality")]
-    pub jpeg_quality: i32,
-    #[serde(default = "default_preview_fps")]
-    pub preview_fps: u32,
+    /// Preview transport this visualizer is wired up to bridge.
+    /// Must match the project-level `[encoder.preview] output_mode`
+    /// chosen by the controller; cross-validated by the controller.
     #[serde(default)]
-    pub preview_workers: Option<usize>,
+    pub preview_output_mode: PreviewOutputMode,
 }
 
 fn default_visualizer_port() -> u16 {
     19090
-}
-
-fn default_max_preview_width() -> u32 {
-    320
-}
-
-fn default_max_preview_height() -> u32 {
-    240
-}
-
-fn default_jpeg_quality() -> i32 {
-    30
-}
-
-fn default_preview_fps() -> u32 {
-    60
 }
 
 impl Default for VisualizerRuntimeConfig {
@@ -905,11 +1064,7 @@ impl Default for VisualizerRuntimeConfig {
             port: default_visualizer_port(),
             cameras: Vec::new(),
             robots: Vec::new(),
-            max_preview_width: default_max_preview_width(),
-            max_preview_height: default_max_preview_height(),
-            jpeg_quality: default_jpeg_quality(),
-            preview_fps: default_preview_fps(),
-            preview_workers: None,
+            preview_output_mode: PreviewOutputMode::default(),
         }
     }
 }
@@ -919,21 +1074,6 @@ impl VisualizerRuntimeConfig {
         if self.port == 0 {
             return Err(ConfigError::Validation(
                 "visualizer: port must be > 0".into(),
-            ));
-        }
-        if self.max_preview_width == 0 || self.max_preview_height == 0 {
-            return Err(ConfigError::Validation(
-                "visualizer: preview dimensions must be > 0".into(),
-            ));
-        }
-        if !(1..=100).contains(&self.jpeg_quality) {
-            return Err(ConfigError::Validation(
-                "visualizer: jpeg_quality must be 1..100".into(),
-            ));
-        }
-        if self.preview_fps > 1000 {
-            return Err(ConfigError::Validation(
-                "visualizer: preview_fps must be <= 1000".into(),
             ));
         }
         Ok(())
@@ -1406,6 +1546,14 @@ pub struct DeviceChannelConfigV2 {
     pub control_frequency_hz: Option<f64>,
     #[serde(default)]
     pub profile: Option<CameraChannelProfile>,
+    /// Per-camera opt-in for the always-on preview encoder. When `true`
+    /// (default), the controller spawns a `role=preview` `rollio-encoder`
+    /// alongside the `role=recording` one for this channel; when
+    /// `false`, no preview is produced for this channel and the
+    /// visualizer omits it from its camera list.
+    /// Validation rejects a non-default value on robot channels.
+    #[serde(default = "default_enabled_true")]
+    pub preview_enabled: bool,
     #[serde(default)]
     pub command_defaults: ChannelCommandDefaults,
     /// Hardware-reported value limits for each published state kind.
@@ -1483,6 +1631,12 @@ impl DeviceChannelConfigV2 {
                     .validate(device, &self.channel_type, 0)?;
             }
             DeviceType::Robot => {
+                if !self.preview_enabled {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": robot channels do not accept preview_enabled = false",
+                        device.name, self.channel_type
+                    )));
+                }
                 let dof = self.dof.ok_or_else(|| {
                     ConfigError::Validation(format!(
                         "device \"{}\" channel \"{}\": robot channels require dof",
@@ -2129,16 +2283,6 @@ impl ChannelPairingConfig {
 pub struct VisualizerConfig {
     #[serde(default = "default_visualizer_port")]
     pub port: u16,
-    #[serde(default = "default_max_preview_width")]
-    pub max_preview_width: u32,
-    #[serde(default = "default_max_preview_height")]
-    pub max_preview_height: u32,
-    #[serde(default = "default_jpeg_quality")]
-    pub jpeg_quality: i32,
-    #[serde(default = "default_preview_fps")]
-    pub preview_fps: u32,
-    #[serde(default)]
-    pub preview_workers: Option<usize>,
 }
 
 impl VisualizerConfig {
@@ -2147,11 +2291,7 @@ impl VisualizerConfig {
             port: self.port,
             cameras: Vec::new(),
             robots: Vec::new(),
-            max_preview_width: self.max_preview_width,
-            max_preview_height: self.max_preview_height,
-            jpeg_quality: self.jpeg_quality,
-            preview_fps: self.preview_fps,
-            preview_workers: self.preview_workers,
+            preview_output_mode: PreviewOutputMode::default(),
         }
         .validate()
     }
@@ -2160,13 +2300,14 @@ impl VisualizerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerCameraSourceConfig {
     pub channel_id: String,
-    /// Topic the visualizer subscribes to for this camera. As of the
-    /// "native camera pixel formats" change this is the encoder's
-    /// downsized RGB24 preview tap (`channel_preview_service_name`),
-    /// not the raw camera frames topic. The encoder always runs (even
-    /// when not recording), so the preview tap is always populated as
-    /// long as the camera driver is publishing.
-    pub preview_topic: String,
+    /// Topic identifying the channel's bus root + channel type. The
+    /// visualizer derives the actual subscribed topic name from the
+    /// `preview_output_mode` it was launched in:
+    /// - `Jpeg`  -> `<bus_root>/<channel_type>/preview-jpeg`
+    /// - `Encoded` -> `<bus_root>/<channel_type>/preview-config` +
+    ///   `<bus_root>/<channel_type>/preview-packets`
+    pub bus_root: String,
+    pub channel_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2190,12 +2331,11 @@ pub struct VisualizerRuntimeConfigV2 {
     pub camera_sources: Vec<VisualizerCameraSourceConfig>,
     #[serde(default)]
     pub robot_sources: Vec<VisualizerRobotSourceConfig>,
-    pub max_preview_width: u32,
-    pub max_preview_height: u32,
-    pub jpeg_quality: i32,
-    pub preview_fps: u32,
+    /// Mode the encoder is configured to emit; selects which iceoryx2
+    /// topics the visualizer subscribes to per camera and which binary
+    /// WS message kind the visualizer broadcasts to UI clients.
     #[serde(default)]
-    pub preview_workers: Option<usize>,
+    pub preview_output_mode: PreviewOutputMode,
 }
 
 impl VisualizerRuntimeConfigV2 {
@@ -2217,11 +2357,7 @@ impl VisualizerRuntimeConfigV2 {
                 .iter()
                 .map(|source| source.channel_id.clone())
                 .collect(),
-            max_preview_width: self.max_preview_width,
-            max_preview_height: self.max_preview_height,
-            jpeg_quality: self.jpeg_quality,
-            preview_fps: self.preview_fps,
-            preview_workers: self.preview_workers,
+            preview_output_mode: self.preview_output_mode,
         }
         .validate()?;
         Ok(())
@@ -2349,67 +2485,91 @@ impl FromStr for TeleopRuntimeConfigV2 {
     }
 }
 
+/// Recording-role specific fields. Required when
+/// `EncoderRuntimeConfigV2.role = Recording`; rejected at validation
+/// otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingEncoderConfig {
+    pub codec: EncoderCodec,
+    #[serde(default)]
+    pub backend: EncoderBackend,
+    #[serde(default = "default_queue_size")]
+    pub queue_size: u32,
+    pub fps: u32,
+    /// iceoryx2 service name for the per-camera codec config topic.
+    /// Carries one `EncodedPacketHeader` with `kind = Config` at
+    /// session-open and is opened with `history_size = 1` so late
+    /// subscribers (e.g. an assembler restarted mid-recording) can
+    /// recover the codec extradata.
+    pub config_topic: String,
+    /// iceoryx2 service name for the per-camera recording packet
+    /// stream. Strict delivery (no overflow, publisher blocks on slow
+    /// subscriber).
+    pub packet_topic: String,
+    #[serde(default)]
+    pub chroma_subsampling: ChromaSubsampling,
+    #[serde(default)]
+    pub crf: Option<u8>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub tune: Option<String>,
+    #[serde(default = "default_bit_depth")]
+    pub bit_depth: u8,
+    #[serde(default)]
+    pub color_space: EncoderColorSpace,
+}
+
+/// Preview-role specific fields. Required when
+/// `EncoderRuntimeConfigV2.role = Preview`; rejected at validation
+/// otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewEncoderConfig {
+    pub output_mode: PreviewOutputMode,
+    pub color_codec: EncoderCodec,
+    pub depth_codec: EncoderCodec,
+    #[serde(default)]
+    pub backend: EncoderBackend,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub gop_seconds: u32,
+    #[serde(default)]
+    pub crf: Option<u8>,
+    pub jpeg_quality: i32,
+    /// Service name for the per-camera codec config topic (encoded mode
+    /// only). Carries `kind = Config` with `history_size = 1`.
+    #[serde(default)]
+    pub config_topic: Option<String>,
+    /// Service name for the per-camera encoded preview packet topic
+    /// (encoded mode only). Best-effort delivery; safe overflow on.
+    #[serde(default)]
+    pub packet_topic: Option<String>,
+    /// Service name for the per-camera preview JPEG topic (jpeg mode
+    /// only). Carries `CameraFrameHeader` with `pixel_format = Mjpeg`.
+    #[serde(default)]
+    pub jpeg_topic: Option<String>,
+    /// Service name for the per-camera `PreviewControl` subscription.
+    /// Always required for preview encoders (used by `set_preview_size`).
+    pub control_topic: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderRuntimeConfigV2 {
     pub process_id: String,
     pub channel_id: String,
     pub frame_topic: String,
-    pub output_dir: String,
-    pub codec: EncoderCodec,
+    /// Selects which runtime fans out below. The controller spawns one
+    /// `Recording` and (optionally) one `Preview` encoder per camera
+    /// channel.
+    pub role: EncoderRole,
+    /// Required iff `role == Recording`. Errors at validation
+    /// otherwise.
     #[serde(default)]
-    pub backend: EncoderBackend,
+    pub recording: Option<RecordingEncoderConfig>,
+    /// Required iff `role == Preview`. Errors at validation otherwise.
     #[serde(default)]
-    pub artifact_format: EncoderArtifactFormat,
-    #[serde(default = "default_queue_size")]
-    pub queue_size: u32,
-    pub fps: u32,
-    /// Identifies the bus topic family used for the always-on RGB24 preview
-    /// tap that the visualizer subscribes to. The encoder reads from
-    /// `frame_topic` (the raw camera feed) and republishes a downsized RGB24
-    /// frame on `preview_topic`. Both topics share the same `bus_root` /
-    /// `channel_type` pair; see `channel_preview_service_name` in
-    /// `rollio-bus`. This field is required so an old encoder binary
-    /// reading a new runtime config — or vice versa — fails loudly instead
-    /// of silently dropping the preview tap.
-    pub preview_topic: String,
-    /// Width of the preview tap that the encoder publishes for the
-    /// visualizer. Mirrors `[visualizer] max_preview_width` so a single
-    /// dimension request travels through the project config.
-    pub preview_width: u32,
-    pub preview_height: u32,
-    /// Throttled preview-tap publish rate. Mirrors `[visualizer]
-    /// preview_fps` so the encoder produces at most this many preview
-    /// frames per second regardless of the camera's native fps.
-    pub preview_fps: u32,
-    /// Configured chroma subsampling for the codec input pixel format.
-    /// `S422` (default) preserves YUYV / MJPG-422 chroma; `S420` matches
-    /// the legacy 4:2:0 behaviour. The encoder downgrades to `S420` at
-    /// session-open time when the resolved codec / backend pair can't
-    /// accept 4:2:2 input (older NVENC, libsvtav1, certain VAAPI
-    /// drivers).
-    #[serde(default)]
-    pub chroma_subsampling: ChromaSubsampling,
-    /// Optional constant-quality target (mapped to `crf` for x264/x265/
-    /// AV1, `cq` for NVENC, `qp` for VAAPI). `None` keeps the
-    /// libavcodec default.
-    #[serde(default)]
-    pub crf: Option<u8>,
-    /// Optional codec preset name (`"slow"`, `"veryslow"`, etc.).
-    /// `None` keeps the libavcodec default.
-    #[serde(default)]
-    pub preset: Option<String>,
-    /// Optional codec tuning hint (`"film"`, `"animation"`, ...).
-    /// `None` keeps the libavcodec default.
-    #[serde(default)]
-    pub tune: Option<String>,
-    /// Codec input bit depth (`8` or `10`). `8` matches legacy
-    /// behaviour.
-    #[serde(default = "default_bit_depth")]
-    pub bit_depth: u8,
-    /// Color metadata to write into the encoded bitstream. `Auto`
-    /// matches legacy behaviour (no metadata, players guess).
-    #[serde(default)]
-    pub color_space: EncoderColorSpace,
+    pub preview: Option<PreviewEncoderConfig>,
 }
 
 impl EncoderRuntimeConfigV2 {
@@ -2418,71 +2578,62 @@ impl EncoderRuntimeConfigV2 {
         text.parse()
     }
 
-    pub fn resolved_artifact_format(&self) -> EncoderArtifactFormat {
-        EncoderConfig {
-            video_codec: self.codec,
-            depth_codec: self.codec,
-            backend: self.backend,
-            video_backend: self.backend,
-            depth_backend: self.backend,
-            artifact_format: self.artifact_format,
-            chroma_subsampling: self.chroma_subsampling,
-            crf: self.crf,
-            preset: self.preset.clone(),
-            tune: self.tune.clone(),
-            bit_depth: self.bit_depth,
-            color_space: self.color_space,
-            queue_size: self.queue_size,
-        }
-        .resolved_artifact_format()
-    }
-
-    pub fn output_extension(&self) -> &'static str {
-        self.resolved_artifact_format().extension()
-    }
-
-    pub fn output_file_name(&self, episode_index: u32) -> String {
-        let stem = self
-            .process_id
-            .chars()
-            .map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
-                _ => '_',
-            })
-            .collect::<String>();
-        format!(
-            "{stem}_episode_{episode_index:06}.{}",
-            self.output_extension()
-        )
-    }
-
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.process_id.trim().is_empty()
             || self.channel_id.trim().is_empty()
             || self.frame_topic.trim().is_empty()
-            || self.output_dir.trim().is_empty()
-            || self.preview_topic.trim().is_empty()
         {
             return Err(ConfigError::Validation(
-                "encoder runtime v2: process_id, channel_id, frame_topic, preview_topic, and output_dir must not be empty"
+                "encoder runtime v2: process_id, channel_id, and frame_topic must not be empty"
+                    .into(),
+            ));
+        }
+        match self.role {
+            EncoderRole::Recording => {
+                let rec = self.recording.as_ref().ok_or_else(|| {
+                    ConfigError::Validation(
+                        "encoder runtime v2: role=recording requires [recording] block".into(),
+                    )
+                })?;
+                if self.preview.is_some() {
+                    return Err(ConfigError::Validation(
+                        "encoder runtime v2: role=recording must not include [preview] block"
+                            .into(),
+                    ));
+                }
+                rec.validate()?;
+            }
+            EncoderRole::Preview => {
+                let prev = self.preview.as_ref().ok_or_else(|| {
+                    ConfigError::Validation(
+                        "encoder runtime v2: role=preview requires [preview] block".into(),
+                    )
+                })?;
+                if self.recording.is_some() {
+                    return Err(ConfigError::Validation(
+                        "encoder runtime v2: role=preview must not include [recording] block"
+                            .into(),
+                    ));
+                }
+                prev.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RecordingEncoderConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.config_topic.trim().is_empty() || self.packet_topic.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: recording.config_topic and recording.packet_topic must not be empty"
                     .into(),
             ));
         }
         if self.fps == 0 || self.fps > 1000 {
             return Err(ConfigError::Validation(format!(
-                "encoder runtime v2: fps must be 1..1000, got {}",
+                "encoder runtime v2: recording.fps must be 1..1000, got {}",
                 self.fps
-            )));
-        }
-        if self.preview_width == 0 || self.preview_height == 0 {
-            return Err(ConfigError::Validation(
-                "encoder runtime v2: preview_width and preview_height must be > 0".into(),
-            ));
-        }
-        if self.preview_fps == 0 || self.preview_fps > 1000 {
-            return Err(ConfigError::Validation(format!(
-                "encoder runtime v2: preview_fps must be 1..1000, got {}",
-                self.preview_fps
             )));
         }
         EncoderConfig {
@@ -2491,7 +2642,6 @@ impl EncoderRuntimeConfigV2 {
             backend: self.backend,
             video_backend: self.backend,
             depth_backend: self.backend,
-            artifact_format: self.artifact_format,
             chroma_subsampling: self.chroma_subsampling,
             crf: self.crf,
             preset: self.preset.clone(),
@@ -2499,8 +2649,82 @@ impl EncoderRuntimeConfigV2 {
             bit_depth: self.bit_depth,
             color_space: self.color_space,
             queue_size: self.queue_size,
+            preview: EncoderPreviewConfig::default(),
         }
         .validate()
+    }
+}
+
+impl PreviewEncoderConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.control_topic.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: preview.control_topic must not be empty".into(),
+            ));
+        }
+        if self.width == 0 || self.height == 0 {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: preview.width and preview.height must be > 0".into(),
+            ));
+        }
+        if self.fps == 0 || self.fps > 1000 {
+            return Err(ConfigError::Validation(format!(
+                "encoder runtime v2: preview.fps must be 1..1000, got {}",
+                self.fps
+            )));
+        }
+        if self.gop_seconds == 0 {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: preview.gop_seconds must be > 0".into(),
+            ));
+        }
+        if !(1..=100).contains(&self.jpeg_quality) {
+            return Err(ConfigError::Validation(
+                "encoder runtime v2: preview.jpeg_quality must be 1..100".into(),
+            ));
+        }
+        match self.output_mode {
+            PreviewOutputMode::Encoded => {
+                if self.color_codec != EncoderCodec::H264 {
+                    return Err(ConfigError::Validation(format!(
+                        "encoder runtime v2: preview.output_mode=encoded requires color_codec=h264, got {}",
+                        self.color_codec.as_str()
+                    )));
+                }
+                if self.depth_codec != EncoderCodec::Rvl {
+                    return Err(ConfigError::Validation(format!(
+                        "encoder runtime v2: preview.output_mode=encoded requires depth_codec=rvl, got {}",
+                        self.depth_codec.as_str()
+                    )));
+                }
+                if self
+                    .config_topic
+                    .as_deref()
+                    .is_none_or(|t| t.trim().is_empty())
+                    || self
+                        .packet_topic
+                        .as_deref()
+                        .is_none_or(|t| t.trim().is_empty())
+                {
+                    return Err(ConfigError::Validation(
+                        "encoder runtime v2: preview.output_mode=encoded requires config_topic and packet_topic"
+                            .into(),
+                    ));
+                }
+            }
+            PreviewOutputMode::Jpeg => {
+                if self
+                    .jpeg_topic
+                    .as_deref()
+                    .is_none_or(|t| t.trim().is_empty())
+                {
+                    return Err(ConfigError::Validation(
+                        "encoder runtime v2: preview.output_mode=jpeg requires jpeg_topic".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2517,13 +2741,24 @@ impl FromStr for EncoderRuntimeConfigV2 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssemblerCameraRuntimeConfigV2 {
     pub channel_id: String,
-    pub encoder_process_id: String,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub pixel_format: PixelFormat,
     pub codec: EncoderCodec,
-    pub artifact_format: EncoderArtifactFormat,
+    /// Per-camera codec config topic the assembler subscribes to.
+    /// Carries `kind = Config` packets with `history_size = 1` so
+    /// late subscribers can replay codec extradata.
+    pub recording_config_topic: String,
+    /// Per-camera recording packet topic. Carries `kind = Packet` and
+    /// terminating `kind = EndOfStream` per episode.
+    pub recording_packet_topic: String,
+}
+
+impl AssemblerCameraRuntimeConfigV2 {
+    pub fn container(&self) -> ContainerKind {
+        container_for(self.codec)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2548,10 +2783,13 @@ pub struct AssemblerRuntimeConfigV2 {
     pub format: EpisodeFormat,
     pub fps: u32,
     pub chunk_size: u32,
-    pub missing_video_timeout_ms: u64,
+    /// Maximum wait, in milliseconds, after `RecordingStop` for every
+    /// camera's recording packet stream to emit `EndOfStream`. Bounds
+    /// how long a crashed encoder can pin an episode in the assembler
+    /// before the episode is removed.
+    #[serde(alias = "missing_video_timeout_ms")]
+    pub missing_eos_timeout_ms: u64,
     pub staging_dir: String,
-    #[serde(default)]
-    pub encoded_handoff: EncodedHandoffMode,
     #[serde(default)]
     pub cameras: Vec<AssemblerCameraRuntimeConfigV2>,
     #[serde(default)]
@@ -2578,10 +2816,25 @@ impl AssemblerRuntimeConfigV2 {
                 "assembler runtime v2: fps must be 1..1000 and chunk_size must be > 0".into(),
             ));
         }
+        if self.missing_eos_timeout_ms == 0 {
+            return Err(ConfigError::Validation(
+                "assembler runtime v2: missing_eos_timeout_ms must be > 0".into(),
+            ));
+        }
         if self.cameras.is_empty() {
             return Err(ConfigError::Validation(
                 "assembler runtime v2: at least one camera is required".into(),
             ));
+        }
+        for camera in &self.cameras {
+            if camera.recording_config_topic.trim().is_empty()
+                || camera.recording_packet_topic.trim().is_empty()
+            {
+                return Err(ConfigError::Validation(format!(
+                    "assembler runtime v2: camera \"{}\" requires non-empty recording_config_topic and recording_packet_topic",
+                    camera.channel_id,
+                )));
+            }
         }
         if self.embedded_config_toml.trim().is_empty() {
             return Err(ConfigError::Validation(
@@ -2729,16 +2982,7 @@ impl ProjectConfig {
             storage: StorageConfig::default(),
             monitor: MonitorConfig::default(),
             controller: ControllerConfig::default(),
-            // `VisualizerConfig` uses `#[derive(Default)]` with serde defaults only for
-            // deserialization — explicit values keep draft templates valid before TOML parse.
-            visualizer: VisualizerConfig {
-                port: 19090,
-                max_preview_width: 320,
-                max_preview_height: 240,
-                jpeg_quality: 30,
-                preview_fps: 60,
-                preview_workers: None,
-            },
+            visualizer: VisualizerConfig { port: 19090 },
             ui: UiRuntimeConfig::default(),
         }
     }
@@ -2874,20 +3118,28 @@ impl ProjectConfig {
     }
 
     pub fn visualizer_runtime_config_v2(&self) -> VisualizerRuntimeConfigV2 {
-        // Subscribe to every enabled camera so the operator can see all
-        // configured streams in the live preview. `MAX_PREVIEW_CAMERAS`
-        // applies to layout (max tiles per row) — overflow wraps onto a
-        // second row in the UI rather than being silently dropped.
-        //
-        // The visualizer subscribes to the encoder's downsized RGB24
-        // preview tap, never to the raw camera frames topic — so it
-        // never has to decode YUYV/MJPG bytes itself.
+        // Subscribe only to cameras that opt into a live preview
+        // (`preview_enabled = true`, default). The visualizer derives
+        // the per-camera iceoryx2 topic name from `bus_root` +
+        // `channel_type` plus the project-level
+        // `[encoder.preview] output_mode`.
         let camera_sources = self
             .resolved_camera_channels()
             .into_iter()
+            .filter(|camera| {
+                self.device_named(&camera.device_name)
+                    .and_then(|device| {
+                        device
+                            .channels
+                            .iter()
+                            .find(|c| c.channel_type == camera.channel_type)
+                    })
+                    .is_some_and(|channel| channel.preview_enabled)
+            })
             .map(|camera| VisualizerCameraSourceConfig {
                 channel_id: camera.channel_id,
-                preview_topic: camera_preview_topic_v2(&camera.bus_root, &camera.channel_type),
+                bus_root: camera.bus_root,
+                channel_type: camera.channel_type,
             })
             .collect();
         let robot_sources = self
@@ -2917,50 +3169,124 @@ impl ProjectConfig {
             port: self.visualizer.port,
             camera_sources,
             robot_sources,
-            max_preview_width: self.visualizer.max_preview_width,
-            max_preview_height: self.visualizer.max_preview_height,
-            jpeg_quality: self.visualizer.jpeg_quality,
-            preview_fps: self.visualizer.preview_fps,
-            preview_workers: self.visualizer.preview_workers,
+            preview_output_mode: self.encoder.preview.output_mode,
         }
     }
 
     pub fn encoder_runtime_configs_v2(&self) -> Vec<EncoderRuntimeConfigV2> {
-        self.resolved_camera_channels()
-            .into_iter()
-            .map(|camera| {
-                let codec = self.encoder.codec_for_pixel_format(camera.pixel_format);
-                // Per-codec backend so a project that wants e.g. nvidia
-                // for color and cpu for depth gets each encoder bound to
-                // the right device — no global field is good enough here.
-                let backend = self.encoder.backend_for_pixel_format(camera.pixel_format);
-                let preview_topic = camera_preview_topic_v2(&camera.bus_root, &camera.channel_type);
-                EncoderRuntimeConfigV2 {
-                    process_id: encoder_process_id_v2(&camera.channel_id),
-                    channel_id: camera.channel_id.clone(),
-                    frame_topic: camera.frame_topic,
-                    output_dir: encoder_output_dir_v2(
-                        &self.assembler.staging_dir,
-                        &camera.channel_id,
-                    ),
+        let mut configs = Vec::new();
+        for camera in self.resolved_camera_channels() {
+            let codec = self.encoder.codec_for_pixel_format(camera.pixel_format);
+            // Per-codec backend so a project that wants e.g. nvidia
+            // for color and cpu for depth gets each encoder bound to
+            // the right device — no global field is good enough here.
+            let backend = self.encoder.backend_for_pixel_format(camera.pixel_format);
+            let preview_enabled = self
+                .device_named(&camera.device_name)
+                .and_then(|device| {
+                    device
+                        .channels
+                        .iter()
+                        .find(|c| c.channel_type == camera.channel_type)
+                })
+                .is_some_and(|channel| channel.preview_enabled);
+
+            // Recording-role encoder for every enabled camera.
+            configs.push(EncoderRuntimeConfigV2 {
+                process_id: recording_encoder_process_id(&camera.channel_id),
+                channel_id: camera.channel_id.clone(),
+                frame_topic: camera.frame_topic.clone(),
+                role: EncoderRole::Recording,
+                recording: Some(RecordingEncoderConfig {
                     codec,
                     backend,
-                    artifact_format: self.encoder.resolved_artifact_format_for(codec),
                     queue_size: self.encoder.queue_size,
                     fps: camera.fps,
-                    preview_topic,
-                    preview_width: self.visualizer.max_preview_width,
-                    preview_height: self.visualizer.max_preview_height,
-                    preview_fps: self.visualizer.preview_fps,
+                    config_topic: rollio_bus::recording_config_service_name(
+                        &camera.bus_root,
+                        &camera.channel_type,
+                    ),
+                    packet_topic: rollio_bus::recording_packet_service_name(
+                        &camera.bus_root,
+                        &camera.channel_type,
+                    ),
                     chroma_subsampling: self.encoder.chroma_subsampling,
                     crf: self.encoder.crf,
                     preset: self.encoder.preset.clone(),
                     tune: self.encoder.tune.clone(),
                     bit_depth: self.encoder.bit_depth,
                     color_space: self.encoder.color_space,
-                }
-            })
-            .collect()
+                }),
+                preview: None,
+            });
+
+            // Preview-role encoder, if the channel opts in.
+            if preview_enabled {
+                // For depth-channel previews, use the configured depth
+                // codec; for color use the configured color codec.
+                let (preview_codec_color, preview_codec_depth) = (
+                    self.encoder.preview.color_codec,
+                    self.encoder.preview.depth_codec,
+                );
+                let depth_channel = camera.pixel_format == PixelFormat::Depth16;
+                let _effective_codec = if depth_channel {
+                    preview_codec_depth
+                } else {
+                    preview_codec_color
+                };
+
+                let (config_topic, packet_topic, jpeg_topic) =
+                    match self.encoder.preview.output_mode {
+                        PreviewOutputMode::Encoded => (
+                            Some(rollio_bus::preview_config_service_name(
+                                &camera.bus_root,
+                                &camera.channel_type,
+                            )),
+                            Some(rollio_bus::preview_packet_service_name(
+                                &camera.bus_root,
+                                &camera.channel_type,
+                            )),
+                            None,
+                        ),
+                        PreviewOutputMode::Jpeg => (
+                            None,
+                            None,
+                            Some(rollio_bus::preview_jpeg_service_name(
+                                &camera.bus_root,
+                                &camera.channel_type,
+                            )),
+                        ),
+                    };
+
+                configs.push(EncoderRuntimeConfigV2 {
+                    process_id: preview_encoder_process_id(&camera.channel_id),
+                    channel_id: camera.channel_id.clone(),
+                    frame_topic: camera.frame_topic,
+                    role: EncoderRole::Preview,
+                    recording: None,
+                    preview: Some(PreviewEncoderConfig {
+                        output_mode: self.encoder.preview.output_mode,
+                        color_codec: preview_codec_color,
+                        depth_codec: preview_codec_depth,
+                        backend: self.encoder.preview.backend,
+                        width: self.encoder.preview.width,
+                        height: self.encoder.preview.height,
+                        fps: self.encoder.preview.fps,
+                        gop_seconds: self.encoder.preview.gop_seconds,
+                        crf: self.encoder.preview.crf,
+                        jpeg_quality: self.encoder.preview.jpeg_quality,
+                        config_topic,
+                        packet_topic,
+                        jpeg_topic,
+                        control_topic: rollio_bus::preview_control_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        ),
+                    }),
+                });
+            }
+        }
+        configs
     }
 
     pub fn assembler_runtime_config_v2(
@@ -2974,13 +3300,19 @@ impl ProjectConfig {
                 let codec = self.encoder.codec_for_pixel_format(camera.pixel_format);
                 AssemblerCameraRuntimeConfigV2 {
                     channel_id: camera.channel_id.clone(),
-                    encoder_process_id: encoder_process_id_v2(&camera.channel_id),
                     width: camera.width,
                     height: camera.height,
                     fps: camera.fps,
                     pixel_format: camera.pixel_format,
                     codec,
-                    artifact_format: self.encoder.resolved_artifact_format_for(codec),
+                    recording_config_topic: rollio_bus::recording_config_service_name(
+                        &camera.bus_root,
+                        &camera.channel_type,
+                    ),
+                    recording_packet_topic: rollio_bus::recording_packet_service_name(
+                        &camera.bus_root,
+                        &camera.channel_type,
+                    ),
                 }
             })
             .collect();
@@ -3034,13 +3366,12 @@ impl ProjectConfig {
             })
             .collect();
         AssemblerRuntimeConfigV2 {
-            process_id: "episode-lerobot".into(),
+            process_id: assembler_process_id_for_format(self.episode.format),
             format: self.episode.format,
             fps: self.episode.fps,
             chunk_size: self.episode.chunk_size,
-            missing_video_timeout_ms: self.assembler.missing_video_timeout_ms,
+            missing_eos_timeout_ms: self.assembler.missing_eos_timeout_ms,
             staging_dir: episode_staging_root_v2(&self.assembler.staging_dir),
-            encoded_handoff: self.assembler.encoded_handoff,
             cameras,
             observations,
             actions,
@@ -3155,10 +3486,6 @@ fn camera_frames_topic_v2(bus_root: &str, channel_type: &str) -> String {
     format!("{}/frames", channel_prefix_v2(bus_root, channel_type))
 }
 
-fn camera_preview_topic_v2(bus_root: &str, channel_type: &str) -> String {
-    format!("{}/preview", channel_prefix_v2(bus_root, channel_type))
-}
-
 fn robot_state_topic_v2(bus_root: &str, channel_type: &str, state: RobotStateKind) -> String {
     format!(
         "{}/states/{}",
@@ -3175,16 +3502,28 @@ fn robot_command_topic_v2(bus_root: &str, channel_type: &str, command: RobotComm
     )
 }
 
-fn encoder_process_id_v2(channel_id: &str) -> String {
+/// Encoder process_id for the recording-role child the controller
+/// spawns per camera. Distinct from the preview-role process_id so
+/// the two children appear as separate iceoryx2 nodes.
+pub fn recording_encoder_process_id(channel_id: &str) -> String {
     format!("encoder.{}", channel_id.replace('/', "."))
 }
 
-fn encoder_output_dir_v2(staging_root: &str, channel_id: &str) -> String {
-    Path::new(staging_root)
-        .join("encoders")
-        .join(channel_id.replace('/', "__"))
-        .to_string_lossy()
-        .into_owned()
+/// Encoder process_id for the preview-role child.
+pub fn preview_encoder_process_id(channel_id: &str) -> String {
+    format!("preview-encoder.{}", channel_id.replace('/', "."))
+}
+
+/// Pick the assembler process_id (matches the eventual binary name)
+/// for the project's chosen episode format. The controller uses this
+/// to spawn the right sibling crate (`rollio-episode-lerobot` /
+/// `rollio-episode-mcap`).
+pub fn assembler_process_id_for_format(format: EpisodeFormat) -> String {
+    match format {
+        EpisodeFormat::LeRobotV2_1 => "episode-lerobot".into(),
+        EpisodeFormat::LeRobotV3_0 => "episode-lerobot".into(),
+        EpisodeFormat::Mcap => "episode-mcap".into(),
+    }
 }
 
 fn episode_staging_root_v2(staging_root: &str) -> String {

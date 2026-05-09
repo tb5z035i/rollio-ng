@@ -1,0 +1,18 @@
+[package]
+name = "rollio-episode-mcap"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "rollio-episode-mcap"
+path = "src/main.rs"
+
+[dependencies]
+rollio-types = { path = "../rollio-types" }
+rollio-bus = { path = "../rollio-bus" }
+iceoryx2 = { path = "../third_party/iceoryx2/iceoryx2" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.8", features = ["parse", "display"] }
+log = "0.4"
+env_logger = "0.11"

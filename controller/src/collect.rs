@@ -494,8 +494,12 @@ mod tests {
             .iter()
             .map(|spec| spec.id.as_str())
             .collect::<Vec<_>>();
-        assert!(ids.contains(&"encoder-camera_top-color"));
-        assert!(ids.contains(&"encoder-camera_side-color"));
+        // Each preview-enabled camera produces both a recording-role
+        // and a preview-role encoder spec.
+        assert!(ids.contains(&"encoder-recording-camera_top-color"));
+        assert!(ids.contains(&"encoder-recording-camera_side-color"));
+        assert!(ids.contains(&"encoder-preview-camera_top-color"));
+        assert!(ids.contains(&"encoder-preview-camera_side-color"));
         assert!(ids.contains(&"assembler"));
         assert!(ids.contains(&"storage"));
         assert!(
@@ -519,28 +523,25 @@ mod tests {
 
         let encoder_spec = specs
             .iter()
-            .find(|spec| spec.id == "encoder-camera_top-color")
-            .expect("encoder spec should exist");
+            .find(|spec| spec.id == "encoder-recording-camera_top-color")
+            .expect("recording encoder spec should exist");
         let inline = encoder_spec.command.args[2].to_string_lossy();
         assert!(inline.contains("process_id = \"encoder.camera_top.color\""));
         assert!(inline.contains("frame_topic = \"camera_top/color/frames\""));
-        assert!(
-            inline.contains(&format!(
-                "output_dir = \"{}\"",
-                workspace_root
-                    .join("staging/encoders/camera_top__color")
-                    .to_string_lossy()
-            )),
-            "unexpected encoder inline config: {inline}"
-        );
+        assert!(inline.contains("role = \"recording\""));
+        // No more file-mode output_dir; recording packets go to iceoryx2.
+        assert!(!inline.contains("output_dir"));
+        assert!(inline.contains("recording-packets"));
 
         let assembler_spec = specs
             .iter()
             .find(|spec| spec.id == "assembler")
             .expect("assembler spec should exist");
         let assembler_inline = assembler_spec.command.args[2].to_string_lossy();
-        assert!(assembler_inline.contains("encoded_handoff = \"file\""));
+        // File mode is gone; assembler is packets-only.
+        assert!(!assembler_inline.contains("encoded_handoff"));
         assert!(assembler_inline.contains("process_id = \"episode-lerobot\""));
+        assert!(assembler_inline.contains("recording_packet_topic"));
 
         let storage_spec = specs
             .iter()

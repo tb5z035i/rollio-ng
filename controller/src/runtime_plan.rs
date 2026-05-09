@@ -327,7 +327,11 @@ pub(crate) fn build_encoder_spec(
 ) -> Result<ChildSpec, Box<dyn Error>> {
     let inline_config = toml::to_string(config)?;
     Ok(ChildSpec {
-        id: format!("encoder-{}", config.channel_id.replace('/', "-")),
+        id: format!(
+            "encoder-{}-{}",
+            config.role.as_str(),
+            config.channel_id.replace('/', "-")
+        ),
         command: ResolvedCommand {
             program: resolve_program(current_exe_dir.join("rollio-encoder"), "rollio-encoder"),
             args: vec![
@@ -348,13 +352,11 @@ pub(crate) fn build_assembler_spec(
     current_exe_dir: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
     let inline_config = toml::to_string(config)?;
+    let binary = assembler_binary_for(config.format)?;
     Ok(ChildSpec {
         id: "assembler".into(),
         command: ResolvedCommand {
-            program: resolve_program(
-                current_exe_dir.join("rollio-episode-lerobot"),
-                "rollio-episode-lerobot",
-            ),
+            program: resolve_program(current_exe_dir.join(binary), binary),
             args: vec![
                 OsString::from("run"),
                 OsString::from("--config-inline"),
@@ -364,6 +366,22 @@ pub(crate) fn build_assembler_spec(
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
     })
+}
+
+/// Pick the assembler binary for the project's chosen episode
+/// format. Returns an error for formats with no implementation
+/// (`LeRobotV3_0`).
+pub(crate) fn assembler_binary_for(
+    format: rollio_types::config::EpisodeFormat,
+) -> Result<&'static str, Box<dyn Error>> {
+    use rollio_types::config::EpisodeFormat;
+    match format {
+        EpisodeFormat::LeRobotV2_1 => Ok("rollio-episode-lerobot"),
+        EpisodeFormat::Mcap => Ok("rollio-episode-mcap"),
+        EpisodeFormat::LeRobotV3_0 => {
+            Err("episode.format = lerobot-v3.0 is not implemented yet".into())
+        }
+    }
 }
 
 pub(crate) fn build_storage_spec(

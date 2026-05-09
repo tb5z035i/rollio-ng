@@ -12,6 +12,12 @@ clap = { version = "4.6.0", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+# Used by the preview-role encoder when output_mode = jpeg: PreviewBuilder
+# decodes/copies the camera frame to RGB24, JpegCompressor compresses to
+# JPEG via libjpeg-turbo, and the result is published on .../preview-jpeg.
+turbojpeg = "1"
+fast_image_resize = "5"
+log = "0.4"
 # `ffmpeg-sys-next` is already pulled in transitively by `ffmpeg-next`,
 # but listing it here lets the `static-ffmpeg` feature below toggle the
 # sys-crate's `build-*` features (which don't have passthroughs in

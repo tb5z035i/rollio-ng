@@ -567,21 +567,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-utils"
-version = "0.8.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2177,15 +2162,18 @@ name = "rollio-encoder"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "fast_image_resize",
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "iceoryx2",
+ "log",
  "rollio-bus",
  "rollio-types",
  "rvl",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "turbojpeg",
 ]
 
 [[package]]
@@ -2195,12 +2183,28 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "clap",
+ "ffmpeg-next",
  "iceoryx2",
+ "log",
  "parquet",
  "rollio-bus",
  "rollio-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rollio-episode-mcap"
+version = "1.0.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "iceoryx2",
+ "log",
+ "rollio-bus",
+ "rollio-types",
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -2251,6 +2255,7 @@ version = "1.0.0"
 dependencies = [
  "clap",
  "iceoryx2",
+ "rollio-bus",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2262,9 +2267,7 @@ name = "rollio-visualizer"
 version = "1.0.0"
 dependencies = [
  "clap",
- "crossbeam-channel",
  "env_logger",
- "fast_image_resize",
  "futures-util",
  "iceoryx2",
  "log",
@@ -2274,7 +2277,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.26.2",
- "turbojpeg",
 ]
 
 [[package]]

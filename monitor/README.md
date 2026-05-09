@@ -1,9 +1,33 @@
 # rollio-monitor
 
-**Health and metrics aggregation** is planned in [`design/components.md`](../design/components.md) (thresholds, warnings, forwarding to the UI).
+Future **health / metrics** hub: watch child processes or bus traffic, compare against `ProjectConfig` thresholds, and surface warnings in the UI (described at a high level in [`design/components.md`](../design/components.md)).
 
-## Current status
+---
 
-The binary is a **stub**: it prints the package name and exits. The monitor process is **not** yet part of the functional pipeline.
+## Concepts & behaviors (today)
 
-When implemented, it should subscribe to per-process metrics on iceoryx2 and evaluate them against `ProjectConfig` monitor thresholds.
+The crate is **wired in the workspace** but the **binary is a stub**: it prints its package name and exits. **`rollio`** does **not** spawn it yet.
+
+There is **no CLI surface** beyond that print — treat this README as intent, not shipped behavior.
+
+---
+
+## iceoryx2
+
+**None today.** A future implementation would likely subscribe to metric services (TBD) rather than raw episode data.
+
+---
+
+## Lifecycle
+
+Not started by orchestration.
+
+---
+
+## Built product & dependencies
+
+**Binary:** `rollio-monitor` (stub). `Cargo.toml` already lists `iceoryx2` / `rollio-types` for upcoming work.
+
+## See also
+
+- [`design/components.md`](../design/components.md).

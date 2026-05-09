@@ -358,7 +358,7 @@ export function usePreviewSocket(
         streamInfoRef.current = msg;
         dirtyRef.current = true;
         setGauge("ws.stream_info_status", "Ready");
-        setGauge("ws.preview_fps_config", msg.configured_preview_fps);
+        setGauge("ws.preview_output_mode", msg.preview_output_mode);
         setGauge(
           "ws.active_preview_size",
           `${msg.active_preview_width}x${msg.active_preview_height}`,
@@ -370,6 +370,22 @@ export function usePreviewSocket(
       const msg = parseBinaryMessage(buffer);
       recordTiming("ws.parse.binary", nowMs() - parseStartMs);
       if (!msg) return;
+
+      // For now the web UI only renders the JPEG path. Encoded
+      // packets are recognised but a WebCodecs renderer is a
+      // follow-up; we just count them for debugging.
+      if (msg.type === "encoded_config") {
+        incrementGauge(`ws.encoded_config_total.${msg.name}`);
+        setGauge(`ws.encoded_codec.${msg.name}`, msg.codecId);
+        return;
+      }
+      if (msg.type === "encoded_packet") {
+        incrementGauge(`ws.encoded_packets_total.${msg.name}`);
+        if (msg.isKeyframe) {
+          incrementGauge(`ws.encoded_keyframes_total.${msg.name}`);
+        }
+        return;
+      }
 
       const previous = framesRef.current.get(msg.name);
       if (previous) {

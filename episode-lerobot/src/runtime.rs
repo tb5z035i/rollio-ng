@@ -1,21 +1,37 @@
+//! `rollio-episode-lerobot` runtime — packets-only assembler.
+//!
+//! Subscribes to:
+//! - `CONTROL_EVENTS_SERVICE` for episode lifecycle
+//! - per-camera `…/recording-config` (history=1) + `…/recording-packets`
+//! - per-observation state topic
+//! - per-action command topic
+//! - `EPISODE_READY_SERVICE` (publisher)
+//!
+//! Maintains per-`(channel, episode)` packet buffers, validates
+//! sequence numbers as packets arrive, and stages the episode after
+//! every camera has emitted `EndOfStream`. A bounded
+//! `missing_eos_timeout_ms` removes stuck episodes when the encoder
+//! crashes mid-recording.
+
 use crate::dataset::{
     action_key, observation_key, remove_episode_artifacts, stage_episode, ActionSample,
     EpisodeAssemblyInput, ObservationSample, StagedEpisode,
 };
+use crate::packets::RecordingStreamBuffer;
 use clap::Args;
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
     CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, STATE_BUFFER, STATE_MAX_NODES,
-    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, VIDEO_READY_SERVICE,
+    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
-    EncodedHandoffMode, EpisodeFormat, RobotCommandKind, RobotStateKind,
+    EpisodeFormat, RobotCommandKind, RobotStateKind,
 };
 use rollio_types::messages::{
-    ControlEvent, EpisodeReady, FixedString256, JointMitCommand15, JointVector15,
-    ParallelMitCommand2, ParallelVector2, Pose7, VideoReady,
+    ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeReady, FixedString256,
+    JointMitCommand15, JointVector15, ParallelMitCommand2, ParallelVector2, Pose7,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -31,6 +47,24 @@ pub struct RunArgs {
     #[arg(long, value_name = "TOML", conflicts_with = "config")]
     pub config_inline: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Per-channel packet subscribers
+// ---------------------------------------------------------------------------
+
+type PacketSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], EncodedPacketHeader>;
+
+struct CameraSubscriber {
+    channel_id: String,
+    config_subscriber: PacketSubscriber,
+    packet_subscriber: PacketSubscriber,
+}
+
+// ---------------------------------------------------------------------------
+// Robot state / action subscribers (unchanged from the file-mode
+// implementation; state/action plumbing did not change)
+// ---------------------------------------------------------------------------
 
 struct ObservationSubscriber {
     config: AssemblerObservationRuntimeConfigV2,
@@ -58,6 +92,10 @@ enum ActionSubscriberKind {
     Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
 }
 
+// ---------------------------------------------------------------------------
+// Pending episode aggregation
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 struct PendingEpisode {
     episode_index: u32,
@@ -67,11 +105,21 @@ struct PendingEpisode {
     ready_wait_started_us: Option<u64>,
     observation_samples: BTreeMap<String, Vec<ObservationSample>>,
     action_samples: BTreeMap<String, Vec<ActionSample>>,
-    video_paths: BTreeMap<String, PathBuf>,
+    /// Per-channel packet streams. Populated as packets arrive and
+    /// finalized when each camera observes `EndOfStream`.
+    camera_streams: BTreeMap<String, RecordingStreamBuffer>,
+    /// Channels that have reported a sequence error or other failure
+    /// while accumulating packets. The episode is removed on the next
+    /// `dispatch_ready_episodes` tick.
+    failed_cameras: Vec<String>,
 }
 
 impl PendingEpisode {
-    fn new(episode_index: u32, start_time_us: u64) -> Self {
+    fn new(episode_index: u32, start_time_us: u64, channel_ids: &[String]) -> Self {
+        let mut camera_streams = BTreeMap::new();
+        for channel_id in channel_ids {
+            camera_streams.insert(channel_id.clone(), RecordingStreamBuffer::default());
+        }
         Self {
             episode_index,
             start_time_us,
@@ -80,7 +128,8 @@ impl PendingEpisode {
             ready_wait_started_us: None,
             observation_samples: BTreeMap::new(),
             action_samples: BTreeMap::new(),
-            video_paths: BTreeMap::new(),
+            camera_streams,
+            failed_cameras: Vec::new(),
         }
     }
 
@@ -91,8 +140,16 @@ impl PendingEpisode {
             stop_time_us: self.stop_time_us.unwrap_or(self.start_time_us),
             observation_samples: self.observation_samples.clone(),
             action_samples: self.action_samples.clone(),
-            video_paths: self.video_paths.clone(),
+            camera_streams: self.camera_streams.clone(),
         }
+    }
+
+    fn all_cameras_eos(&self, expected: usize) -> bool {
+        self.camera_streams
+            .values()
+            .filter(|s| s.eos_received)
+            .count()
+            == expected
     }
 }
 
@@ -100,21 +157,21 @@ struct EpisodeManager {
     config: AssemblerRuntimeConfigV2,
     active_episode_index: Option<u32>,
     episodes: BTreeMap<u32, PendingEpisode>,
-    camera_by_process_id: HashMap<String, String>,
+    camera_channel_ids: Vec<String>,
 }
 
 impl EpisodeManager {
     fn new(config: AssemblerRuntimeConfigV2) -> Self {
-        let camera_by_process_id = config
+        let camera_channel_ids = config
             .cameras
             .iter()
-            .map(|camera| (camera.encoder_process_id.clone(), camera.channel_id.clone()))
+            .map(|c| c.channel_id.clone())
             .collect();
         Self {
             config,
             active_episode_index: None,
             episodes: BTreeMap::new(),
-            camera_by_process_id,
+            camera_channel_ids,
         }
     }
 
@@ -126,7 +183,7 @@ impl EpisodeManager {
             } => {
                 self.episodes.insert(
                     episode_index,
-                    PendingEpisode::new(episode_index, controller_ts_us),
+                    PendingEpisode::new(episode_index, controller_ts_us, &self.camera_channel_ids),
                 );
                 self.active_episode_index = Some(episode_index);
                 false
@@ -137,6 +194,7 @@ impl EpisodeManager {
             } => {
                 if let Some(episode) = self.episodes.get_mut(&episode_index) {
                     episode.stop_time_us = Some(controller_ts_us);
+                    episode.ready_wait_started_us = Some(unix_timestamp_us());
                 }
                 if self.active_episode_index == Some(episode_index) {
                     self.active_episode_index = None;
@@ -146,13 +204,15 @@ impl EpisodeManager {
             ControlEvent::EpisodeKeep { episode_index } => {
                 if let Some(episode) = self.episodes.get_mut(&episode_index) {
                     episode.keep_requested = true;
-                    episode.ready_wait_started_us = Some(unix_timestamp_us());
+                    episode
+                        .ready_wait_started_us
+                        .get_or_insert_with(unix_timestamp_us);
                 }
                 false
             }
             ControlEvent::EpisodeDiscard { episode_index } => {
-                if let Some(episode) = self.episodes.remove(&episode_index) {
-                    remove_episode_artifacts(&episode.as_assembly_input());
+                if self.episodes.remove(&episode_index).is_some() {
+                    remove_episode_artifacts(&self.config.staging_dir, episode_index);
                 }
                 if self.active_episode_index == Some(episode_index) {
                     self.active_episode_index = None;
@@ -210,36 +270,43 @@ impl EpisodeManager {
             });
     }
 
-    fn on_video_ready(&mut self, ready: VideoReady) {
-        let Some(channel_id) = self.camera_by_process_id.get(ready.process_id.as_str()) else {
-            eprintln!(
-                "rollio-episode-lerobot: ignoring video_ready from unknown process {}",
-                ready.process_id.as_str()
-            );
+    fn on_packet(&mut self, channel_id: &str, header: &EncodedPacketHeader, payload: &[u8]) {
+        let episode_index = header.episode_index;
+        let Some(episode) = self.episodes.get_mut(&episode_index) else {
+            // Late packet for an unknown episode (or one we already
+            // dispatched): drop. Late join across an episode boundary
+            // is an encoder bug, not an assembler one.
             return;
         };
-        let Some(episode) = self.episodes.get_mut(&ready.episode_index) else {
-            eprintln!(
-                "rollio-episode-lerobot: ignoring video_ready for unknown episode {}",
-                ready.episode_index
-            );
+        let Some(buffer) = episode.camera_streams.get_mut(channel_id) else {
             return;
         };
-        episode
-            .video_paths
-            .insert(channel_id.clone(), PathBuf::from(ready.file_path.as_str()));
+        match header.kind {
+            EncodedPacketKind::Config => buffer.observe_config(header, payload),
+            EncodedPacketKind::Packet => buffer.observe_packet(header, payload),
+            EncodedPacketKind::EndOfStream => buffer.observe_eos(header),
+        }
+        if buffer.failed.is_some() && !episode.failed_cameras.iter().any(|id| id == channel_id) {
+            episode.failed_cameras.push(channel_id.to_string());
+        }
     }
 
-    fn ready_and_timed_out_episode_indices(&self, now_us: u64) -> (Vec<u32>, Vec<u32>) {
+    fn ready_failed_and_timed_out(&self, now_us: u64) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let mut ready = Vec::new();
+        let mut failed = Vec::new();
         let mut timed_out = Vec::new();
-        let timeout_us = self.config.missing_video_timeout_ms.saturating_mul(1_000);
+        let timeout_us = self.config.missing_eos_timeout_ms.saturating_mul(1_000);
+        let expected_cameras = self.config.cameras.len();
 
         for (episode_index, episode) in &self.episodes {
+            if !episode.failed_cameras.is_empty() {
+                failed.push(*episode_index);
+                continue;
+            }
             if !episode.keep_requested || episode.stop_time_us.is_none() {
                 continue;
             }
-            if episode.video_paths.len() == self.config.cameras.len() {
+            if episode.all_cameras_eos(expected_cameras) {
                 ready.push(*episode_index);
                 continue;
             }
@@ -249,46 +316,48 @@ impl EpisodeManager {
                 }
             }
         }
-
-        (ready, timed_out)
+        (ready, failed, timed_out)
     }
 
-    /// Hand off ready / timed-out episodes to the staging worker.
-    ///
-    /// Staging (parquet write + raw dump + video file moves) used to run
-    /// inline on the main loop, which blocked the iceoryx2 subscriber drain
-    /// for the full duration. With Phase 6b that work moves to a dedicated
-    /// `rollio-lerobot-staging-worker` thread (see `spawn_stage_worker`) so the
-    /// 250 Hz state subscribers keep getting drained even while a heavy
-    /// stage is in flight.
     fn dispatch_ready_episodes(
         &mut self,
         worker: &mpsc::Sender<WorkerCommand>,
     ) -> Result<bool, Box<dyn Error>> {
         let now_us = unix_timestamp_us();
-        let (ready_episode_indices, timed_out_episode_indices) =
-            self.ready_and_timed_out_episode_indices(now_us);
+        let (ready_indices, failed_indices, timed_out_indices) =
+            self.ready_failed_and_timed_out(now_us);
         let mut changed = false;
 
-        for episode_index in timed_out_episode_indices {
+        for episode_index in failed_indices {
             if let Some(episode) = self.episodes.remove(&episode_index) {
                 eprintln!(
-                    "rollio-episode-lerobot: discarding episode {} after waiting {} ms for missing videos",
-                    episode_index, self.config.missing_video_timeout_ms
+                    "rollio-episode-lerobot: discarding episode {episode_index} due to packet stream failure ({:?})",
+                    episode.failed_cameras
                 );
-                remove_episode_artifacts(&episode.as_assembly_input());
+                remove_episode_artifacts(&self.config.staging_dir, episode_index);
                 changed = true;
             }
         }
 
-        for episode_index in ready_episode_indices {
+        for episode_index in timed_out_indices {
+            if self.episodes.remove(&episode_index).is_some() {
+                eprintln!(
+                    "rollio-episode-lerobot: discarding episode {episode_index} after waiting {} ms for missing EndOfStream",
+                    self.config.missing_eos_timeout_ms
+                );
+                remove_episode_artifacts(&self.config.staging_dir, episode_index);
+                changed = true;
+            }
+        }
+
+        for episode_index in ready_indices {
             let Some(episode) = self.episodes.remove(&episode_index) else {
                 continue;
             };
             worker
                 .send(WorkerCommand::Stage(episode.as_assembly_input()))
                 .map_err(|error| -> Box<dyn Error> {
-                    format!("rollio-episode-lerobot staging worker disconnected: {error}").into()
+                    format!("staging worker disconnected: {error}").into()
                 })?;
             changed = true;
         }
@@ -312,20 +381,12 @@ enum WorkerEvent {
     ShutdownComplete,
 }
 
-/// Handles returned by `spawn_stage_worker`: the command channel into the
-/// worker, the event channel out of it, and the thread join handle.
 type StageWorkerHandles = (
     mpsc::Sender<WorkerCommand>,
     mpsc::Receiver<WorkerEvent>,
     thread::JoinHandle<()>,
 );
 
-/// Spawn the dedicated staging thread.
-///
-/// The main loop sends `WorkerCommand::Stage(...)` for every episode that
-/// should be persisted (or `WorkerCommand::Shutdown` on a clean exit) and
-/// receives `WorkerEvent::Staged(...)` so it can publish `EpisodeReady`
-/// without ever calling the synchronous `stage_episode` itself.
 fn spawn_stage_worker(
     config: AssemblerRuntimeConfigV2,
 ) -> Result<StageWorkerHandles, Box<dyn Error>> {
@@ -358,6 +419,10 @@ fn stage_worker_main(
     let _ = evt_tx.send(WorkerEvent::ShutdownComplete);
 }
 
+// ---------------------------------------------------------------------------
+// Top-level run
+// ---------------------------------------------------------------------------
+
 pub fn run(args: RunArgs) -> Result<(), Box<dyn Error>> {
     let config = load_runtime_config(&args)?;
     run_with_config(config)
@@ -375,11 +440,12 @@ fn load_runtime_config(args: &RunArgs) -> Result<AssemblerRuntimeConfigV2, Box<d
 }
 
 pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
-    if config.encoded_handoff != EncodedHandoffMode::File {
-        return Err("rollio-episode-lerobot currently supports encoded_handoff=file only".into());
-    }
     if config.format != EpisodeFormat::LeRobotV2_1 {
-        return Err("rollio-episode-lerobot currently supports format=lerobot-v2.1 only".into());
+        return Err(format!(
+            "rollio-episode-lerobot supports format=lerobot-v2.1 only, got {:?}",
+            config.format
+        )
+        .into());
     }
 
     let node = NodeBuilder::new()
@@ -387,15 +453,11 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         .create::<ipc::Service>()?;
 
     let control_subscriber = create_control_subscriber(&node)?;
-    let video_ready_subscriber = create_video_ready_subscriber(&node)?;
+    let camera_subscribers = create_camera_subscribers(&node, &config)?;
     let episode_ready_publisher = create_episode_ready_publisher(&node)?;
     let observation_subscribers = create_observation_subscribers(&node, &config)?;
     let action_subscribers = create_action_subscribers(&node, &config)?;
 
-    // Phase 6b: stage_episode + raw-dump persistence runs on a dedicated
-    // worker thread. The main loop never blocks on disk I/O, so it can
-    // keep draining the 250 Hz state subscribers as fast as iceoryx2 lets
-    // it.
     let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone())?;
     let mut manager = EpisodeManager::new(config);
 
@@ -405,13 +467,11 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         if drain_control_events(&control_subscriber, &mut manager)? {
             shutdown_requested = true;
         }
-        made_progress |= drain_video_ready(&video_ready_subscriber, &mut manager)?;
+        made_progress |= drain_camera_packets(&camera_subscribers, &mut manager)?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
         made_progress |= manager.dispatch_ready_episodes(&worker_tx)?;
 
-        // Drain any worker-completion events ASAP so EpisodeReady is
-        // published promptly.
         while let Ok(event) = worker_rx.try_recv() {
             match event {
                 WorkerEvent::Staged(staged) => {
@@ -422,17 +482,13 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
                     made_progress = true;
                 }
                 WorkerEvent::Error(message) => {
-                    eprintln!("rollio-episode-lerobot: staging worker error: {}", message);
+                    eprintln!("rollio-episode-lerobot: staging worker error: {message}");
                 }
-                WorkerEvent::ShutdownComplete => {
-                    break 'main_loop;
-                }
+                WorkerEvent::ShutdownComplete => break 'main_loop,
             }
         }
 
         if shutdown_requested && manager.episodes.is_empty() {
-            // No more outstanding work — request worker shutdown and drain
-            // the final ShutdownComplete event before exiting.
             let _ = worker_tx.send(WorkerCommand::Shutdown);
             shutdown_requested = false;
         }
@@ -440,25 +496,20 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         if made_progress {
             continue;
         }
-
-        // 2 ms idle wait keeps the maximum sample-loss window well under
-        // the `STATE_BUFFER` ring depth (~4 s at 250 Hz). With 1024-slot
-        // buffers and a 2 ms wakeup, the assembler tolerates pathological
-        // worker stalls of up to ~4 s before any 250 Hz publisher would
-        // overwrite an unread sample.
         match node.wait(Duration::from_millis(2)) {
             Ok(()) => {}
             Err(NodeWaitFailure::Interrupt | NodeWaitFailure::TerminationRequest) => break,
         }
     }
 
-    // Best-effort worker join. If the worker is still busy at shutdown,
-    // dropping the sender lets it observe the channel close and exit.
     drop(worker_tx);
     let _ = worker_handle.join();
-
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Subscriber factories
+// ---------------------------------------------------------------------------
 
 fn create_control_subscriber(
     node: &Node<ipc::Service>,
@@ -468,27 +519,6 @@ fn create_control_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
-        .open_or_create()?;
-    Ok(service.subscriber_builder().create()?)
-}
-
-fn create_video_ready_subscriber(
-    node: &Node<ipc::Service>,
-) -> Result<iceoryx2::port::subscriber::Subscriber<ipc::Service, VideoReady, ()>, Box<dyn Error>> {
-    let service_name: ServiceName = VIDEO_READY_SERVICE.try_into()?;
-    // Match the encoder's quotas — see the comment in
-    // `encoder::runtime::run`. Either the assembler or one of the encoders
-    // can win the race to create this service, and `open_or_create` rejects
-    // a service whose existing config doesn't satisfy the requested
-    // `max_publishers`. Stating the same caps on both sides means whichever
-    // creates first sets a quota that all encoders + the assembler can
-    // share.
-    let service = node
-        .service_builder(&service_name)
-        .publish_subscribe::<VideoReady>()
-        .max_publishers(16)
-        .max_subscribers(8)
-        .max_nodes(16)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -504,15 +534,51 @@ fn create_episode_ready_publisher(
     Ok(service.publisher_builder().create()?)
 }
 
+fn create_camera_subscribers(
+    node: &Node<ipc::Service>,
+    config: &AssemblerRuntimeConfigV2,
+) -> Result<Vec<CameraSubscriber>, Box<dyn Error>> {
+    let mut subs = Vec::with_capacity(config.cameras.len());
+    for camera in &config.cameras {
+        let config_service_name: ServiceName = camera.recording_config_topic.as_str().try_into()?;
+        let config_service = node
+            .service_builder(&config_service_name)
+            .publish_subscribe::<[u8]>()
+            .user_header::<EncodedPacketHeader>()
+            .history_size(STREAM_CONFIG_HISTORY_SIZE)
+            .subscriber_max_buffer_size(STREAM_CONFIG_HISTORY_SIZE.max(2))
+            .max_publishers(16)
+            .max_subscribers(16)
+            .max_nodes(16)
+            .open_or_create()?;
+        let config_subscriber = config_service.subscriber_builder().create()?;
+
+        let packet_service_name: ServiceName = camera.recording_packet_topic.as_str().try_into()?;
+        let packet_service = node
+            .service_builder(&packet_service_name)
+            .publish_subscribe::<[u8]>()
+            .user_header::<EncodedPacketHeader>()
+            .enable_safe_overflow(false)
+            .subscriber_max_buffer_size(rollio_bus::RECORDING_PACKET_BUFFER)
+            .max_publishers(16)
+            .max_subscribers(16)
+            .max_nodes(16)
+            .open_or_create()?;
+        let packet_subscriber = packet_service.subscriber_builder().create()?;
+
+        subs.push(CameraSubscriber {
+            channel_id: camera.channel_id.clone(),
+            config_subscriber,
+            packet_subscriber,
+        });
+    }
+    Ok(subs)
+}
+
 fn create_observation_subscribers(
     node: &Node<ipc::Service>,
     config: &AssemblerRuntimeConfigV2,
 ) -> Result<Vec<ObservationSubscriber>, Box<dyn Error>> {
-    // The assembler is the consumer side of the loss-point-A fix: every
-    // state subscription is opened with the same `STATE_BUFFER` ring depth
-    // the producers ask for. iceoryx2's `open_or_create` requires both
-    // sides to agree on these caps, so this MUST stay in sync with the
-    // robot drivers' service builders.
     config
         .observations
         .iter()
@@ -649,6 +715,10 @@ fn create_action_subscribers(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Drain helpers
+// ---------------------------------------------------------------------------
+
 fn drain_control_events(
     subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>,
     manager: &mut EpisodeManager,
@@ -663,18 +733,28 @@ fn drain_control_events(
     }
 }
 
-fn drain_video_ready(
-    subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, VideoReady, ()>,
+fn drain_camera_packets(
+    subscribers: &[CameraSubscriber],
     manager: &mut EpisodeManager,
 ) -> Result<bool, Box<dyn Error>> {
     let mut changed = false;
-    loop {
-        let Some(sample) = subscriber.receive()? else {
-            return Ok(changed);
-        };
-        manager.on_video_ready(*sample.payload());
-        changed = true;
+    for cam in subscribers {
+        loop {
+            let Some(sample) = cam.config_subscriber.receive()? else {
+                break;
+            };
+            manager.on_packet(&cam.channel_id, sample.user_header(), sample.payload());
+            changed = true;
+        }
+        loop {
+            let Some(sample) = cam.packet_subscriber.receive()? else {
+                break;
+            };
+            manager.on_packet(&cam.channel_id, sample.user_header(), sample.payload());
+            changed = true;
+        }
     }
+    Ok(changed)
 }
 
 fn drain_observations(
@@ -810,4 +890,11 @@ fn unix_timestamp_us() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64
+}
+
+// Suppress unused-import warning for `HashMap` (kept here for the
+// sequence-buffer growth metrics that will land with the smoke tests).
+#[allow(dead_code)]
+fn _unused_hashmap() -> HashMap<u32, ()> {
+    HashMap::new()
 }

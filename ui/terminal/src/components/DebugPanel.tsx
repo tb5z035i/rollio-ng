@@ -382,7 +382,7 @@ function sourceFpsEstimate(
   streamInfo: StreamInfoMessage | null,
   cameraName: string,
 ): number | null {
-  return cameraInfo(streamInfo, cameraName)?.source_fps_estimate ?? null;
+  return cameraInfo(streamInfo, cameraName)?.received_fps_estimate ?? null;
 }
 
 function publishedFpsEstimate(
@@ -391,7 +391,7 @@ function publishedFpsEstimate(
 ): number | null {
   const info = cameraInfo(streamInfo, cameraName);
   if (!info) return null;
-  return info.published_fps_estimate ?? previewConfigTarget(streamInfo);
+  return info.received_fps_estimate ?? null;
 }
 
 function publishedFpsTarget(
@@ -401,23 +401,18 @@ function publishedFpsTarget(
   return publishedFpsEstimate(streamInfo, cameraName);
 }
 
-function previewConfigTarget(streamInfo: StreamInfoMessage | null): number | null {
-  if (!streamInfo) return null;
-  return streamInfo.configured_preview_fps > 0
-    ? streamInfo.configured_preview_fps
-    : null;
+function previewConfigTarget(_streamInfo: StreamInfoMessage | null): number | null {
+  // No `configured_preview_fps` in the new bridge schema; the preview
+  // throttle is now an encoder-side knob and the stream_info doesn't
+  // surface it. Returning null disables the "(target N fps)" hint.
+  return null;
 }
 
 function formatPreviewConfig(streamInfo: StreamInfoMessage | null): string {
   if (!streamInfo) return "n/a";
-  const preview = streamInfo.configured_preview_fps > 0
-    ? `${streamInfo.configured_preview_fps}fps`
-    : "unthrottled";
   return (
-    `${preview} | cfg=${streamInfo.max_preview_width}x${streamInfo.max_preview_height}` +
-    ` | active=${streamInfo.active_preview_width}x${streamInfo.active_preview_height}` +
-    ` | q=${streamInfo.jpeg_quality}` +
-    ` | workers=${streamInfo.preview_workers}`
+    `mode=${streamInfo.preview_output_mode}` +
+    ` | active=${streamInfo.active_preview_width}x${streamInfo.active_preview_height}`
   );
 }
 

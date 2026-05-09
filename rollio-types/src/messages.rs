@@ -419,6 +419,160 @@ impl Default for ParallelMitCommand2 {
 }
 
 // ---------------------------------------------------------------------------
+// EncodedPacketHeader — user header for the recording- and preview-packet
+// services. Carries every packet's metadata in a fixed-size, ZeroCopySend
+// header so the iceoryx2 payload (`[u8]`) can stay byte-for-byte equal to
+// the codec's elementary access unit.
+// ---------------------------------------------------------------------------
+
+/// Discriminates the three message shapes carried over a packet topic:
+/// codec stream configuration (carries extradata/SPS/PPS), encoded access
+/// unit, and end-of-stream sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[type_name("EncodedPacketKind")]
+#[repr(C)]
+pub enum EncodedPacketKind {
+    /// Codec configuration / extradata. Sent once at session-open and
+    /// retained on the per-camera `…/recording-config` /
+    /// `…/preview-config` topic with `history_size = 1` so late
+    /// subscribers can replay it.
+    Config = 0,
+    /// One encoded access unit (NALU sequence in Annex B for H.264/H.265,
+    /// temporal unit / OBU for AV1, single JPEG for MJPG, single RVL
+    /// frame for RVL).
+    Packet = 1,
+    /// Marks the end of a recording session for the assembler. The
+    /// payload is empty.
+    EndOfStream = 2,
+}
+
+/// Codec carried in `EncodedPacketHeader.codec`. Mirrors
+/// `rollio_types::config::EncoderCodec` but is `#[repr(C)]` for
+/// shared-memory transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[type_name("EncodedCodecId")]
+#[repr(C)]
+pub enum EncodedCodecId {
+    H264 = 0,
+    H265 = 1,
+    Av1 = 2,
+    Rvl = 3,
+    Mjpg = 4,
+}
+
+/// Bit set in `EncodedPacketHeader.flags` when the packet is a keyframe
+/// (independently decodable). Subscribers use this to recover after a
+/// best-effort drop on the preview path.
+pub const ENCODED_PACKET_FLAG_KEYFRAME: u32 = 1 << 0;
+
+/// Bit set in `EncodedPacketHeader.flags` when the packet has codec
+/// configuration / extradata inlined ahead of the access unit (in
+/// addition to the once-per-session `Config` message). H.264/H.265 NVENC
+/// and some VAAPI builds repeat SPS/PPS at every keyframe; the flag lets
+/// the assembler/visualizer know it can skip caching the duplicate.
+pub const ENCODED_PACKET_FLAG_CONFIG_INLINE: u32 = 1 << 1;
+
+/// Metadata for one encoded packet. Used as a user header on an iceoryx2
+/// `publish_subscribe::<[u8]>()` service so the encoded access unit
+/// stays zero-copy. The same header type is used for recording and
+/// preview topics; the topic name (`…/recording-*` vs `…/preview-*`)
+/// distinguishes them.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("EncodedPacketHeader")]
+#[repr(C)]
+pub struct EncodedPacketHeader {
+    pub kind: EncodedPacketKind,
+    pub codec: EncodedCodecId,
+    /// Bitwise-OR of `ENCODED_PACKET_FLAG_*` constants.
+    pub flags: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: PixelFormat,
+    /// Reserved for future flag/tag fields; keeps the struct
+    /// 8-byte-aligned regardless of how the compiler lays out the
+    /// preceding `#[repr(C)]` enums on the host platform.
+    pub _reserved0: u32,
+    pub time_base_num: u32,
+    pub time_base_den: u32,
+    pub pts_us: i64,
+    pub dts_us: i64,
+    pub duration_us: i64,
+    pub sequence_number: u64,
+    pub source_timestamp_us: u64,
+    pub source_frame_index: u64,
+    pub episode_index: u32,
+    pub payload_len: u32,
+}
+
+impl Default for EncodedPacketHeader {
+    fn default() -> Self {
+        Self {
+            kind: EncodedPacketKind::Packet,
+            codec: EncodedCodecId::H264,
+            flags: 0,
+            width: 0,
+            height: 0,
+            pixel_format: PixelFormat::Rgb24,
+            _reserved0: 0,
+            time_base_num: 1,
+            time_base_den: 1_000_000,
+            pts_us: 0,
+            dts_us: 0,
+            duration_us: 0,
+            sequence_number: 0,
+            source_timestamp_us: 0,
+            source_frame_index: 0,
+            episode_index: 0,
+            payload_len: 0,
+        }
+    }
+}
+
+impl EncodedPacketHeader {
+    pub fn is_keyframe(&self) -> bool {
+        self.flags & ENCODED_PACKET_FLAG_KEYFRAME != 0
+    }
+
+    pub fn has_inline_config(&self) -> bool {
+        self.flags & ENCODED_PACKET_FLAG_CONFIG_INLINE != 0
+    }
+
+    pub fn set_keyframe(&mut self, value: bool) {
+        if value {
+            self.flags |= ENCODED_PACKET_FLAG_KEYFRAME;
+        } else {
+            self.flags &= !ENCODED_PACKET_FLAG_KEYFRAME;
+        }
+    }
+
+    pub fn set_inline_config(&mut self, value: bool) {
+        if value {
+            self.flags |= ENCODED_PACKET_FLAG_CONFIG_INLINE;
+        } else {
+            self.flags &= !ENCODED_PACKET_FLAG_CONFIG_INLINE;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PreviewControl — UI -> preview encoder runtime control
+// ---------------------------------------------------------------------------
+
+/// Control message published by the visualizer to a preview encoder when
+/// the operator changes the preview raster size. The encoder finalizes
+/// the current session, rebuilds the codec session at the new dims, and
+/// emits a fresh `Config` + keyframe so subscribers can re-init their
+/// decoders without losing more than a few frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[type_name("PreviewControl")]
+#[repr(C)]
+pub enum PreviewControl {
+    SetSize { width: u32, height: u32 },
+}
+
+// ---------------------------------------------------------------------------
 // CameraFrameHeader — user header for publish_subscribe::<[u8]>()
 // ---------------------------------------------------------------------------
 
@@ -714,20 +868,6 @@ pub struct WarningEvent {
     pub metric_name: FixedString64,
     pub current_value: f64,
     pub explanation: FixedString256,
-}
-
-// ---------------------------------------------------------------------------
-// VideoReady
-// ---------------------------------------------------------------------------
-
-/// Published by an Encoder after it flushes and closes a video file.
-#[derive(Debug, Clone, Copy, ZeroCopySend)]
-#[type_name("VideoReady")]
-#[repr(C)]
-pub struct VideoReady {
-    pub process_id: FixedString64,
-    pub episode_index: u32,
-    pub file_path: FixedString256,
 }
 
 // ---------------------------------------------------------------------------

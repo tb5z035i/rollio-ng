@@ -400,7 +400,7 @@ export function usePreviewSocket(
         streamInfoRef.current = msg;
         dirtyRef.current = true;
         setGauge("ws.stream_info_status", "Ready");
-        setGauge("ws.preview_fps_config", msg.configured_preview_fps);
+        setGauge("ws.preview_output_mode", msg.preview_output_mode);
         setGauge(
           "ws.active_preview_size",
           `${msg.active_preview_width}x${msg.active_preview_height}`,

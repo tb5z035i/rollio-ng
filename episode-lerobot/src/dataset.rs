@@ -1,22 +1,19 @@
 //! Shared LeRobot episode staging data structures and the top-level
 //! `stage_episode` orchestrator.
 //!
-//! The two output flavours — the LeRobot v2.1 row-aligned view and the
-//! per-channel raw Parquet dump — are owned by their dedicated sibling
-//! modules:
-//!
-//! * `crate::lerobot` materialises the canonical row table (lossy; LeRobot
-//!   convention).
-//! * `crate::raw` writes the full high-frequency samples losslessly.
-//!
-//! `stage_episode` invokes both and moves any encoder-produced video files
-//! into the staging directory tree. Storage's `merge_tree_if_present`
-//! recursion picks up `data/`, `videos/`, and `raw/` together when the
-//! episode is finalised.
+//! This module no longer assumes the encoder produced finished video
+//! files: every per-camera video is muxed in-process from the
+//! recording packet stream gathered by [`crate::runtime`]. Storage's
+//! `merge_tree_if_present` recursion picks up `data/`, `videos/`,
+//! `raw/`, and `meta/` together when the episode is finalised.
 
 use crate::lerobot;
+use crate::muxer;
+use crate::packets::RecordingStreamBuffer;
 use crate::raw;
-use rollio_types::config::{AssemblerRuntimeConfigV2, RobotCommandKind, RobotStateKind};
+use rollio_types::config::{
+    container_for, AssemblerRuntimeConfigV2, RobotCommandKind, RobotStateKind,
+};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
@@ -41,7 +38,11 @@ pub(crate) struct EpisodeAssemblyInput {
     pub stop_time_us: u64,
     pub observation_samples: BTreeMap<String, Vec<ObservationSample>>,
     pub action_samples: BTreeMap<String, Vec<ActionSample>>,
-    pub video_paths: BTreeMap<String, PathBuf>,
+    /// Per-channel packet stream gathered by the assembler runtime.
+    /// Each buffer must have its `Config` set, all packets in
+    /// strictly-monotonic order, and `eos_received = true`. The muxer
+    /// rejects buffers that don't satisfy those invariants.
+    pub camera_streams: BTreeMap<String, RecordingStreamBuffer>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,28 +67,32 @@ pub(crate) fn stage_episode(
         lerobot::staged_parquet_path(&staging_dir, episode.episode_index, config.chunk_size);
     let frame_count = lerobot::write_episode_parquet(&parquet_path, config, episode)?;
 
-    // 2. Move encoder-produced VFR videos into `videos/...`.
+    // 2. Mux per-camera packets into the staged video container.
     for camera in &config.cameras {
-        let source = episode
-            .video_paths
+        let stream = episode
+            .camera_streams
             .get(&camera.channel_id)
-            .ok_or_else(|| format!("missing video for camera {}", camera.channel_id))?;
-        let extension = source
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| camera.artifact_format.extension().to_string());
-        let target = lerobot::staged_video_path(
-            &staging_dir,
+            .ok_or_else(|| {
+                format!(
+                    "stage_episode: missing recording stream for camera {}",
+                    camera.channel_id
+                )
+            })?;
+        if !stream.is_complete() {
+            return Err(format!(
+                "stage_episode: camera {} stream incomplete (failed={:?}, eos={})",
+                camera.channel_id, stream.failed, stream.eos_received,
+            )
+            .into());
+        }
+        let extension = container_for(camera.codec).extension();
+        let relative = lerobot::staged_video_relative_path(
             episode.episode_index,
             config.chunk_size,
             &camera.channel_id,
-            &extension,
+            extension,
         );
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        move_or_copy_file(source, &target)?;
+        muxer::mux_camera_stream(&staging_dir, &relative, stream)?;
     }
 
     // 3. Per-channel raw Parquet (lossless; complete bus history).
@@ -115,19 +120,13 @@ pub(crate) fn sanitize_component(value: &str) -> String {
     value.replace('/', "__")
 }
 
-fn move_or_copy_file(source: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
-    match fs::rename(source, target) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            fs::copy(source, target)?;
-            fs::remove_file(source)?;
-            Ok(())
-        }
-    }
-}
-
-pub(crate) fn remove_episode_artifacts(episode: &EpisodeAssemblyInput) {
-    for path in episode.video_paths.values() {
-        let _ = fs::remove_file(path);
+/// Best-effort cleanup of any partially-written staging dir for an
+/// episode that the assembler has decided to drop. Returns no errors:
+/// callers use this on the failure / discard path so leftover bytes
+/// don't pollute the staging tree.
+pub(crate) fn remove_episode_artifacts(staging_root: &str, episode_index: u32) {
+    let dir = Path::new(staging_root).join(format!("episode_{episode_index:06}"));
+    if dir.exists() {
+        let _ = fs::remove_dir_all(dir);
     }
 }

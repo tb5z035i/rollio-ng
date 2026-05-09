@@ -37,6 +37,7 @@ impl RuntimePreviewConfig {
         }
     }
 
+    #[cfg(test)]
     pub fn current_size(&self) -> PreviewSize {
         PreviewSize {
             width: self.active_width.load(Ordering::Relaxed),

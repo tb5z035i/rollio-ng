@@ -11,12 +11,12 @@ export function DebugPanel({ snapshot, streamInfo }: DebugPanelProps) {
   const lines = [
     `Layout: ${gaugeValue(snapshot, "ui.layout")} | Cameras: ${gaugeValue(snapshot, "ui.camera_count")} | Robots: ${gaugeValue(snapshot, "ui.robot_count")}`,
     `WS: ${gaugeValue(snapshot, "ws.connected")} | Stream info: ${gaugeValue(snapshot, "ws.stream_info_status")} | Episode: ${gaugeValue(snapshot, "ws.episode_status")}`,
-    `Preview target: ${gaugeValue(snapshot, "ui.preview_target")} | Active: ${gaugeValue(snapshot, "ui.preview_active")} | Active WS: ${gaugeValue(snapshot, "ws.active_preview_size")}`,
+    `Preview path: ${formatPreviewPath(streamInfo)} | target: ${gaugeValue(snapshot, "ui.preview_target")} | Active: ${gaugeValue(snapshot, "ui.preview_active")} | Active WS: ${gaugeValue(snapshot, "ws.active_preview_size")}`,
     `Frames: rx=${gaugeValue(snapshot, "ws.frames_received_total")} | robots=${gaugeValue(snapshot, "ws.robot_messages_total")} | flush=${formatTiming(snapshot, "ws.flush")}`,
     `Receive latency: ${formatTiming(snapshot, "ws.frame_latency.receive")} | Parse: bin=${formatTiming(snapshot, "ws.parse.binary")} json=${formatTiming(snapshot, "ws.parse.json")}`,
     `App render: ${formatTiming(snapshot, "app.render")} | Camera commit: ${formatTiming(snapshot, "ui.camera_commit")}`,
-    formatPerCameraLine("Source fps", cameraNames, (cameraName) =>
-      streamInfo?.cameras?.find((camera) => camera.name === cameraName)?.source_fps_estimate,
+    formatPerCameraLine("Received fps", cameraNames, (cameraName) =>
+      streamInfo?.cameras?.find((camera) => camera.name === cameraName)?.received_fps_estimate,
     ),
     formatPerCameraLine("Bytes", cameraNames, (cameraName) =>
       numericGaugeValue(snapshot, `ws.jpeg_bytes.${cameraName}`, Number.NaN),
@@ -100,6 +100,24 @@ function formatNumber(value: number | null | undefined): string {
   return numericValue >= 10
     ? numericValue.toFixed(1)
     : numericValue.toFixed(2);
+}
+
+/// Map the visualizer's `preview_output_mode` to the operator-facing
+/// codec label that drives this preview path. JPEG mode is bytes from
+/// the encoder's `JpegCompressor`; encoded mode is H.264 access units
+/// for color cameras (depth uses RVL but is not surfaced here).
+function formatPreviewPath(streamInfo: StreamInfoMessage | null): string {
+  if (!streamInfo) {
+    return "n/a";
+  }
+  switch (streamInfo.preview_output_mode) {
+    case "jpeg":
+      return "JPEG";
+    case "encoded":
+      return "H264";
+    default:
+      return "n/a";
+  }
 }
 
 function getCameraNames(

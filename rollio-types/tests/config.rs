@@ -42,9 +42,23 @@ fn parse_example_project_config() {
     );
 
     let encoder_configs = config.encoder_runtime_configs_v2();
-    assert_eq!(encoder_configs.len(), 2);
-    assert_eq!(encoder_configs[0].channel_id, "camera_top/color");
-    assert_eq!(encoder_configs[0].frame_topic, "camera_top/color/frames");
+    // Each preview-enabled camera produces both a recording-role and
+    // a preview-role encoder runtime; 2 cameras * 2 roles = 4 configs.
+    assert_eq!(encoder_configs.len(), 4);
+    let recording = encoder_configs
+        .iter()
+        .filter(|cfg| cfg.role == EncoderRole::Recording)
+        .collect::<Vec<_>>();
+    let preview = encoder_configs
+        .iter()
+        .filter(|cfg| cfg.role == EncoderRole::Preview)
+        .collect::<Vec<_>>();
+    assert_eq!(recording.len(), 2);
+    assert_eq!(preview.len(), 2);
+    assert_eq!(recording[0].channel_id, "camera_top/color");
+    assert_eq!(recording[0].frame_topic, "camera_top/color/frames");
+    assert!(recording[0].recording.is_some());
+    assert!(preview[0].preview.is_some());
 
     let teleop_configs = config.teleop_runtime_configs_v2();
     assert_eq!(teleop_configs.len(), 1);
@@ -171,18 +185,26 @@ port = 19090
 "#;
     let config = ProjectConfig::from_str(toml_text).expect("config should parse");
     let encoders = config.encoder_runtime_configs_v2();
-    let color = encoders
+    let color_recording = encoders
         .iter()
-        .find(|cfg| cfg.channel_id == "rs/color")
-        .expect("color encoder runtime should be derived");
-    assert_eq!(color.codec, EncoderCodec::Av1);
-    assert_eq!(color.backend, EncoderBackend::Nvidia);
-    let depth = encoders
+        .find(|cfg| cfg.channel_id == "rs/color" && cfg.role == EncoderRole::Recording)
+        .expect("color recording encoder runtime should be derived");
+    let color_rec = color_recording
+        .recording
+        .as_ref()
+        .expect("recording role implies recording block");
+    assert_eq!(color_rec.codec, EncoderCodec::Av1);
+    assert_eq!(color_rec.backend, EncoderBackend::Nvidia);
+    let depth_recording = encoders
         .iter()
-        .find(|cfg| cfg.channel_id == "rs/depth")
-        .expect("depth encoder runtime should be derived");
-    assert_eq!(depth.codec, EncoderCodec::Rvl);
-    assert_eq!(depth.backend, EncoderBackend::Cpu);
+        .find(|cfg| cfg.channel_id == "rs/depth" && cfg.role == EncoderRole::Recording)
+        .expect("depth recording encoder runtime should be derived");
+    let depth_rec = depth_recording
+        .recording
+        .as_ref()
+        .expect("recording role implies recording block");
+    assert_eq!(depth_rec.codec, EncoderCodec::Rvl);
+    assert_eq!(depth_rec.backend, EncoderBackend::Cpu);
 }
 
 /// Validation must catch an attempt to pair RVL with a GPU backend so the
@@ -236,10 +258,8 @@ fn visualizer_runtime_config_v2_derives_sources_from_enabled_channels() {
     let visualizer = config.visualizer_runtime_config_v2();
     assert_eq!(visualizer.camera_sources.len(), 2);
     assert_eq!(visualizer.robot_sources.len(), 8);
-    assert_eq!(
-        visualizer.camera_sources[0].preview_topic,
-        "camera_top/color/preview"
-    );
+    assert_eq!(visualizer.camera_sources[0].bus_root, "camera_top");
+    assert_eq!(visualizer.camera_sources[0].channel_type, "color");
 }
 
 /// `MAX_PREVIEW_CAMERAS` only constrains the per-row tile count in the
@@ -321,9 +341,17 @@ port = 19090
 "#;
     let config = ProjectConfig::from_str(toml_text).expect("config should parse");
     // Sanity check: every camera is still in the encoder pipeline so they
-    // all get recorded — the cap only affects the preview tiles.
+    // all get recorded — the cap only affects the preview tiles. With
+    // the role split, each preview-enabled camera produces both a
+    // recording- and a preview-role encoder runtime, so 5 cameras *
+    // 2 roles = 10 configs.
     let encoders = config.encoder_runtime_configs_v2();
-    assert_eq!(encoders.len(), 5, "every camera should still be recorded");
+    let recording = encoders
+        .iter()
+        .filter(|cfg| cfg.role == EncoderRole::Recording)
+        .count();
+    assert_eq!(recording, 5, "every camera should still be recorded");
+    assert_eq!(encoders.len(), 10);
 
     let visualizer = config.visualizer_runtime_config_v2();
     assert_eq!(

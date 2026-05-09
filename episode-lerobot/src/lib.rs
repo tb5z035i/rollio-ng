@@ -1,5 +1,7 @@
 pub mod dataset;
 pub mod lerobot;
+pub mod muxer;
+pub mod packets;
 pub mod raw;
 pub mod runtime;
 

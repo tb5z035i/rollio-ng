@@ -1015,8 +1015,8 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
   const bitDepth = setupState.config.encoder.bit_depth ?? 8;
   const colorSpace = setupState.config.encoder.color_space ?? "auto";
   const chroma = setupState.config.encoder.chroma_subsampling;
-  const jpegQ = setupState.config.visualizer?.jpeg_quality ?? 30;
-  const previewFps = setupState.config.visualizer?.preview_fps ?? 60;
+  const jpegQ = setupState.config.encoder.preview?.jpeg_quality ?? 30;
+  const previewFps = setupState.config.encoder.preview?.fps ?? 15;
 
   return [
     {
@@ -1072,7 +1072,7 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
     },
     {
       id: "jpeg_quality",
-      groupSubtitle: "Visualizer / preview pipeline",
+      groupSubtitle: "Preview encoder",
       label: "JPEG quality",
       value: String(jpegQ),
       kind: "text",

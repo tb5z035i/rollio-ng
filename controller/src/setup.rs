@@ -1841,10 +1841,10 @@ impl SetupSession {
             ));
             return Ok(false);
         }
-        if self.config.visualizer.jpeg_quality == quality {
+        if self.config.encoder.preview.jpeg_quality == quality {
             return Ok(false);
         }
-        self.config.visualizer.jpeg_quality = quality;
+        self.config.encoder.preview.jpeg_quality = quality;
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1864,14 +1864,14 @@ impl SetupSession {
                 return Ok(false);
             }
         };
-        if fps > 1000 {
-            self.message = Some(format!("Preview fps must be <= 1000, got {fps}."));
+        if !(1..=1000).contains(&fps) {
+            self.message = Some(format!("Preview fps must be 1..1000, got {fps}."));
             return Ok(false);
         }
-        if self.config.visualizer.preview_fps == fps {
+        if self.config.encoder.preview.fps == fps {
             return Ok(false);
         }
-        self.config.visualizer.preview_fps = fps;
+        self.config.encoder.preview.fps = fps;
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -3076,6 +3076,7 @@ fn build_channel_config_from_meta(
                 recorded_states: Vec::new(),
                 control_frequency_hz: None,
                 profile,
+                preview_enabled: true,
                 command_defaults: meta.defaults.clone(),
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
@@ -3100,6 +3101,7 @@ fn build_channel_config_from_meta(
                 recorded_states,
                 control_frequency_hz: meta.default_control_frequency_hz,
                 profile: None,
+                preview_enabled: true,
                 command_defaults: meta.defaults.clone(),
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),

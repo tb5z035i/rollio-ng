@@ -191,7 +191,7 @@ mod tests {
     use arrow_array::cast::AsArray;
     use arrow_array::Array;
     use rollio_types::config::{
-        AssemblerObservationRuntimeConfigV2, EncodedHandoffMode, EpisodeFormat, RobotStateKind,
+        AssemblerObservationRuntimeConfigV2, EpisodeFormat, RobotStateKind,
     };
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -212,9 +212,8 @@ mod tests {
             format: EpisodeFormat::LeRobotV2_1,
             fps: 30,
             chunk_size: 1000,
-            missing_video_timeout_ms: 5000,
+            missing_eos_timeout_ms: 5000,
             staging_dir: "/tmp/rollio-raw-test".into(),
-            encoded_handoff: EncodedHandoffMode::default(),
             cameras: Vec::new(),
             observations: vec![AssemblerObservationRuntimeConfigV2 {
                 channel_id: "robot_a/arm".into(),
@@ -257,7 +256,7 @@ mod tests {
             stop_time_us: 1_010_000,
             observation_samples,
             action_samples: BTreeMap::new(),
-            video_paths: BTreeMap::new(),
+            camera_streams: BTreeMap::new(),
         };
 
         let raw_dir =

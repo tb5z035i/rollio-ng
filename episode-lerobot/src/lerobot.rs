@@ -343,7 +343,11 @@ pub(crate) struct FeatureSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VideoInfo {
     pub codec: String,
-    pub artifact_format: String,
+    /// File extension produced by the assembler-side muxer for this
+    /// camera (e.g. `mp4`, `mkv`, `rvl`). Replaces the legacy
+    /// `artifact_format` field that lived on `EncoderConfig` before
+    /// the encoder->packet refactor.
+    pub container: String,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -418,7 +422,7 @@ fn build_dataset_info(
             chunk_index(episode.episode_index, config.chunk_size),
             sanitize_component(&camera.channel_id),
             episode.episode_index,
-            camera.artifact_format.extension()
+            camera.container().extension()
         )
     });
     let raw_path = if config.observations.is_empty() && config.actions.is_empty() {
@@ -519,7 +523,7 @@ fn build_feature_map(config: &AssemblerRuntimeConfigV2) -> BTreeMap<String, Feat
                 names: None,
                 video_info: Some(VideoInfo {
                     codec: camera.codec.as_str().into(),
-                    artifact_format: camera.artifact_format.extension().into(),
+                    container: camera.container().extension().into(),
                     width: camera.width,
                     height: camera.height,
                     fps: camera.fps,
@@ -591,14 +595,16 @@ pub(crate) fn staged_parquet_path(
     ))
 }
 
-pub(crate) fn staged_video_path(
-    staging_dir: &Path,
+/// Path of the per-camera video container relative to the episode
+/// staging directory. Used by `dataset::stage_episode` to drive the
+/// muxer; the staging directory itself is created by `mux_camera_stream`.
+pub(crate) fn staged_video_relative_path(
     episode_index: u32,
     chunk_size: u32,
     channel_id: &str,
     extension: &str,
 ) -> PathBuf {
-    staging_dir.join(format!(
+    PathBuf::from(format!(
         "videos/chunk-{}/{}/episode_{:06}.{}",
         chunk_index(episode_index, chunk_size),
         sanitize_component(channel_id),
@@ -614,9 +620,7 @@ fn chunk_index(episode_index: u32, chunk_size: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rollio_types::config::{
-        AssemblerObservationRuntimeConfigV2, EncodedHandoffMode, EpisodeFormat,
-    };
+    use rollio_types::config::{AssemblerObservationRuntimeConfigV2, EpisodeFormat};
 
     fn config_with_one_observation() -> AssemblerRuntimeConfigV2 {
         AssemblerRuntimeConfigV2 {
@@ -624,9 +628,8 @@ mod tests {
             format: EpisodeFormat::LeRobotV2_1,
             fps: 30,
             chunk_size: 1000,
-            missing_video_timeout_ms: 5000,
+            missing_eos_timeout_ms: 5000,
             staging_dir: "/tmp/rollio-lerobot-test".into(),
-            encoded_handoff: EncodedHandoffMode::default(),
             cameras: Vec::new(),
             observations: vec![AssemblerObservationRuntimeConfigV2 {
                 channel_id: "robot_a/arm".into(),
@@ -677,7 +680,7 @@ mod tests {
             stop_time_us: 1_000_000 + 1_000_000,
             observation_samples,
             action_samples: BTreeMap::new(),
-            video_paths: BTreeMap::new(),
+            camera_streams: BTreeMap::new(),
         };
 
         let rows = build_episode_rows(&config, &episode);

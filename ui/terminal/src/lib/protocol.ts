@@ -68,23 +68,21 @@ export interface StreamInfoCamera {
   name: string;
   source_width: number | null;
   source_height: number | null;
-  latest_timestamp_ns: number | null;
+  latest_timestamp_ms: number | null;
   latest_frame_index: number | null;
-  source_fps_estimate: number | null;
-  published_fps_estimate: number | null;
-  last_published_timestamp_ns: number | null;
+  received_fps_estimate: number | null;
+  bytes_per_sec: number | null;
+  keyframe_age_ms: number | null;
 }
 
 export interface StreamInfoMessage {
   type: "stream_info";
-  server_timestamp_ns: number;
-  configured_preview_fps: number;
-  max_preview_width: number;
-  max_preview_height: number;
+  server_timestamp_ms: number;
+  /** Visualizer's preview output mode. Terminal UI only renders
+   *  the JPEG path; encoded mode shows a placeholder error. */
+  preview_output_mode: "jpeg" | "encoded";
   active_preview_width: number;
   active_preview_height: number;
-  preview_workers: number;
-  jpeg_quality: number;
   cameras: StreamInfoCamera[];
   robots: string[];
 }
@@ -209,14 +207,18 @@ export interface SetupConfigSnapshot {
   /** Native project layout: one binary per row with nested channels. */
   devices: SetupBinaryDeviceConfig[];
   pairings: SetupChannelPairing[];
-  /** Present on current controllers; may be missing on very old `setup_state` payloads. */
-  visualizer?: {
-    jpeg_quality: number;
-    preview_fps: number;
-  };
   encoder: {
     video_codec: EncoderCodec;
     depth_codec: EncoderCodec;
+    /** Present on current controllers; preview production knobs moved
+     *  here from `[visualizer]`. */
+    preview?: {
+      output_mode?: "jpeg" | "encoded";
+      width?: number;
+      height?: number;
+      fps?: number;
+      jpeg_quality?: number;
+    };
     /** Legacy global backend hint (kept for backwards compatibility). The
      *  wizard now drives the per-codec backend via `video_backend` and
      *  `depth_backend`; this field is the shared default the controller

@@ -311,20 +311,67 @@ fn warning_event_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// VideoReady
+// EncodedPacketHeader / PreviewControl
 // ---------------------------------------------------------------------------
 
 #[test]
-fn video_ready_roundtrip() {
-    let v = VideoReady {
-        process_id: FixedString64::new("encoder.cam0"),
-        episode_index: 5,
-        file_path: FixedString256::new("/tmp/ep_005.mp4"),
+fn encoded_packet_header_round_trip_carries_codec_metadata() {
+    let mut h = EncodedPacketHeader {
+        kind: EncodedPacketKind::Packet,
+        codec: EncodedCodecId::H264,
+        flags: 0,
+        width: 1920,
+        height: 1080,
+        pixel_format: PixelFormat::Yuyv,
+        _reserved0: 0,
+        time_base_num: 1,
+        time_base_den: 1_000_000,
+        pts_us: 16_666,
+        dts_us: 16_666,
+        duration_us: 33_333,
+        sequence_number: 7,
+        source_timestamp_us: 1_700_000_000_000,
+        source_frame_index: 12,
+        episode_index: 3,
+        payload_len: 4096,
     };
-    let v2 = unsafe { roundtrip(&v) };
-    assert_eq!(v2.process_id.as_str(), "encoder.cam0");
-    assert_eq!(v2.episode_index, 5);
-    assert_eq!(v2.file_path.as_str(), "/tmp/ep_005.mp4");
+    h.set_keyframe(true);
+    h.set_inline_config(true);
+
+    let h2 = unsafe { roundtrip(&h) };
+    assert_eq!(h2.kind, EncodedPacketKind::Packet);
+    assert_eq!(h2.codec, EncodedCodecId::H264);
+    assert_eq!(h2.width, 1920);
+    assert_eq!(h2.height, 1080);
+    assert_eq!(h2.sequence_number, 7);
+    assert_eq!(h2.episode_index, 3);
+    assert_eq!(h2.payload_len, 4096);
+    assert!(h2.is_keyframe());
+    assert!(h2.has_inline_config());
+}
+
+#[test]
+fn encoded_packet_header_default_is_packet_kind() {
+    let h = EncodedPacketHeader::default();
+    assert_eq!(h.kind, EncodedPacketKind::Packet);
+    assert_eq!(h.sequence_number, 0);
+    assert!(!h.is_keyframe());
+    assert!(!h.has_inline_config());
+}
+
+#[test]
+fn preview_control_set_size_round_trip() {
+    let c = PreviewControl::SetSize {
+        width: 640,
+        height: 360,
+    };
+    let c2 = unsafe { roundtrip(&c) };
+    match c2 {
+        PreviewControl::SetSize { width, height } => {
+            assert_eq!(width, 640);
+            assert_eq!(height, 360);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,6 @@
 const FRAME_TYPE_JPEG = 0x01;
+const FRAME_TYPE_ENCODED_CONFIG = 0x02;
+const FRAME_TYPE_ENCODED_PACKET = 0x03;
 const textDecoder = new TextDecoder("utf-8");
 
 export type EndEffectorStatus = "unknown" | "disabled" | "enabled";
@@ -32,6 +34,37 @@ export interface CameraFrameMessage {
   jpegData: Uint8Array;
 }
 
+/** Codec config message (encoded preview mode, kind 0x02). The
+ *  `description` is the AVCC bytes the visualizer already converted
+ *  from Annex B SPS/PPS so the web UI can hand it to WebCodecs
+ *  verbatim. */
+export interface EncodedConfigMessage {
+  type: "encoded_config";
+  name: string;
+  codecId: number; // matches EncodedCodecId discriminant
+  width: number;
+  height: number;
+  description: Uint8Array;
+}
+
+/** One encoded preview packet (kind 0x03). Payload is the
+ *  codec-specific access unit (Annex B AU for H.264, RVL frame for
+ *  RVL, etc.). */
+export interface EncodedPacketMessage {
+  type: "encoded_packet";
+  name: string;
+  codecId: number;
+  isKeyframe: boolean;
+  ptsUs: number;
+  sequence: number;
+  payload: Uint8Array;
+}
+
+export type BinaryWsMessage =
+  | CameraFrameMessage
+  | EncodedConfigMessage
+  | EncodedPacketMessage;
+
 /**
  * Single-state-kind sample emitted by the visualizer. The UI aggregates
  * messages with the same `name` into one channel block keyed on
@@ -63,21 +96,18 @@ export interface StreamInfoCamera {
   source_height: number | null;
   latest_timestamp_ms: number | null;
   latest_frame_index: number | null;
-  source_fps_estimate: number | null;
-  published_fps_estimate: number | null;
-  last_published_timestamp_ms: number | null;
+  received_fps_estimate: number | null;
+  bytes_per_sec: number | null;
+  keyframe_age_ms: number | null;
 }
 
 export interface StreamInfoMessage {
   type: "stream_info";
   server_timestamp_ms: number;
-  configured_preview_fps: number;
-  max_preview_width: number;
-  max_preview_height: number;
+  /** Visualizer's preview output mode. */
+  preview_output_mode: "jpeg" | "encoded";
   active_preview_width: number;
   active_preview_height: number;
-  preview_workers: number;
-  jpeg_quality: number;
   cameras: StreamInfoCamera[];
   robots: string[];
 }
@@ -104,42 +134,79 @@ export interface CommandMessage {
   height?: number;
 }
 
-export function parseBinaryMessage(
-  data: ArrayBuffer,
-): CameraFrameMessage | null {
+export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
   if (data.byteLength < 3) {
     return null;
   }
-
   const view = new DataView(data);
   const typeTag = view.getUint8(0);
-  if (typeTag !== FRAME_TYPE_JPEG) {
-    return null;
-  }
-
   const nameLen = view.getUint16(1, true);
-  const headerStart = 3 + nameLen;
-  const headerEnd = headerStart + 8 + 8 + 4 + 4;
-  if (data.byteLength < headerEnd) {
+  if (data.byteLength < 3 + nameLen) {
     return null;
   }
-
   const name = textDecoder.decode(new Uint8Array(data, 3, nameLen));
-  const timestampNs = Number(view.getBigUint64(headerStart, true));
-  const frameIndex = Number(view.getBigUint64(headerStart + 8, true));
-  const width = view.getUint32(headerStart + 16, true);
-  const height = view.getUint32(headerStart + 20, true);
-  const jpegData = new Uint8Array(data.slice(headerEnd));
+  const bodyStart = 3 + nameLen;
 
-  return {
-    type: "camera_frame",
-    name,
-    timestampNs,
-    frameIndex,
-    previewWidth: width,
-    previewHeight: height,
-    jpegData,
-  };
+  switch (typeTag) {
+    case FRAME_TYPE_JPEG: {
+      const headerEnd = bodyStart + 8 + 8 + 4 + 4;
+      if (data.byteLength < headerEnd) return null;
+      const timestampNs = Number(view.getBigUint64(bodyStart, true));
+      const frameIndex = Number(view.getBigUint64(bodyStart + 8, true));
+      const width = view.getUint32(bodyStart + 16, true);
+      const height = view.getUint32(bodyStart + 20, true);
+      const jpegData = new Uint8Array(data.slice(headerEnd));
+      return {
+        type: "camera_frame",
+        name,
+        timestampNs,
+        frameIndex,
+        previewWidth: width,
+        previewHeight: height,
+        jpegData,
+      };
+    }
+    case FRAME_TYPE_ENCODED_CONFIG: {
+      const headerEnd = bodyStart + 1 + 4 + 4 + 4;
+      if (data.byteLength < headerEnd) return null;
+      const codecId = view.getUint8(bodyStart);
+      const width = view.getUint32(bodyStart + 1, true);
+      const height = view.getUint32(bodyStart + 5, true);
+      const descLen = view.getUint32(bodyStart + 9, true);
+      if (data.byteLength < headerEnd + descLen) return null;
+      const description = new Uint8Array(data.slice(headerEnd, headerEnd + descLen));
+      return {
+        type: "encoded_config",
+        name,
+        codecId,
+        width,
+        height,
+        description,
+      };
+    }
+    case FRAME_TYPE_ENCODED_PACKET: {
+      const headerEnd = bodyStart + 1 + 1 + 8 + 8 + 4;
+      if (data.byteLength < headerEnd) return null;
+      const codecId = view.getUint8(bodyStart);
+      const flags = view.getUint8(bodyStart + 1);
+      const ptsUs = Number(view.getBigUint64(bodyStart + 2, true));
+      const sequence = Number(view.getBigUint64(bodyStart + 10, true));
+      const payloadLen = view.getUint32(bodyStart + 18, true);
+      if (data.byteLength < headerEnd + payloadLen) return null;
+      const payload = new Uint8Array(data.slice(headerEnd, headerEnd + payloadLen));
+      return {
+        type: "encoded_packet",
+        name,
+        codecId,
+        isKeyframe: (flags & 0x01) !== 0,
+        ptsUs,
+        sequence,
+        payload,
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 export function parseJsonMessage(

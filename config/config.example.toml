@@ -63,31 +63,16 @@ shutdown_timeout_ms = 3000
 child_poll_interval_ms = 100
 
 # -----------------------------------------------------------------------------
-# Visualizer / preview pipeline
+# Visualizer
 # -----------------------------------------------------------------------------
 [visualizer]
-# WebSocket port the visualizer publishes preview frames + robot state on.
+# WebSocket port the visualizer bridges encoder preview output on.
 # The web UI proxies this internally. (default: 19090)
 port = 19090
-
-# Maximum dimensions of the RGB24 preview tap the encoder publishes for each
-# camera. Larger = sharper preview but more downscale work per frame.
-# (default: 320 / 240)
-max_preview_width = 320
-max_preview_height = 240
-
-# JPEG quality for the WebSocket preview broadcast. Range 1..=100.
-# (default: 30)
-jpeg_quality = 30
-
-# Throttle for the encoder's preview tap publish rate. Range 0..=1000; the
-# encoder caps preview emission to this rate per camera regardless of the
-# camera's native fps. (default: 60)
-preview_fps = 30
-
-# Optional override of the visualizer's preview compression worker pool size.
-# `None` lets the visualizer pick a sensible per-host default. (default: unset)
-# preview_workers = 4
+#
+# Preview production knobs (size, fps, codec, jpeg_quality, output_mode)
+# now live under `[encoder.preview]` below — the visualizer is a thin
+# bridge and just forwards what the encoder emits.
 
 # -----------------------------------------------------------------------------
 # Devices — one [[devices]] block per device process the controller spawns.
@@ -307,10 +292,6 @@ backend = "auto"
 video_backend = "auto"
 depth_backend = "auto"
 
-# Output container override. "auto" picks .mp4 for h264/h265, .mkv for
-# av1, .rvl for rvl. (default: "auto")
-artifact_format = "auto"
-
 # Per-encoder bus → encode queue depth (number of pending frames before
 # the encoder publishes a backpressure event). (default: 32)
 queue_size = 32
@@ -347,26 +328,69 @@ chroma_subsampling = "422"
 # color_space = "bt709-limited"
 
 # -----------------------------------------------------------------------------
+# Encoder preview output (the always-on preview encoder)
+# -----------------------------------------------------------------------------
+# The controller spawns one preview-role `rollio-encoder` per camera
+# channel that opts in (see `preview_enabled` on each
+# [[devices.channels]]). The settings below decide what those preview
+# encoders produce and which iceoryx2 topic the visualizer subscribes
+# to.
+[encoder.preview]
+# Preview transport.
+#   "jpeg"    (default) — encoder publishes self-contained JPEG bytes
+#                         on `<bus_root>/<channel_type>/preview-jpeg`;
+#                         visualizer bridges them verbatim as binary
+#                         WebSocket frames (kind 0x01).
+#   "encoded"           — encoder publishes H.264 packets (color) and
+#                         RVL packets (depth) on `…/preview-config`
+#                         + `…/preview-packets`; visualizer bridges
+#                         them as binary kinds 0x02 + 0x03 and the
+#                         web UI decodes via WebCodecs.
+output_mode = "jpeg"
+
+# Color preview codec. Restricted to "h264" when output_mode = "encoded".
+color_codec = "h264"
+
+# Depth preview codec. Restricted to "rvl" when output_mode = "encoded".
+depth_codec = "rvl"
+
+# Encoder backend for the preview encoder. CPU by default to keep the
+# preview path light on shared hosts.
+backend = "cpu"
+
+# Preview raster size. The visualizer's set_preview_size WebSocket
+# command can change these at runtime (encoder restarts at the new
+# dims and emits a fresh keyframe).
+width = 320
+height = 240
+
+# Preview throttle.
+fps = 15
+
+# Keyframe interval for encoded-mode previews (seconds).
+gop_seconds = 1
+
+# CRF/quality knob. Lower = better quality / larger packets.
+crf = 32
+
+# JPEG quality (1..100), used when output_mode = "jpeg".
+jpeg_quality = 30
+
+# -----------------------------------------------------------------------------
 # Episode assembler
 # -----------------------------------------------------------------------------
 [assembler]
-# How long the assembler waits for each per-camera VideoReady event after
-# the recording stops. Cameras whose encoders fail to produce a video in
-# time are dropped from the episode (with the rest of the episode still
-# saved). (default: 5000)
-missing_video_timeout_ms = 5000
+# Maximum wait, in milliseconds, after RecordingStop for each
+# per-camera recording packet stream to emit `EndOfStream`. Episodes
+# whose encoders crash without sending EOS are dropped after this
+# timeout. (default: 30000)
+missing_eos_timeout_ms = 30000
 
 # Where the assembler builds episodes before storage moves them to their
 # final location. /dev/shm on Linux gives the lowest latency. The setup
 # wizard fills this with a host-appropriate temp dir.
 # (default on linux: "/dev/shm/rollio")
 staging_dir = "/dev/shm/rollio"
-
-# How encoder → assembler hand-off works:
-#   "file"     — encoder writes mp4/rvl to disk, assembler reads it back
-#   "iceoryx2" — (future) zero-copy in-memory hand-off
-# (default: "file")
-encoded_handoff = "file"
 
 # -----------------------------------------------------------------------------
 # Storage — where the assembler-staged episodes are persisted.

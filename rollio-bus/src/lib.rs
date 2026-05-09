@@ -3,7 +3,6 @@ pub const EPISODE_COMMAND_SERVICE: &str = "control/episode-command";
 pub const EPISODE_STATUS_SERVICE: &str = "control/episode-status";
 pub const SETUP_COMMAND_SERVICE: &str = "setup/command";
 pub const SETUP_STATE_SERVICE: &str = "setup/state";
-pub const VIDEO_READY_SERVICE: &str = "encoder/video-ready";
 pub const EPISODE_READY_SERVICE: &str = "assembler/episode-ready";
 pub const EPISODE_STORED_SERVICE: &str = "storage/episode-stored";
 pub const BACKPRESSURE_SERVICE: &str = "encoder/backpressure";
@@ -38,6 +37,36 @@ pub const STATE_MAX_SUBSCRIBERS: usize = 16;
 
 /// Default `max_nodes` cap for state / command services.
 pub const STATE_MAX_NODES: usize = 16;
+
+/// Subscriber buffer for the strict per-camera recording packet topic.
+/// Recording packets cannot be dropped without corrupting the resulting
+/// video container, so producers configure these services with safe
+/// overflow disabled and `UnableToDeliverStrategy::Block`. The buffer
+/// must therefore be deep enough that a brief assembler stall (parquet
+/// flush, video file fsync) doesn't push back on the encoder hot path
+/// long enough to drop camera frames upstream.
+pub const RECORDING_PACKET_BUFFER: usize = STATE_BUFFER;
+
+/// Subscriber buffer for the best-effort preview packet / preview JPEG
+/// topics. Preview is intentionally loss-tolerant: the visualizer/UI
+/// recovers at the next keyframe, so a small ring keeps memory bounded.
+pub const PREVIEW_PACKET_BUFFER: usize = 8;
+
+/// History size for the per-camera recording-config and preview-config
+/// topics. iceoryx2 retains the most recent `N` samples per publisher
+/// and replays them to subscribers that connect afterwards, which is
+/// exactly the late-join semantics codec stream config needs (a
+/// subscriber that misses the one-shot config message can't decode any
+/// packet until the encoder is restarted). Keeping the value at 1
+/// keeps the cost minimal while still surviving a visualizer restart.
+pub const STREAM_CONFIG_HISTORY_SIZE: usize = 1;
+
+/// Camera-frame topic max_subscribers. Bumped from the iceoryx2 default
+/// of 2 to accommodate the new packet-mode topology where every camera
+/// has both a recording-role encoder and a preview-role encoder
+/// subscribing simultaneously, plus headroom for diagnostics
+/// (`test/bus-tap`) and future tools.
+pub const CAMERA_FRAMES_MAX_SUBSCRIBERS: usize = 4;
 
 pub fn camera_frames_service_name(device_name: &str) -> String {
     format!("camera/{device_name}/frames")
@@ -83,14 +112,6 @@ pub fn channel_frames_service_name(bus_root: &str, channel_type: &str) -> String
     format!("{bus_root}/{channel_type}/frames")
 }
 
-/// Topic for the always-on RGB24 preview tap that the encoder publishes for
-/// the visualizer to subscribe to. Mirrors `channel_frames_service_name` but
-/// carries downsized frames at the visualizer's preview cadence regardless
-/// of whether an episode is being recorded.
-pub fn channel_preview_service_name(bus_root: &str, channel_type: &str) -> String {
-    format!("{bus_root}/{channel_type}/preview")
-}
-
 pub fn channel_state_service_name(bus_root: &str, channel_type: &str, state_kind: &str) -> String {
     format!("{bus_root}/{channel_type}/states/{state_kind}")
 }
@@ -101,4 +122,90 @@ pub fn channel_command_service_name(
     command_kind: &str,
 ) -> String {
     format!("{bus_root}/{channel_type}/commands/{command_kind}")
+}
+
+// ---------------------------------------------------------------------------
+// Encoded packet topics
+// ---------------------------------------------------------------------------
+
+/// Per-channel codec-config topic for the recording role. Carries
+/// `EncodedPacketHeader` user header with `kind = Config`. iceoryx2
+/// `history_size = STREAM_CONFIG_HISTORY_SIZE` so the latest config is
+/// replayed to subscribers that connect after the encoder.
+pub fn recording_config_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/recording-config")
+}
+
+/// Per-channel encoded recording packets. Strict delivery (no overflow,
+/// publisher blocks). One `Packet` per encoded access unit; one
+/// `EndOfStream` at session finish.
+pub fn recording_packet_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/recording-packets")
+}
+
+/// Per-channel codec-config topic for the preview role. Same shape as
+/// recording-config but on a separate name so subscribers can apply
+/// loss-tolerant delivery semantics.
+pub fn preview_config_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/preview-config")
+}
+
+/// Per-channel encoded preview packets. Best-effort delivery; the UI
+/// recovers at the next keyframe after a drop.
+pub fn preview_packet_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/preview-packets")
+}
+
+/// Per-channel preview JPEG bytes. Used when the project's
+/// `[encoder.preview] output_mode = "jpeg"`. The encoder publishes
+/// `CameraFrameHeader` user header (so it reuses the existing
+/// camera-frame plumbing on the visualizer side) with the JPEG
+/// payload.
+pub fn preview_jpeg_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/preview-jpeg")
+}
+
+/// Per-channel preview control topic. The visualizer publishes
+/// `PreviewControl::SetSize` here when an operator changes the preview
+/// raster dims; the preview encoder restarts its session at the new
+/// dims and emits a fresh `Config` + first keyframe.
+pub fn preview_control_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/preview-control")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_topic_names_use_purpose_suffix() {
+        assert_eq!(
+            recording_config_service_name("cam1", "color"),
+            "cam1/color/recording-config"
+        );
+        assert_eq!(
+            recording_packet_service_name("cam1", "color"),
+            "cam1/color/recording-packets"
+        );
+    }
+
+    #[test]
+    fn preview_topic_names_use_purpose_suffix() {
+        assert_eq!(
+            preview_config_service_name("cam1", "color"),
+            "cam1/color/preview-config"
+        );
+        assert_eq!(
+            preview_packet_service_name("cam1", "color"),
+            "cam1/color/preview-packets"
+        );
+        assert_eq!(
+            preview_jpeg_service_name("cam1", "color"),
+            "cam1/color/preview-jpeg"
+        );
+        assert_eq!(
+            preview_control_service_name("cam1", "color"),
+            "cam1/color/preview-control"
+        );
+    }
 }

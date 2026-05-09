@@ -13,3 +13,7 @@ parquet = { version = "58.1.0", features = ["arrow"] }
 arrow-array = "58.1.0"
 arrow-schema = "58.1.0"
 rollio-bus = { version = "1.0.0", path = "../rollio-bus" }
+# Packet-mode video muxing: writes MP4/MKV from H.264/H.265/AV1/MJPG
+# Annex B packets (and any other libavformat-supported container).
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format"] }
+log = "0.4"
