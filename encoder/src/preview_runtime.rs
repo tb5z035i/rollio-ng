@@ -264,6 +264,13 @@ impl PreviewState {
                     } else {
                         preview.color_codec
                     };
+                    // The libav preview session opens at the preview
+                    // dims and downscales arbitrary camera-native
+                    // source dims internally via swscale (see
+                    // `LibavCodecSession::ensure_scaler`). RVL keeps
+                    // the strict-dim contract — depth previews must
+                    // already match preview dims, which the depth
+                    // pipeline guarantees.
                     let params = CodecSessionParams {
                         codec,
                         backend: preview.backend,
@@ -279,6 +286,7 @@ impl PreviewState {
                         recording_start_us: frame.header.timestamp_us,
                         output_width: preview.width,
                         output_height: preview.height,
+                        allow_rescale: codec != rollio_types::config::EncoderCodec::Rvl,
                     };
                     *session = Some(open_session(params, frame)?);
                 }

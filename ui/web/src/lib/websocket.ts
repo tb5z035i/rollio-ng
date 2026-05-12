@@ -14,8 +14,25 @@ import {
   recordTiming,
   setGauge,
 } from "./debug-metrics";
+import {
+  PreviewDecoderRegistry,
+  type DecodedFrame,
+  type DecoderRegistry,
+} from "./preview-decoder";
 
-export interface CameraFrame {
+/**
+ * Tagged union emitted from `usePreviewSocket`. Two payload kinds:
+ *
+ * * `"jpeg"` — JPEG output mode. The legacy `<img src={objectUrl}>`
+ *   render path consumes this verbatim.
+ * * `"video"` — encoded output mode (H.264 today). The `videoFrame`
+ *   is the WebCodecs decoder's output and must be drawn into a
+ *   `<canvas>` synchronously before the next replacement frame
+ *   arrives — this socket layer takes ownership of `videoFrame.close()`
+ *   when it replaces or evicts the entry.
+ */
+export interface JpegCameraFrame {
+  kind: "jpeg";
   objectUrl: string;
   previewWidth: number;
   previewHeight: number;
@@ -25,6 +42,20 @@ export interface CameraFrame {
   sequence: number;
   jpegBytes: number;
 }
+
+export interface VideoCameraFrame {
+  kind: "video";
+  videoFrame: VideoFrame;
+  width: number;
+  height: number;
+  timestampUs: number;
+  receivedAtWallTimeMs: number;
+  sequence: number;
+  payloadBytes: number;
+  codecId: number;
+}
+
+export type CameraFrame = JpegCameraFrame | VideoCameraFrame;
 
 /** A single state-kind sample retained for an aggregated robot channel. */
 export interface RobotChannelSample {
@@ -81,6 +112,10 @@ export interface UsePreviewSocketOptions {
   websocketFactory?: WebSocketFactory;
   objectUrlFactory?: (jpegData: Uint8Array) => string;
   revokeObjectUrl?: (url: string) => void;
+  /** Factory for the WebCodecs decoder seam. Defaults to a fresh
+   *  `PreviewDecoderRegistry`. Tests substitute a fake here to avoid
+   *  needing the WebCodecs API in jsdom. */
+  decoderRegistryFactory?: () => DecoderRegistry;
 }
 
 const WS_OPEN = 1;
@@ -120,12 +155,27 @@ async function toArrayBuffer(data: unknown): Promise<ArrayBuffer | null> {
   return null;
 }
 
+function releaseFrame(
+  frame: CameraFrame,
+  revokeObjectUrl: (url: string) => void,
+): void {
+  if (frame.kind === "jpeg") {
+    revokeObjectUrl(frame.objectUrl);
+  } else {
+    try {
+      frame.videoFrame.close();
+    } catch {
+      /* a closed VideoFrame throws on second close; safe */
+    }
+  }
+}
+
 function revokeFrameUrls(
   frames: Map<string, CameraFrame>,
   revokeObjectUrl: (url: string) => void,
 ): void {
   for (const frame of frames.values()) {
-    revokeObjectUrl(frame.objectUrl);
+    releaseFrame(frame, revokeObjectUrl);
   }
 }
 
@@ -307,6 +357,8 @@ export function usePreviewSocket(
   const websocketFactory = options.websocketFactory ?? defaultWebSocketFactory;
   const objectUrlFactory = options.objectUrlFactory ?? defaultObjectUrlFactory;
   const revokeObjectUrl = options.revokeObjectUrl ?? defaultRevokeObjectUrl;
+  const decoderRegistryFactory =
+    options.decoderRegistryFactory ?? (() => new PreviewDecoderRegistry());
 
   const [connected, setConnected] = useState(false);
   const [frames, setFrames] = useState<Map<string, CameraFrame>>(() => new Map());
@@ -321,6 +373,60 @@ export function usePreviewSocket(
   const dirtyRef = useRef(false);
   const frameSequenceRef = useRef(0);
   const wsRef = useRef<WebSocketLike | null>(null);
+  // Per-camera codec id for the currently-configured encoded preview
+  // session. Used in the meta line and in tests; populated on
+  // `encoded_config`, cleared on socket flap.
+  const encodedCodecRef = useRef<Map<string, number>>(new Map());
+
+  // The decoder registry is re-created on each mount (the factory
+  // closure also lets tests substitute a fake). Stored in a ref so
+  // the long-lived `handlers` closure can reach it without a
+  // re-render on registry replacement.
+  const decoderRegistryRef = useRef<DecoderRegistry | null>(null);
+  if (decoderRegistryRef.current === null) {
+    decoderRegistryRef.current = decoderRegistryFactory();
+  }
+
+  const onDecodedFrame = useCallback(
+    (decoded: DecodedFrame) => {
+      const codecId = encodedCodecRef.current.get(decoded.name) ?? 0;
+      const previous = framesRef.current.get(decoded.name);
+      if (previous) {
+        releaseFrame(previous, revokeObjectUrl);
+      }
+      const receivedAtWallTimeMs = decoded.receivedAtWallTimeMs;
+      const sequence = ++frameSequenceRef.current;
+      framesRef.current.set(decoded.name, {
+        kind: "video",
+        videoFrame: decoded.videoFrame,
+        width: decoded.width,
+        height: decoded.height,
+        timestampUs: decoded.timestampUs,
+        receivedAtWallTimeMs,
+        sequence,
+        // Bytes-per-decoded-frame metric is best-effort and lives at
+        // packet receive time (see `onArrayBuffer`); the canvas tile
+        // shows the most recent payload size, not the per-frame size
+        // (which is meaningless after decode).
+        payloadBytes:
+          (previous?.kind === "video" ? previous.payloadBytes : 0) ?? 0,
+        codecId,
+      });
+      dirtyRef.current = true;
+      incrementGauge("ui.frames_presented_total");
+      incrementGauge(`ui.frames_presented_total.${decoded.name}`);
+      setGauge(
+        `ui.preview_resolution.${decoded.name}`,
+        `${decoded.width}x${decoded.height}`,
+      );
+      const decodeLatencyMs = Math.max(
+        0,
+        receivedAtWallTimeMs - decoded.timestampUs / 1_000,
+      );
+      setGauge(`ui.video_decode_latency_ms.${decoded.name}`, decodeLatencyMs);
+    },
+    [revokeObjectUrl],
+  );
 
   const handlers = useRef<SocketHandlers>({
     onOpen: (ws) => {
@@ -334,11 +440,15 @@ export function usePreviewSocket(
         setGauge("ws.preview.connected", "Disconnected");
         setGauge("ws.stream_info_status", "Unavailable");
         // Drop any cached preview-plane state when the socket flaps so the
-        // UI doesn't show stale frames or robot positions.
+        // UI doesn't show stale frames or robot positions. Also tear
+        // down every decoder so a reconnect rebuilds them from the
+        // freshly-replayed encoded_config.
         revokeFrameUrls(framesRef.current, revokeObjectUrl);
         framesRef.current.clear();
         robotChannelsRef.current.clear();
         streamInfoRef.current = null;
+        encodedCodecRef.current.clear();
+        decoderRegistryRef.current?.closeAll();
         frameSequenceRef.current = 0;
         dirtyRef.current = true;
         wsRef.current = null;
@@ -371,12 +481,18 @@ export function usePreviewSocket(
       recordTiming("ws.parse.binary", nowMs() - parseStartMs);
       if (!msg) return;
 
-      // For now the web UI only renders the JPEG path. Encoded
-      // packets are recognised but a WebCodecs renderer is a
-      // follow-up; we just count them for debugging.
       if (msg.type === "encoded_config") {
         incrementGauge(`ws.encoded_config_total.${msg.name}`);
         setGauge(`ws.encoded_codec.${msg.name}`, msg.codecId);
+        encodedCodecRef.current.set(msg.name, msg.codecId);
+        decoderRegistryRef.current?.configure(
+          msg.name,
+          msg.codecId,
+          msg.description,
+          msg.width,
+          msg.height,
+          onDecodedFrame,
+        );
         return;
       }
       if (msg.type === "encoded_packet") {
@@ -384,12 +500,32 @@ export function usePreviewSocket(
         if (msg.isKeyframe) {
           incrementGauge(`ws.encoded_keyframes_total.${msg.name}`);
         }
+        // Stash the most-recent payload size in the live frame entry
+        // for the canvas tile's meta line; the registry's onFrame
+        // callback fires asynchronously after `decode`, so we update
+        // here so the value is visible by the time a decoded frame
+        // lands.
+        const existing = framesRef.current.get(msg.name);
+        if (existing && existing.kind === "video") {
+          framesRef.current.set(msg.name, {
+            ...existing,
+            payloadBytes: msg.payload.byteLength,
+          });
+          dirtyRef.current = true;
+        }
+        setGauge(`ws.encoded_payload_bytes.${msg.name}`, msg.payload.byteLength);
+        decoderRegistryRef.current?.decode(
+          msg.name,
+          msg.payload,
+          msg.ptsUs,
+          msg.isKeyframe,
+        );
         return;
       }
 
       const previous = framesRef.current.get(msg.name);
       if (previous) {
-        revokeObjectUrl(previous.objectUrl);
+        releaseFrame(previous, revokeObjectUrl);
       }
 
       const receivedAtWallTimeMs = Date.now();
@@ -401,6 +537,7 @@ export function usePreviewSocket(
       const objectUrl = objectUrlFactory(msg.jpegData);
 
       framesRef.current.set(msg.name, {
+        kind: "jpeg",
         objectUrl,
         previewWidth: msg.previewWidth,
         previewHeight: msg.previewHeight,
@@ -461,6 +598,8 @@ export function usePreviewSocket(
       framesRef.current.clear();
       robotChannelsRef.current.clear();
       streamInfoRef.current = null;
+      encodedCodecRef.current.clear();
+      decoderRegistryRef.current?.closeAll();
     };
   }, [revokeObjectUrl]);
 

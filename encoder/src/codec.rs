@@ -135,10 +135,16 @@ pub struct CodecSessionParams<'a> {
     pub recording_start_us: u64,
     /// Output dims. For recording sessions, equal to the camera's
     /// native dims. For preview sessions, equal to the configured
-    /// preview dims; the runtime is responsible for downscaling
-    /// before calling `encode`.
+    /// preview dims; the codec session swscale-rescales arbitrary
+    /// source dims to these output dims when `allow_rescale` is true.
     pub output_width: u32,
     pub output_height: u32,
+    /// When true, accept frames whose source dims differ from
+    /// `(output_width, output_height)` and downscale them via the
+    /// session's swscale Context. Recording sessions set this to
+    /// `false` so a mid-stream resize errors out (the muxer cannot
+    /// deal with it). Preview-encoded sessions set it to `true`.
+    pub allow_rescale: bool,
 }
 
 impl<'a> CodecSessionParams<'a> {
@@ -165,6 +171,7 @@ impl<'a> CodecSessionParams<'a> {
             recording_start_us,
             output_width: camera_width,
             output_height: camera_height,
+            allow_rescale: false,
         }
     }
 }
@@ -209,6 +216,14 @@ pub struct LibavCodecSession {
     /// matches the encoder input (e.g. YUYV input + YUV422P encoder).
     scaler: Option<ffmpeg::software::scaling::context::Context>,
     scaler_input_pixel: Option<ffmpeg::util::format::pixel::Pixel>,
+    /// Cached source dims of the swscale Context. Rebuild whenever the
+    /// camera resolution shifts mid-stream so the scaler keeps producing
+    /// frames sized at `(self.width, self.height)`.
+    scaler_source_dims: Option<(u32, u32)>,
+    /// Whether this session was opened with `allow_rescale = true`. When
+    /// true, source dims that differ from `(self.width, self.height)`
+    /// trigger a swscale resize instead of a hard error.
+    allow_rescale: bool,
     /// Per-session MJPEG decoder for MJPG camera inputs.
     mjpeg_decoder: Option<ffmpeg::decoder::Video>,
     scale_pixel: ffmpeg::util::format::pixel::Pixel,
@@ -354,6 +369,8 @@ impl LibavCodecSession {
             encoder_time_base,
             scaler: None,
             scaler_input_pixel: None,
+            scaler_source_dims: None,
+            allow_rescale: params.allow_rescale,
             mjpeg_decoder: None,
             scale_pixel,
             encoder_pixel,
@@ -397,19 +414,36 @@ impl LibavCodecSession {
         Ok(())
     }
 
-    fn ensure_scaler(&mut self, source_pixel: ffmpeg::util::format::pixel::Pixel) -> Result<()> {
-        if self.scaler_input_pixel == Some(source_pixel) && self.scaler.is_some() {
+    fn ensure_scaler(
+        &mut self,
+        source_pixel: ffmpeg::util::format::pixel::Pixel,
+        source_width: u32,
+        source_height: u32,
+    ) -> Result<()> {
+        // Fast path: source pixel format matches the encoder's scale
+        // pixel format AND source dims already equal our output dims —
+        // no scaler needed at all (e.g. YUYV input + YUV422P encoder
+        // when the camera and encoder agree on resolution).
+        let dims_match = source_width == self.width && source_height == self.height;
+        if source_pixel == self.scale_pixel && dims_match {
+            self.scaler_input_pixel = Some(source_pixel);
+            self.scaler_source_dims = Some((source_width, source_height));
+            self.scaler = None;
             return Ok(());
         }
-        if source_pixel == self.scale_pixel {
-            self.scaler_input_pixel = Some(source_pixel);
-            self.scaler = None;
+        // Reuse the cached scaler when both pixel format and source
+        // dims are unchanged — this is the common case once the stream
+        // has stabilized.
+        if self.scaler_input_pixel == Some(source_pixel)
+            && self.scaler_source_dims == Some((source_width, source_height))
+            && self.scaler.is_some()
+        {
             return Ok(());
         }
         let mut scaler = ffmpeg::software::scaling::context::Context::get(
             source_pixel,
-            self.width,
-            self.height,
+            source_width,
+            source_height,
             self.scale_pixel,
             self.width,
             self.height,
@@ -418,6 +452,7 @@ impl LibavCodecSession {
         set_swscale_color_range_to_mpeg(&mut scaler, source_pixel, self.scale_pixel)?;
         self.scaler = Some(scaler);
         self.scaler_input_pixel = Some(source_pixel);
+        self.scaler_source_dims = Some((source_width, source_height));
         Ok(())
     }
 
@@ -467,7 +502,7 @@ impl LibavCodecSession {
 
 impl CodecSession for LibavCodecSession {
     fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        ensure_frame_compatibility(&frame.header, self.width, self.height)?;
+        ensure_frame_compatibility(&frame.header, self.width, self.height, self.allow_rescale)?;
         self.ensure_config_sent(sink)?;
 
         let pts_us = match crate::media::compute_pts_us(
@@ -486,21 +521,27 @@ impl CodecSession for LibavCodecSession {
         let started = Instant::now();
         let mut source = decode_or_copy_frame_to_av(frame, &mut self.mjpeg_decoder)?;
         let source_pixel = source.format();
-        if source.width() != self.width || source.height() != self.height {
+        let source_width = source.width();
+        let source_height = source.height();
+        if !self.allow_rescale && (source_width != self.width || source_height != self.height) {
             return Err(EncoderError::message(format!(
                 "decoded {:?} dimensions {}x{} differ from configured {}x{}",
-                frame.header.pixel_format,
-                source.width(),
-                source.height(),
-                self.width,
-                self.height
+                frame.header.pixel_format, source_width, source_height, self.width, self.height
             )));
         }
         source.set_pts(Some(pts_us));
 
-        self.ensure_scaler(source_pixel)?;
+        self.ensure_scaler(source_pixel, source_width, source_height)?;
 
-        if source_pixel == self.scale_pixel {
+        // Take the no-scale fast path only when source pixel format
+        // matches the encoder scale pixel format AND source dims
+        // already match our output dims. Otherwise — including the
+        // dim-rescale case for preview-encoded sessions — push the
+        // frame through swscale.
+        let no_scale_needed = source_pixel == self.scale_pixel
+            && source_width == self.width
+            && source_height == self.height;
+        if no_scale_needed {
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
                     self.hw_frames
@@ -672,7 +713,7 @@ impl RvlCodecSession {
 
 impl CodecSession for RvlCodecSession {
     fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        ensure_frame_compatibility(&frame.header, self.width, self.height)?;
+        ensure_frame_compatibility(&frame.header, self.width, self.height, false)?;
         if frame.header.pixel_format != PixelFormat::Depth16 {
             return Err(EncoderError::message(
                 "rvl session received non-depth16 frame",
@@ -966,6 +1007,7 @@ mod tests {
             recording_start_us: frames[0].header.timestamp_us,
             output_width: width,
             output_height: height,
+            allow_rescale: false,
         };
         let session = open_session(params, &frames[0]).expect("open session");
         let mut session = session;
@@ -1029,6 +1071,7 @@ mod tests {
             recording_start_us: frames[0].header.timestamp_us,
             output_width: width,
             output_height: height,
+            allow_rescale: false,
         };
         let session = open_session(params, &frames[0]).expect("open rvl session");
         let mut session = session;
@@ -1065,6 +1108,185 @@ mod tests {
         let frame = make_rgb_frame(2, 2, 0);
         let err = session.encode(&frame, &mut sink).expect_err("should error");
         assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    /// Phase 1 (Bug B): preview-encoded sessions opened with
+    /// `allow_rescale = true` must accept camera-native frames whose
+    /// dims differ from the configured output dims and downscale them
+    /// internally via swscale. Before the fix, `LibavCodecSession::encode`
+    /// returned an error on every frame whose dims did not match.
+    #[test]
+    fn libav_session_rescales_when_source_dims_exceed_output() {
+        if select_encoder_name(EncoderCodec::H264, EncoderBackend::Cpu).is_none() {
+            eprintln!("skipping: cpu h264 path unavailable");
+            return;
+        }
+        media::ensure_ffmpeg_initialized().expect("ffmpeg init");
+
+        // Source frames are 64x48 RGB24 (camera-native); session output
+        // is 32x24 (preview dims).
+        let frames: Vec<_> = (0..4).map(|i| make_rgb_frame(64, 48, i)).collect();
+        let params = CodecSessionParams {
+            codec: EncoderCodec::H264,
+            backend: EncoderBackend::Cpu,
+            fps: 30,
+            crf: Some(28),
+            preset: Some("ultrafast"),
+            tune: None,
+            bit_depth: 8,
+            chroma_subsampling: ChromaSubsampling::S420,
+            color_space: EncoderColorSpace::Auto,
+            process_id: "test.session.h264.rescale",
+            episode_index: 1,
+            recording_start_us: frames[0].header.timestamp_us,
+            output_width: 32,
+            output_height: 24,
+            allow_rescale: true,
+        };
+        let mut session = open_session(params, &frames[0]).expect("open session");
+        let mut sink = MockSink::new();
+        for frame in &frames {
+            session
+                .encode(frame, &mut sink)
+                .expect("encode rescaled frame");
+        }
+        session.finish(&mut sink).expect("finish session");
+
+        // Config must carry SPS/PPS sized for the output (32x24), and at
+        // least one Packet must reach the sink.
+        match &sink.calls[0] {
+            MockSinkCall::Config { header, extradata } => {
+                assert_eq!(header.width, 32);
+                assert_eq!(header.height, 24);
+                assert!(!extradata.is_empty(), "h264 extradata must be present");
+            }
+            other => panic!("first call should be Config, got {other:?}"),
+        }
+        let packets: Vec<_> = sink
+            .calls
+            .iter()
+            .filter(|c| matches!(c, MockSinkCall::Packet { .. }))
+            .collect();
+        assert!(
+            !packets.is_empty(),
+            "preview-encoded session with rescale should emit ≥1 packet, got {} calls",
+            sink.calls.len()
+        );
+        for call in &packets {
+            if let MockSinkCall::Packet { header, .. } = call {
+                assert_eq!(header.width, 32);
+                assert_eq!(header.height, 24);
+            }
+        }
+    }
+
+    /// Phase 1 (Bug B): when source dims change mid-stream, the
+    /// session must rebuild its swscale Context with the new source
+    /// dims. The cached `(scaler_input_pixel, scaler_source_dims)`
+    /// pair is the sentinel — when source dims change, the scaler
+    /// must be replaced so the produced AVFrame is still
+    /// `(self.width, self.height)`.
+    #[test]
+    fn libav_session_rebuilds_scaler_on_source_dim_change() {
+        if select_encoder_name(EncoderCodec::H264, EncoderBackend::Cpu).is_none() {
+            eprintln!("skipping: cpu h264 path unavailable");
+            return;
+        }
+        media::ensure_ffmpeg_initialized().expect("ffmpeg init");
+
+        let frame_a = make_rgb_frame(64, 48, 0);
+        let frame_b = make_rgb_frame(48, 36, 1);
+        let params = CodecSessionParams {
+            codec: EncoderCodec::H264,
+            backend: EncoderBackend::Cpu,
+            fps: 30,
+            crf: Some(28),
+            preset: Some("ultrafast"),
+            tune: None,
+            bit_depth: 8,
+            chroma_subsampling: ChromaSubsampling::S420,
+            color_space: EncoderColorSpace::Auto,
+            process_id: "test.session.h264.dimchange",
+            episode_index: 2,
+            recording_start_us: frame_a.header.timestamp_us,
+            output_width: 32,
+            output_height: 24,
+            allow_rescale: true,
+        };
+        let mut session = open_session(params, &frame_a).expect("open session");
+        let mut sink = MockSink::new();
+        session
+            .encode(&frame_a, &mut sink)
+            .expect("encode 64x48 frame");
+        session
+            .encode(&frame_b, &mut sink)
+            .expect("encode 48x36 frame");
+        session.finish(&mut sink).expect("finish session");
+
+        // Both frames must produce packets sized at the output dims.
+        let packet_dims: Vec<(u32, u32)> = sink
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                MockSinkCall::Packet { header, .. } => Some((header.width, header.height)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !packet_dims.is_empty(),
+            "expected at least one packet across both frames"
+        );
+        for (w, h) in &packet_dims {
+            assert_eq!((*w, *h), (32, 24));
+        }
+    }
+
+    /// Phase 1 guard (Bug B does not regress recording): recording
+    /// sessions are opened with `allow_rescale = false` (via
+    /// `from_recording`), and a mid-stream dim change must still
+    /// produce the historical "frame dimensions changed during
+    /// recording" error.
+    #[test]
+    fn recording_session_still_rejects_dim_change() {
+        if select_encoder_name(EncoderCodec::H264, EncoderBackend::Cpu).is_none() {
+            eprintln!("skipping: cpu h264 path unavailable");
+            return;
+        }
+        media::ensure_ffmpeg_initialized().expect("ffmpeg init");
+
+        let frame_a = make_rgb_frame(64, 48, 0);
+        let frame_b = make_rgb_frame(32, 24, 1);
+        let params = CodecSessionParams {
+            codec: EncoderCodec::H264,
+            backend: EncoderBackend::Cpu,
+            fps: 30,
+            crf: Some(28),
+            preset: Some("ultrafast"),
+            tune: None,
+            bit_depth: 8,
+            chroma_subsampling: ChromaSubsampling::S420,
+            color_space: EncoderColorSpace::Auto,
+            process_id: "test.session.h264.recording",
+            episode_index: 3,
+            recording_start_us: frame_a.header.timestamp_us,
+            // Recording dims = camera-native dims of the first frame.
+            output_width: frame_a.header.width,
+            output_height: frame_a.header.height,
+            allow_rescale: false,
+        };
+        let mut session = open_session(params, &frame_a).expect("open session");
+        let mut sink = MockSink::new();
+        session
+            .encode(&frame_a, &mut sink)
+            .expect("first frame should encode");
+        let err = session
+            .encode(&frame_b, &mut sink)
+            .expect_err("dim change must error in recording mode");
+        assert!(
+            err.to_string()
+                .contains("frame dimensions changed during recording"),
+            "expected dim-change error, got: {err}"
+        );
     }
 
     impl MockSinkCall {

@@ -291,13 +291,26 @@ fn ipc_poll_loop(
                     }
                     let codec_id = header.codec as u8;
                     let flags = (header.is_keyframe() as u8) & 0x01;
+                    // libx264 / libx265 with GLOBAL_HEADER emit Annex B
+                    // start-code-prefixed access units, but the WebCodecs
+                    // `VideoDecoder` in the browser is configured with
+                    // an AVCC `description` and expects AVCC framing
+                    // (4-byte BE length-prefixed NAL units). Convert
+                    // each H.26x AU on this hop. Other codecs pass
+                    // through unchanged.
+                    let payload_bytes: std::borrow::Cow<'_, [u8]> = match header.codec {
+                        EncodedCodecId::H264 | EncodedCodecId::H265 => {
+                            std::borrow::Cow::Owned(protocol::annex_b_au_to_avcc(&payload))
+                        }
+                        _ => std::borrow::Cow::Borrowed(&payload),
+                    };
                     let bytes = protocol::encode_packet(
                         &name,
                         codec_id,
                         flags,
                         header.pts_us,
                         header.sequence_number,
-                        &payload,
+                        &payload_bytes,
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
                 }

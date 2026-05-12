@@ -233,6 +233,42 @@ pub fn annex_b_to_avcc(extradata: &[u8]) -> Option<Vec<u8>> {
     Some(avcc)
 }
 
+/// Convert one Annex B access unit (start-code-prefixed NAL units)
+/// into AVCC framing (4-byte big-endian length-prefixed NAL units),
+/// which is what `VideoDecoder` expects when configured with an AVCC
+/// `description`.
+///
+/// libx264 with `AV_CODEC_FLAG_GLOBAL_HEADER` emits Annex B in both
+/// extradata and per-AU payloads. The extradata is converted via
+/// [`annex_b_to_avcc`] once at session-open; this helper handles the
+/// per-packet conversion that runs on every encoded preview frame.
+///
+/// Edge cases:
+/// * Empty input → empty `Vec`.
+/// * No start code found (i.e. the payload is already AVCC-shaped or
+///   otherwise not Annex B) → return the payload verbatim. This keeps
+///   non-H.26x codecs unaffected and is a safe no-op when the encoder
+///   is later switched to emit native AVCC.
+/// * Trailing zero bytes inside a NAL body (e.g. libx264's
+///   `cabac_zero_word` padding) are preserved verbatim — we just
+///   relocate the boundary, not the bytes inside it.
+pub fn annex_b_au_to_avcc(payload: &[u8]) -> Vec<u8> {
+    let nalus = split_annex_b_nalus(payload);
+    if nalus.is_empty() {
+        return payload.to_vec();
+    }
+    let mut total = 0usize;
+    for nalu in &nalus {
+        total += 4 + nalu.len();
+    }
+    let mut out = Vec::with_capacity(total);
+    for nalu in nalus {
+        out.extend_from_slice(&(nalu.len() as u32).to_be_bytes());
+        out.extend_from_slice(nalu);
+    }
+    out
+}
+
 /// Split an Annex B byte slice into its constituent NALU bodies
 /// (start codes stripped). Handles both 3-byte (`0x000001`) and
 /// 4-byte (`0x00000001`) start codes.
@@ -348,5 +384,61 @@ mod tests {
         extradata.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
         extradata.extend_from_slice(&[0x67, 0x42, 0xC0, 0x1F]);
         assert!(annex_b_to_avcc(&extradata).is_none());
+    }
+
+    /// Phase 2 (Bug C): per-AU Annex B → AVCC rewrite.
+    /// `[start][NAL_A][start][NAL_B]` becomes
+    /// `[len_A_BE_u32][NAL_A][len_B_BE_u32][NAL_B]`.
+    #[test]
+    fn annex_b_au_to_avcc_rewrites_two_nalus() {
+        let mut au = Vec::new();
+        au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // 4-byte start
+        au.extend_from_slice(&[0x65, 0x88, 0x80]); // NAL A: type=5, 3 bytes
+        au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // 4-byte start
+        au.extend_from_slice(&[0x41, 0x9A, 0x12, 0x34, 0x56]); // NAL B: type=1, 5 bytes
+        let avcc = annex_b_au_to_avcc(&au);
+
+        // Layout: [00 00 00 03][65 88 80][00 00 00 05][41 9A 12 34 56]
+        assert_eq!(avcc.len(), 4 + 3 + 4 + 5);
+        assert_eq!(&avcc[0..4], &[0x00, 0x00, 0x00, 0x03]);
+        assert_eq!(&avcc[4..7], &[0x65, 0x88, 0x80]);
+        assert_eq!(&avcc[7..11], &[0x00, 0x00, 0x00, 0x05]);
+        assert_eq!(&avcc[11..16], &[0x41, 0x9A, 0x12, 0x34, 0x56]);
+    }
+
+    #[test]
+    fn annex_b_au_to_avcc_handles_3byte_start_code() {
+        // Mixed 3-byte and 4-byte start codes — libx264 emits
+        // 3-byte starts between NALs in the same AU and 4-byte at AU
+        // boundaries.
+        let mut au = Vec::new();
+        au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        au.extend_from_slice(&[0x67, 0x42, 0xC0, 0x1F]); // SPS, 4 bytes
+        au.extend_from_slice(&[0x00, 0x00, 0x01]);
+        au.extend_from_slice(&[0x68, 0xCE, 0x3C, 0x80]); // PPS, 4 bytes
+        au.extend_from_slice(&[0x00, 0x00, 0x01]);
+        au.extend_from_slice(&[0x65, 0x88]); // IDR slice, 2 bytes
+        let avcc = annex_b_au_to_avcc(&au);
+        assert_eq!(avcc.len(), 4 + 4 + 4 + 4 + 4 + 2);
+        assert_eq!(&avcc[0..4], &[0x00, 0x00, 0x00, 0x04]);
+        assert_eq!(&avcc[4..8], &[0x67, 0x42, 0xC0, 0x1F]);
+        assert_eq!(&avcc[8..12], &[0x00, 0x00, 0x00, 0x04]);
+        assert_eq!(&avcc[12..16], &[0x68, 0xCE, 0x3C, 0x80]);
+        assert_eq!(&avcc[16..20], &[0x00, 0x00, 0x00, 0x02]);
+        assert_eq!(&avcc[20..22], &[0x65, 0x88]);
+    }
+
+    #[test]
+    fn annex_b_au_to_avcc_passes_through_when_no_start_code() {
+        // No start code → safe pass-through. Useful when a future
+        // encoder is reconfigured to emit native AVCC, or for non-
+        // H.26x codecs that happen to share the dispatcher.
+        let bytes: Vec<u8> = vec![0x12, 0x34, 0x56, 0x78];
+        assert_eq!(annex_b_au_to_avcc(&bytes), bytes);
+    }
+
+    #[test]
+    fn annex_b_au_to_avcc_handles_empty_payload() {
+        assert!(annex_b_au_to_avcc(&[]).is_empty());
     }
 }

@@ -317,6 +317,111 @@ fn preview_role_encoded_mode_replays_config_to_late_subscriber() {
     );
 }
 
+/// Phase 1 (Bug B) integration smoke: preview-encoded sessions must
+/// accept camera-native frames whose dims differ from the preview
+/// output dims and emit packets sized at the preview dims. Before the
+/// fix the encoder errored out on the very first frame and never
+/// published any Config or Packet to the preview topics.
+#[test]
+#[ignore = "smoke: full pipeline test; covered by Layer-A unit tests in codec.rs"]
+fn preview_role_encoded_mode_publishes_h264_packets_when_downscaling() {
+    let _guard = test_guard();
+    if !codec_supported(
+        EncoderCodec::H264,
+        EncoderCapabilityDirection::Encode,
+        EncoderBackend::Cpu,
+    ) {
+        eprintln!("skipping: cpu h264 path unavailable");
+        return;
+    }
+    // Camera-native: 96x64. Preview output: 32x32. The encoder must
+    // swscale-rescale every frame.
+    let camera_width = 96u32;
+    let camera_height = 64u32;
+    let preview_width = 32u32;
+    let preview_height = 32u32;
+    let bus_root = unique_name("prev_h264_dn");
+    let channel_type = "color".to_string();
+    let process_id = format!("preview-encoder.{}", unique_name("h264_dn"));
+    let ports = make_ports(&bus_root, &channel_type).expect("ports");
+
+    let preview_config_topic = preview_config_service_name(&bus_root, &channel_type);
+    let preview_packet_topic = preview_packet_service_name(&bus_root, &channel_type);
+    let config_subscriber =
+        open_packet_subscriber_with_history(&ports.node, &preview_config_topic, 2);
+    let packet_subscriber = open_packet_subscriber(&ports.node, &preview_packet_topic);
+
+    let config = preview_config_inline_encoded(
+        &process_id,
+        &bus_root,
+        &channel_type,
+        preview_width,
+        preview_height,
+        15,
+    );
+    let mut child = spawn_encoder(&config, &[]);
+    std::thread::sleep(Duration::from_millis(300));
+
+    for frame_index in 0..10u64 {
+        publish_frame(
+            &ports.frame_publisher,
+            CameraFrameHeader {
+                timestamp_us: now_us(),
+                width: camera_width,
+                height: camera_height,
+                pixel_format: PixelFormat::Rgb24,
+                frame_index,
+            },
+            &make_rgb_payload(camera_width, camera_height, frame_index),
+        );
+        std::thread::sleep(Duration::from_millis(35));
+    }
+
+    let mut received_config: Option<(EncodedPacketHeader, Vec<u8>)> = None;
+    let mut received_packets: Vec<EncodedPacketHeader> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        while let Some(sample) = config_subscriber.receive().expect("config recv") {
+            if matches!(sample.user_header().kind, EncodedPacketKind::Config) {
+                received_config = Some((*sample.user_header(), sample.payload().to_vec()));
+            }
+        }
+        while let Some(sample) = packet_subscriber.receive().expect("packet recv") {
+            if matches!(sample.user_header().kind, EncodedPacketKind::Packet) {
+                received_packets.push(*sample.user_header());
+            }
+        }
+        if received_config.is_some() && !received_packets.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    send_control(&ports.control_publisher, ControlEvent::Shutdown);
+    wait_for_exit(&mut child, Duration::from_secs(5));
+
+    let (config_header, extradata) =
+        received_config.expect("downscale path should still publish a Config");
+    assert_eq!(
+        config_header.codec,
+        rollio_types::messages::EncodedCodecId::H264
+    );
+    assert_eq!(config_header.width, preview_width);
+    assert_eq!(config_header.height, preview_height);
+    assert!(
+        !extradata.is_empty(),
+        "H.264 SPS/PPS extradata must be present"
+    );
+    assert!(
+        !received_packets.is_empty(),
+        "downscale path must produce at least one Packet (was producing zero before the fix)"
+    );
+    for header in &received_packets {
+        assert_eq!(header.width, preview_width);
+        assert_eq!(header.height, preview_height);
+    }
+}
+
 /// `set_preview_size` triggers a session restart in encoded mode and
 /// the next config carries the new dims.
 #[test]

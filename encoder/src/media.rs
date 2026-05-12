@@ -729,12 +729,26 @@ pub(crate) fn set_swscale_color_range_to_mpeg(
     Ok(())
 }
 
+/// Validate that an incoming frame is compatible with a codec session
+/// configured for `(width, height)`.
+///
+/// `allow_rescale` controls whether dim drift is acceptable:
+///
+/// * `false` — recording / RVL sessions reject dim changes outright.
+///   The recording-side muxer cannot deal with a mid-stream resize, and
+///   surfacing a hard error has historically caught camera-driver bugs
+///   that would otherwise produce a silently-corrupt episode.
+/// * `true` — preview-encoded sessions accept arbitrary source dims and
+///   leave the swscale rescale to the codec session. Pixel-format
+///   changes are still rejected because mid-stream pixel-format swaps
+///   indicate a driver bug regardless of role.
 pub(crate) fn ensure_frame_compatibility(
     header: &CameraFrameHeader,
     width: u32,
     height: u32,
+    allow_rescale: bool,
 ) -> Result<()> {
-    if header.width != width || header.height != height {
+    if !allow_rescale && (header.width != width || header.height != height) {
         return Err(EncoderError::message(format!(
             "frame dimensions changed during recording: expected {}x{}, got {}x{}",
             width, height, header.width, header.height
