@@ -250,6 +250,53 @@ registry based on its first-frame `pixel_format`.
 
 ---
 
+## Phase 3 implementation notes (deferred)
+
+A partial attempt at Phase 3 was reverted before commit. Capturing
+the dead ends so the next pass doesn't relearn them:
+
+- **`AVFilterGraph::hw_device_ctx` is gone** in this libav version
+  (the bindgen output for ffmpeg-sys-next 8.x doesn't expose it).
+  The doc above suggested setting it directly on the graph; that's
+  outdated. The device has to be attached *per filter context*
+  instead — `AVFilterContext::hw_device_ctx` does exist (verified in
+  `bindings.rs` at the offset 144 marker).
+- The clean libav idiom: parse the graph spec, then either
+  - (a) Call `av_buffersrc_parameters_set(buffer_src, &params)` with
+    `params.hw_frames_ctx` cloned from the cuvid decoder's
+    `hw_frames_ctx`. The device propagates downstream through link
+    negotiation, so `scale_cuda` picks it up automatically.
+  - (b) For the `hwupload` filter (CPU-input → CUDA), walk
+    `graph.filters[]`, find the hwupload context, set its
+    `hw_device_ctx` before `avfilter_graph_config()`. The graph's
+    parse-then-init step has *already* initialised the filter by the
+    time we reach it, so the official ffmpeg examples actually use
+    `avfilter_graph_alloc_filter` + `avfilter_init_str` *manually*
+    for filters that need a per-context device. That's the more
+    verbose but correct path.
+- ffmpeg-next's `Graph::parse` calls `avfilter_graph_parse_ptr`,
+  which initialises filter contexts as part of parsing. To set
+  `hw_device_ctx` on a filter context, we either need to skip parse
+  and build the graph manually with `avfilter_graph_alloc_filter` +
+  link wiring, or set it via the buffer source parameter dance for
+  the cuvid case.
+- Building the encoder side then needs: clone the buffersink's
+  `hw_frames_ctx` (extract from `(*sink.inputs).hw_frames_ctx`
+  *after* `validate`), assign to `(*encoder_ctx).hw_frames_ctx`,
+  open NVENC. NVENC reads input format from the hw_frames_ctx's
+  `sw_format` (NV12).
+
+Suggested next-session scope: implement MJPG-only path first (cuvid
+decoder → buffersrc params dance → scale_cuda → buffersink →
+NVENC). That gets the user's main CPU win without the hwupload
+complexity. Add raw-input support (`hwupload` for YUYV/RGB/Gray8) in
+a follow-up commit using the manual `alloc_filter` + `init_str`
+pattern.
+
+Dependency note: enabling `ffmpeg-next/filter` requires the host
+system to have `libavfilter-dev` (verified install path on this
+machine).
+
 ## Phased landing
 
 Each phase is a separate commit. Behaviorally additive — each phase
