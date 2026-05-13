@@ -447,11 +447,13 @@ fn preview_rgb_bytes<'a>(
             Ok(Cow::Owned(rgb))
         }
         PixelFormat::Depth16 => Ok(Cow::Owned(depth16_to_rgb(header, frame_data)?)),
-        PixelFormat::Yuyv | PixelFormat::Mjpeg => Err(EncoderError::message(format!(
-            "preview JPEG compression does not support {:?} frames; \
-             go through PreviewBuilder for these formats",
-            header.pixel_format
-        ))),
+        PixelFormat::Yuyv | PixelFormat::Mjpeg | PixelFormat::H264AnnexB => {
+            Err(EncoderError::message(format!(
+                "preview JPEG compression does not support {:?} frames; \
+                 go through PreviewBuilder (raw) or the passthrough backend (H264AnnexB)",
+                header.pixel_format
+            )))
+        }
     }
 }
 

@@ -579,7 +579,10 @@ fn channels_for_pixel_format(pixel_format: PixelFormat) -> usize {
         PixelFormat::Depth16 => 1,
         PixelFormat::Gray8 => 1,
         PixelFormat::Yuyv => 2,
-        PixelFormat::Mjpeg => 3,
+        // For LeRobot's parquet schema we report the post-decode
+        // channel count, not the wire-side compressed format.
+        // H264AnnexB decodes to YUV → 3 channels in RGB terms.
+        PixelFormat::Mjpeg | PixelFormat::H264AnnexB => 3,
     }
 }
 

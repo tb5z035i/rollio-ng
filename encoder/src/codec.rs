@@ -805,50 +805,11 @@ impl CodecSession for RvlCodecSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PassthroughCodecSession (stub)
-// ---------------------------------------------------------------------------
-
-pub struct PassthroughCodecSession {
-    metrics: EncodeMetrics,
-}
-
-impl PassthroughCodecSession {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self {
-            metrics: EncodeMetrics::default(),
-        }
-    }
-}
-
-impl Default for PassthroughCodecSession {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CodecSession for PassthroughCodecSession {
-    fn encode(&mut self, _frame: &OwnedFrame, _sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        Err(EncoderError::message(
-            "PassthroughCodecSession not yet implemented (no current camera publishes encoded frames)",
-        ))
-    }
-
-    fn finish(self: Box<Self>, _sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        Err(EncoderError::message(
-            "PassthroughCodecSession not yet implemented",
-        ))
-    }
-
-    fn metrics(&self) -> &EncodeMetrics {
-        &self.metrics
-    }
-
-    fn record_dropped(&mut self) {
-        self.metrics.dropped_frames = self.metrics.dropped_frames.saturating_add(1);
-    }
-}
+// The previous `PassthroughCodecSession` stub that lived here has
+// moved into `crate::backend::color::passthrough` alongside its
+// backend impl. The session is no longer a peer of `LibavCodecSession`
+// / `RvlCodecSession` in this file; backend modules own their session
+// types so codec.rs stays focused on the libav and RVL plumbing.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1098,14 +1059,11 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn passthrough_session_errors_until_implemented() {
-        let mut session: Box<dyn CodecSession> = Box::new(PassthroughCodecSession::new());
-        let mut sink = MockSink::new();
-        let frame = make_rgb_frame(2, 2, 0);
-        let err = session.encode(&frame, &mut sink).expect_err("should error");
-        assert!(err.to_string().contains("not yet implemented"));
-    }
+    // The previous "passthrough errors until implemented" test was
+    // retired once the real `PassthroughCodecSession` landed under
+    // `crate::backend::color::passthrough`. Coverage now lives next to
+    // the implementation; see the tests in
+    // `backend/color/passthrough.rs` for the open/encode/finish path.
 
     /// Phase 1 (Bug B): preview-encoded sessions opened with
     /// `allow_rescale = true` must accept camera-native frames whose

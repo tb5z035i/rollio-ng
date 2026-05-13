@@ -27,6 +27,7 @@
 pub mod libav_cpu;
 pub mod libav_nvidia;
 pub mod libav_vaapi;
+pub mod passthrough;
 
 use std::sync::{Arc, OnceLock};
 
@@ -44,7 +45,7 @@ pub enum ColorBackendId {
     Cpu,
     Nvidia,
     Vaapi,
-    // `Passthrough` lands in phase 2 alongside `PixelFormat::H264AnnexB`.
+    Passthrough,
 }
 
 impl ColorBackendId {
@@ -53,6 +54,7 @@ impl ColorBackendId {
             Self::Cpu => "cpu",
             Self::Nvidia => "nvidia",
             Self::Vaapi => "vaapi",
+            Self::Passthrough => "passthrough",
         }
     }
 }
@@ -145,10 +147,13 @@ impl ColorBackendRegistry {
         REGISTRY.get_or_init(Self::default_set)
     }
 
-    /// The bundled backend set. Phase 1 ships the three Libav-based
-    /// backends; later phases add Passthrough and Horizon SoC.
+    /// The bundled backend set. Passthrough sits at the top of the
+    /// priority list so under `Auto`, an H264AnnexB-in / H264-out
+    /// stream gets relayed verbatim instead of bouncing through an
+    /// unnecessary transcode.
     pub fn default_set() -> Self {
         let mut backends: Vec<Arc<dyn ColorEncoderBackend>> = vec![
+            Arc::new(passthrough::PassthroughBackend),
             Arc::new(libav_nvidia::LibavNvidiaBackend),
             Arc::new(libav_vaapi::LibavVaapiBackend),
             Arc::new(libav_cpu::LibavCpuBackend),
@@ -221,6 +226,7 @@ fn color_backend_id_from_config(value: EncoderBackend) -> Result<ColorBackendId>
         EncoderBackend::Cpu => Ok(ColorBackendId::Cpu),
         EncoderBackend::Nvidia => Ok(ColorBackendId::Nvidia),
         EncoderBackend::Vaapi => Ok(ColorBackendId::Vaapi),
+        EncoderBackend::Passthrough => Ok(ColorBackendId::Passthrough),
         EncoderBackend::Auto => Err(EncoderError::message(
             "color_backend_id_from_config: Auto is not a concrete backend",
         )),

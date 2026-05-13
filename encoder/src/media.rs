@@ -192,6 +192,9 @@ fn availability_note(backend: EncoderBackend, available: bool) -> Option<String>
         EncoderBackend::Cpu => "software codec path".into(),
         EncoderBackend::Nvidia => "requires CUDA/NVENC capable host libraries".into(),
         EncoderBackend::Vaapi => "requires VAAPI-capable host libraries".into(),
+        // Passthrough doesn't go through libav, so it has no codec-name
+        // entry to advertise in the capability probe.
+        EncoderBackend::Passthrough => return None,
     })
 }
 
@@ -286,6 +289,10 @@ fn backend_is_usable(backend: EncoderBackend) -> bool {
                 .unwrap_or(false)
                 || Path::new("/dev/dri/card0").exists()
         }
+        // Passthrough never reaches the libav-side encoder/decoder
+        // lookup; its session is opened directly by
+        // `PassthroughBackend::open_session`.
+        EncoderBackend::Passthrough => false,
     }
 }
 
@@ -381,6 +388,9 @@ pub(crate) fn resolve_chroma_subsampling(
         EncoderBackend::Cpu | EncoderBackend::Auto => ffmpeg::util::format::pixel::Pixel::YUV422P,
         EncoderBackend::Nvidia => ffmpeg::util::format::pixel::Pixel::NV16,
         EncoderBackend::Vaapi => unreachable!("vaapi handled above"),
+        EncoderBackend::Passthrough => {
+            unreachable!("passthrough never reaches libav chroma resolution")
+        }
     };
     if formats.into_iter().any(|fmt| fmt == wanted) {
         ChromaSubsampling::S422
@@ -439,6 +449,9 @@ pub(crate) fn resolve_bit_depth(
             ffmpeg::util::format::pixel::Pixel::P210LE
         }
         (EncoderBackend::Vaapi, _) => unreachable!("vaapi handled above"),
+        (EncoderBackend::Passthrough, _) => {
+            unreachable!("passthrough never reaches libav bit-depth resolution")
+        }
     };
     if formats.into_iter().any(|fmt| fmt == wanted) {
         10
@@ -603,7 +616,7 @@ pub(crate) fn backend_hw_device_type(
     Some(match backend {
         EncoderBackend::Nvidia => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
         EncoderBackend::Vaapi => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-        EncoderBackend::Cpu | EncoderBackend::Auto => return None,
+        EncoderBackend::Cpu | EncoderBackend::Auto | EncoderBackend::Passthrough => return None,
     })
 }
 
@@ -680,6 +693,9 @@ pub(crate) fn pixel_format_for_libav(
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",
         )),
+        PixelFormat::H264AnnexB => Err(EncoderError::message(
+            "H264 Annex B is routed through the passthrough backend, not direct AVFrame copy",
+        )),
     }
 }
 
@@ -692,6 +708,9 @@ pub(crate) fn validate_source_pixel_format(pixel_format: PixelFormat) -> Result<
         | PixelFormat::Mjpeg => Ok(()),
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",
+        )),
+        PixelFormat::H264AnnexB => Err(EncoderError::message(
+            "H264 Annex B frames are only supported via the passthrough backend",
         )),
     }
 }

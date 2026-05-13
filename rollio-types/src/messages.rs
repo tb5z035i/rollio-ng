@@ -231,6 +231,13 @@ pub enum PixelFormat {
     Mjpeg = 3,
     Depth16 = 4,
     Gray8 = 5,
+    /// Pre-encoded H.264 in Annex B framing (start-code-prefixed
+    /// NAL units, possibly including in-band SPS/PPS before each IDR).
+    /// Today no rollio camera publishes this format; the variant exists
+    /// to let the encoder route compressed-from-camera streams to the
+    /// passthrough backend (which forwards bytes verbatim, no decode +
+    /// re-encode, no scaling).
+    H264AnnexB = 6,
 }
 
 impl PixelFormat {
@@ -241,6 +248,7 @@ impl PixelFormat {
             Self::Mjpeg => 0, // variable-length compressed
             Self::Depth16 => 2,
             Self::Gray8 => 1,
+            Self::H264AnnexB => 0, // variable-length compressed
         }
     }
 }

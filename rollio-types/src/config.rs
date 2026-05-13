@@ -281,6 +281,14 @@ pub enum EncoderBackend {
     Cpu,
     Nvidia,
     Vaapi,
+    /// Bytes-verbatim relay for pre-encoded camera streams (today
+    /// only `PixelFormat::H264AnnexB` qualifies). No decode, no scale,
+    /// no encode — the session rewrites packet headers (PTS, sequence,
+    /// `source_timestamp_us`) and forwards NAL units as-is. Selected
+    /// automatically by `Auto` when the input codec matches the
+    /// configured output codec; selecting it explicitly without that
+    /// match is a session-open error.
+    Passthrough,
 }
 
 /// Final container the assembler muxes encoded packets into for one
