@@ -27,6 +27,7 @@ use crate::codec::{open_session, CodecSessionParams, EncoderSession, OwnedFrame}
 use crate::error::{map_iceoryx_error, EncoderError, Result};
 use crate::preview::{JpegCompressor, PreviewBuilder};
 use crate::sink::{IpcPreviewJpegSink, IpcPreviewPacketSink};
+use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::CAMERA_FRAMES_MAX_SUBSCRIBERS;
 use rollio_bus::CONTROL_EVENTS_SERVICE;
@@ -176,7 +177,20 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(2));
+        // Event-driven wait: blocks until *any* of the subscribed
+        // services (frames, control, preview-control) has a new sample,
+        // or the timeout elapses. Replaces the previous 2 ms busy-poll
+        // which woke up ~500x/s even though a 30 fps camera produces a
+        // frame every ~33 ms — the wasted wakeups were eating ~10-15%
+        // of one core in `recv()` syscalls and iceoryx2 polling. The
+        // 33 ms cap matches the camera's frame interval, so an idle
+        // stream still drains control events at least once per frame.
+        match node.wait(Duration::from_millis(33)) {
+            Ok(()) => {}
+            Err(NodeWaitFailure::Interrupt | NodeWaitFailure::TerminationRequest) => {
+                break;
+            }
+        }
     }
 
     state.shutdown();

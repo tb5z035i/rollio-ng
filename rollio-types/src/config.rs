@@ -659,25 +659,14 @@ impl EncoderConfig {
                 ));
             }
         }
-        self.validate_codec("video_codec", self.video_codec, self.video_backend)?;
-        self.validate_codec("depth_codec", self.depth_codec, self.depth_backend)?;
+        // The previous `Rvl + (Nvidia|Vaapi) → error` validation lived
+        // here; it was removed once the encoder crate split depth and
+        // color into separate backend traits (see
+        // `encoder/src/backend/{color,depth}`). RVL now flows through
+        // `DepthBackendRegistry` and never sees `EncoderBackend`, so
+        // the pairing isn't representable. Don't reintroduce this
+        // check unless the runtime regains a unified backend axis.
         self.preview.validate()?;
-        Ok(())
-    }
-
-    fn validate_codec(
-        &self,
-        field_name: &str,
-        codec: EncoderCodec,
-        backend: EncoderBackend,
-    ) -> Result<(), ConfigError> {
-        if codec == EncoderCodec::Rvl
-            && matches!(backend, EncoderBackend::Vaapi | EncoderBackend::Nvidia)
-        {
-            return Err(ConfigError::Validation(format!(
-                "encoder: {field_name}=rvl only supports cpu or auto backends"
-            )));
-        }
         Ok(())
     }
 }

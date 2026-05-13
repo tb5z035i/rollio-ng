@@ -76,50 +76,19 @@ pub trait CodecSession {
 }
 
 /// Owns the per-stream codec context for any currently-active session.
-pub enum EncoderSession {
-    Libav(Box<LibavCodecSession>),
-    Mjpeg(Box<LibavCodecSession>),
-    Rvl(Box<RvlCodecSession>),
-    Passthrough(Box<PassthroughCodecSession>),
-}
-
-impl EncoderSession {
-    pub fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        match self {
-            Self::Libav(s) | Self::Mjpeg(s) => s.encode(frame, sink),
-            Self::Rvl(s) => s.encode(frame, sink),
-            Self::Passthrough(s) => s.encode(frame, sink),
-        }
-    }
-
-    pub fn finish(self, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        match self {
-            Self::Libav(s) | Self::Mjpeg(s) => s.finish(sink),
-            Self::Rvl(s) => s.finish(sink),
-            Self::Passthrough(s) => s.finish(sink),
-        }
-    }
-
-    pub fn metrics(&self) -> &EncodeMetrics {
-        match self {
-            Self::Libav(s) | Self::Mjpeg(s) => s.metrics(),
-            Self::Rvl(s) => s.metrics(),
-            Self::Passthrough(s) => s.metrics(),
-        }
-    }
-
-    pub fn record_dropped(&mut self) {
-        match self {
-            Self::Libav(s) | Self::Mjpeg(s) => s.record_dropped(),
-            Self::Rvl(s) => s.record_dropped(),
-            Self::Passthrough(s) => s.record_dropped(),
-        }
-    }
-}
+///
+/// Phase 1 of the backend-trait refactor replaced the previous enum
+/// dispatcher with a trait object: each `ColorEncoderBackend` /
+/// `DepthEncoderBackend` returns a `Box<dyn CodecSession>` and the
+/// runtime layer drives it through the trait methods directly. Keep
+/// this as a type alias so call sites that referenced `EncoderSession`
+/// continue to compile without churn.
+pub type EncoderSession = Box<dyn CodecSession>;
 
 /// Project-level inputs needed to open any codec session, mirroring
 /// the recording- and preview-role-specific configs without coupling
 /// the sessions to either runtime config struct directly.
+#[derive(Clone, Copy)]
 pub struct CodecSessionParams<'a> {
     pub codec: EncoderCodec,
     pub backend: EncoderBackend,
@@ -177,22 +146,27 @@ impl<'a> CodecSessionParams<'a> {
 }
 
 /// Open the right session for the given codec + first frame.
+///
+/// Dispatches to the depth registry when the codec or the source frame
+/// is depth-typed, otherwise to the color registry. `Auto`-backend
+/// resolution happens inside the color registry (priority-ordered
+/// walk); the depth side has no concept of `EncoderBackend` because
+/// only one (CPU-only, pure-Rust) depth backend exists today.
 pub fn open_session(
     params: CodecSessionParams<'_>,
     first_frame: &OwnedFrame,
 ) -> Result<EncoderSession> {
-    match params.codec {
-        EncoderCodec::Rvl => Ok(EncoderSession::Rvl(Box::new(RvlCodecSession::new(
-            &params,
-            first_frame,
-        )?))),
-        EncoderCodec::Mjpg => Ok(EncoderSession::Mjpeg(Box::new(LibavCodecSession::new(
-            &params,
-            first_frame,
-        )?))),
-        EncoderCodec::H264 | EncoderCodec::H265 | EncoderCodec::Av1 => Ok(EncoderSession::Libav(
-            Box::new(LibavCodecSession::new(&params, first_frame)?),
-        )),
+    use crate::backend::color::{ColorBackendRegistry, ColorCodec};
+    use crate::backend::depth::{DepthBackendRegistry, DepthCodec};
+
+    let is_depth =
+        params.codec == EncoderCodec::Rvl || first_frame.header.pixel_format == PixelFormat::Depth16;
+    if is_depth {
+        let codec = DepthCodec::try_from(params.codec)?;
+        DepthBackendRegistry::global().open(codec, &params, first_frame)
+    } else {
+        let codec = ColorCodec::try_from(params.codec)?;
+        ColorBackendRegistry::global().open(codec, params.backend, &params, first_frame)
     }
 }
 
@@ -245,7 +219,7 @@ pub struct LibavCodecSession {
 }
 
 impl LibavCodecSession {
-    fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
+    pub(crate) fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
         media::ensure_ffmpeg_initialized()?;
 
         let actual_backend = media::resolve_backend(params.codec, params.backend);
@@ -669,7 +643,7 @@ pub struct RvlCodecSession {
 }
 
 impl RvlCodecSession {
-    fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
+    pub(crate) fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
         if first_frame.header.pixel_format != PixelFormat::Depth16 {
             return Err(EncoderError::message(format!(
                 "rvl requires depth16 frames, got {:?}",

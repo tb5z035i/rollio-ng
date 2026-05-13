@@ -207,48 +207,14 @@ port = 19090
     assert_eq!(depth_rec.backend, EncoderBackend::Cpu);
 }
 
-/// Validation must catch an attempt to pair RVL with a GPU backend so the
-/// wizard never offers the operator a configuration that the encoder
-/// process would reject at startup.
-#[test]
-fn encoder_config_rejects_rvl_with_gpu_backend() {
-    let toml_text = r#"
-project_name = "rvl-vaapi"
-mode = "intervention"
-
-[episode]
-format = "lerobot-v2.1"
-fps = 30
-
-[[devices]]
-name = "rs"
-driver = "realsense"
-id = "332322071743"
-bus_root = "rs"
-
-[[devices.channels]]
-channel_type = "depth"
-kind = "camera"
-profile = { width = 640, height = 480, fps = 30, pixel_format = "depth16" }
-
-[encoder]
-video_codec = "h264"
-depth_codec = "rvl"
-depth_backend = "vaapi"
-
-[storage]
-backend = "local"
-output_path = "./out"
-
-[visualizer]
-port = 19090
-"#;
-    let error = ProjectConfig::from_str(toml_text).expect_err("rvl + vaapi should fail validation");
-    assert!(
-        error.to_string().contains("rvl only supports cpu"),
-        "unexpected error: {error}"
-    );
-}
+// The `rvl + (Nvidia|Vaapi) → error` validation test that lived here
+// was removed when the encoder crate split depth and color into
+// separate backend traits (see `encoder/src/backend/{color,depth}`).
+// Depth codecs flow through `DepthBackendRegistry`, which never sees
+// `EncoderBackend`, so the pairing isn't representable at runtime —
+// nothing for config validation to catch. The `depth_backend` field
+// still exists in `EncoderConfig` for forward compatibility but has
+// no effect on RVL today.
 
 #[test]
 fn visualizer_runtime_config_v2_derives_sources_from_enabled_channels() {
