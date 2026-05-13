@@ -65,6 +65,7 @@ export interface RecordedDecodeCall {
   name: string;
   payload: Uint8Array;
   ptsUs: number;
+  sourceTimestampUs: number;
   isKeyframe: boolean;
 }
 
@@ -99,9 +100,10 @@ export class FakeDecoderRegistry implements DecoderRegistry {
     name: string,
     payload: Uint8Array,
     ptsUs: number,
+    sourceTimestampUs: number,
     isKeyframe: boolean,
   ): void {
-    this.decodeCalls.push({ name, payload, ptsUs, isKeyframe });
+    this.decodeCalls.push({ name, payload, ptsUs, sourceTimestampUs, isKeyframe });
   }
 
   close(name: string): void {
@@ -139,6 +141,7 @@ export class FakeDecoderRegistry implements DecoderRegistry {
       width: overrides.width ?? dims.width,
       height: overrides.height ?? dims.height,
       timestampUs: overrides.timestampUs ?? 0,
+      sourceTimestampUs: overrides.sourceTimestampUs ?? Date.now() * 1000,
       receivedAtWallTimeMs: overrides.receivedAtWallTimeMs ?? Date.now(),
     };
     callback(frame);

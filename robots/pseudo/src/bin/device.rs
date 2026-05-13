@@ -143,13 +143,11 @@ fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn Error>> {
     let ids = pseudo_probe_ids(args.sim_cameras, args.sim_arms, args.dof);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&ids)?);
+    } else if ids.is_empty() {
+        println!("no pseudo devices discovered");
     } else {
-        if ids.is_empty() {
-            println!("no pseudo devices discovered");
-        } else {
-            for id in ids {
-                println!("{id}");
-            }
+        for id in ids {
+            println!("{id}");
         }
     }
     Ok(())

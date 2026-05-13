@@ -34,6 +34,20 @@ use rollio_types::config::{EncoderRuntimeConfigV2, PreviewEncoderConfig, Preview
 use rollio_types::messages::{CameraFrameHeader, ControlEvent, PixelFormat, PreviewControl};
 use std::time::Duration;
 
+/// Mirrors `visualizer::preview_config::MIN_PREVIEW_DIMENSION`. H.264
+/// NVENC's documented per-codec minimum width is ~145 on Turing+ (and
+/// AV1's is 160 on Ada+); after 16-byte alignment 160 is the smallest
+/// value that works on every NVENC path we ship. Reject smaller dims
+/// here so a bogus `SetSize` cannot crash the codec session at open
+/// time.
+const MIN_PREVIEW_DIM: u32 = 160;
+/// Mirrors `visualizer::preview_config::PREVIEW_DIMENSION_ALIGNMENT`.
+const PREVIEW_DIM_ALIGNMENT: u32 = 16;
+
+fn is_valid_preview_dim(value: u32) -> bool {
+    value >= MIN_PREVIEW_DIM && value.is_multiple_of(PREVIEW_DIM_ALIGNMENT)
+}
+
 pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     let preview = config
         .preview
@@ -96,6 +110,7 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     };
 
     let mut shutdown = false;
+    let mut last_error_message: Option<String> = None;
     while !shutdown {
         // Drain control-plane events.
         while let Some(sample) = control_subscriber.receive().map_err(map_iceoryx_error)? {
@@ -105,16 +120,29 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
         }
 
         // Drain preview-control events; on a size change, reopen the
-        // current preview producer at the new dims.
+        // current preview producer at the new dims. Bad dims (below the
+        // encoder floor, not 16-aligned) are rejected here so a noisy
+        // SetSize stream — e.g. a UI publishing raw DOM CSS pixels
+        // before layout settles — cannot tear down a working codec
+        // session and crash on re-open.
         let mut new_dims: Option<(u32, u32)> = None;
         while let Some(sample) = preview_control_subscriber
             .receive()
             .map_err(map_iceoryx_error)?
         {
             let PreviewControl::SetSize { width, height } = *sample.payload();
-            if width > 0 && height > 0 {
-                new_dims = Some((width, height));
+            if !is_valid_preview_dim(width) || !is_valid_preview_dim(height) {
+                eprintln!(
+                    "rollio-encoder: ignoring SetSize {}x{} on {} \
+                     (each dim must be >= {} and a multiple of {})",
+                    width, height, config.channel_id, MIN_PREVIEW_DIM, PREVIEW_DIM_ALIGNMENT,
+                );
+                continue;
             }
+            if (width, height) == state.current_dims() {
+                continue;
+            }
+            new_dims = Some((width, height));
         }
         if let Some((w, h)) = new_dims {
             state.resize(&config, &preview, w, h)?;
@@ -131,11 +159,20 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
             latest = Some(owned);
         }
         if let Some(frame) = latest {
-            if let Err(error) = state.handle_frame(&config, &preview, &frame) {
-                eprintln!(
-                    "rollio-encoder: preview frame failed for process={} channel={}: {error}",
-                    config.process_id, config.channel_id
-                );
+            match state.handle_frame(&config, &preview, &frame) {
+                Ok(()) => {
+                    last_error_message = None;
+                }
+                Err(error) => {
+                    let msg = format!(
+                        "rollio-encoder: preview frame failed for process={} channel={}: {error}",
+                        config.process_id, config.channel_id
+                    );
+                    if last_error_message.as_deref() != Some(msg.as_str()) {
+                        eprintln!("{msg}");
+                        last_error_message = Some(msg);
+                    }
+                }
             }
         }
 
@@ -165,6 +202,16 @@ enum PreviewState {
 }
 
 impl PreviewState {
+    /// Currently configured `(width, height)` of the producer. Used by
+    /// the run loop to drop noop `SetSize` requests before they tear
+    /// down a working codec session.
+    fn current_dims(&self) -> (u32, u32) {
+        match self {
+            Self::Jpeg { builder, .. } => (builder.output_width(), builder.output_height()),
+            Self::Encoded { preview, .. } => (preview.width, preview.height),
+        }
+    }
+
     fn open_jpeg(
         node: &Node<ipc::Service>,
         _config: &EncoderRuntimeConfigV2,

@@ -8,76 +8,6 @@ fps = 30
 chunk_size = 1000
 
 [[devices]]
-name = "realsense"
-executable = "rollio-device-realsense"
-driver = "realsense"
-id = "332322071743"
-bus_root = "realsense"
-
-[[devices.channels]]
-channel_type = "color"
-kind = "camera"
-enabled = true
-name = "realsense_rgb"
-channel_label = "Intel RealSense RGB"
-publish_states = []
-recorded_states = []
-
-[devices.channels.profile]
-width = 1920
-height = 1080
-fps = 30
-pixel_format = "yuyv"
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices.channels]]
-channel_type = "depth"
-kind = "camera"
-enabled = true
-name = "realsense_depth"
-channel_label = "Intel RealSense Depth"
-publish_states = []
-recorded_states = []
-
-[devices.channels.profile]
-width = 1280
-height = 720
-fps = 30
-pixel_format = "depth16"
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices.channels]]
-channel_type = "infrared"
-kind = "camera"
-enabled = true
-name = "realsense_ir"
-channel_label = "Intel RealSense Infrared"
-publish_states = []
-recorded_states = []
-
-[devices.channels.profile]
-width = 1280
-height = 800
-fps = 30
-pixel_format = "gray8"
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices]]
 name = "camera"
 executable = "rollio-device-v4l2"
 driver = "v4l2"
@@ -89,64 +19,6 @@ channel_type = "color"
 kind = "camera"
 enabled = true
 name = "camera"
-channel_label = "V4L2 Camera"
-publish_states = []
-recorded_states = []
-
-[devices.channels.profile]
-width = 1280
-height = 960
-fps = 30
-pixel_format = "mjpeg"
-native_pixel_format = "MJPG"
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices]]
-name = "camera_2"
-executable = "rollio-device-v4l2"
-driver = "v4l2"
-id = "/dev/video10"
-bus_root = "camera_2"
-
-[[devices.channels]]
-channel_type = "color"
-kind = "camera"
-enabled = true
-name = "camera_2"
-channel_label = "V4L2 Camera"
-publish_states = []
-recorded_states = []
-
-[devices.channels.profile]
-width = 1920
-height = 1080
-fps = 30
-pixel_format = "mjpeg"
-native_pixel_format = "MJPG"
-
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[[devices]]
-name = "camera_3"
-executable = "rollio-device-v4l2"
-driver = "v4l2"
-id = "/dev/video2"
-bus_root = "camera_3"
-
-[[devices.channels]]
-channel_type = "color"
-kind = "camera"
-enabled = true
-name = "camera_3"
 channel_label = "V4L2 Camera"
 publish_states = []
 recorded_states = []
@@ -171,10 +43,13 @@ backend = "auto"
 video_backend = "auto"
 depth_backend = "auto"
 artifact_format = "auto"
-chroma_subsampling = "s422"
-bit_depth = 8
-color_space = "auto"
 queue_size = 32
+
+[encoder.preview]
+output_mode = "encoded"
+width = 320
+height = 240
+fps = 60
 
 [assembler]
 missing_video_timeout_ms = 5000
@@ -197,10 +72,6 @@ child_poll_interval_ms = 100
 
 [visualizer]
 port = 19090
-max_preview_width = 320
-max_preview_height = 240
-jpeg_quality = 30
-preview_fps = 60
 
 [ui]
 http_host = "0.0.0.0"

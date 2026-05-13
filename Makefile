@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt package deps clean distclean
+.PHONY: build test lint fmt package set-env deps clean distclean
 
 # Top-level verbs. `make` with no args runs `build` -- it is the first
 # target declared below.
@@ -8,6 +8,8 @@
 #   make lint          # fmt-check + clippy + clang-format + ruff + tsc/eslint
 #   make fmt           # cargo fmt + clang-format -i + ruff format  (write mode)
 #   make package       # ./build.sh all -> deb + wheel (does NOT compile)
+#   make set-env       # print shell exports for the in-tree build
+#                      # (use as: `eval "$(make set-env)"`)
 #   make deps          # apt prerequisites for the chosen target
 #   make clean         # remove build outputs (target/, build dirs, dist, staging)
 #   make distclean     # clean + drop regenerable caches (node_modules, nested target/)
@@ -134,6 +136,19 @@ package:
 	  CAMERAS_BUILD_DIR=$(CAMERAS_BUILD_DIR) \
 	  ./build.sh all
 
+# Print shell `export` lines that put the freshly-built dev binaries on
+# PATH and point ROLLIO_SHARE_DIR at the in-tree ui/web/dist bundle.
+# Honours BUILD_TYPE / TARGET_ARCH, so release / cross builds resolve to
+# the right target/ subdir. Use it from your shell as:
+#
+#     eval "$$(make set-env)"
+#
+# After that, `rollio collect --config ./config.toml` runs straight out
+# of the working tree without `make package` or installing into /usr.
+set-env:
+	@echo 'export PATH="$(CURDIR)/$(TARGET_BUILD_DIR):$$PATH"'
+	@echo 'export ROLLIO_SHARE_DIR="$(CURDIR)"'
+
 # Apt-side prereqs. The host (amd64) list is always installed; arm64
 # layers the cross toolchain + multiarch :arm64 dev libs on top.
 # Rust (`cargo`/`rustc`) and Node (`node`/`npm`) come from rustup/nvm/etc.
@@ -150,6 +165,9 @@ deps:
 	#   clang, lld         -- canonical C/C++ compiler + linker (host & cross)
 	#   clang-format       -- `make cpp-lint` / `make cpp-fmt`
 	#   libclang-dev       -- bindgen runtime (loads libclang.so)
+	#   llvm               -- unversioned `llvm-ar` on PATH; AR_<target>=llvm-ar
+	#                         in .cargo/config.toml. llvm-NN alone only ships
+	#                         the suffixed binary (llvm-ar-18).
 	#   libstdc++-13-dev   -- C++ headers clang searches (and owns
 	#                         /usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so)
 	#   libav*-dev         -- ffmpeg-next dynamic link (rollio-encoder)
@@ -165,7 +183,7 @@ deps:
 	sudo apt-get install -y --no-install-recommends \
 	  patch dpkg-dev file \
 	  cmake ninja-build pkg-config nasm \
-	  clang clang-format lld libclang-dev \
+	  clang clang-format lld libclang-dev llvm \
 	  libstdc++-13-dev \
 	  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
 	  liburdfdom-dev \

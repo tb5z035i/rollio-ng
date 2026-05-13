@@ -343,7 +343,30 @@ impl LibavCodecSession {
             params.preset,
             params.tune,
         );
-        let opened_encoder = encoder.open_as_with(codec, codec_options)?;
+        let opened_encoder = encoder
+            .open_as_with(codec, codec_options)
+            .map_err(|err| {
+                let hint = match actual_backend {
+                    EncoderBackend::Nvidia => " (NVENC enforces per-codec minimum dimensions \
+                        — H.264 ~145x49 on Turing+ and ~256x128 on older Maxwell/Pascal silicon, \
+                        HEVC ~129x33, AV1 ~160x64 on Ada+ — and width/height alignment constraints; \
+                        for small preview streams set `[encoder.preview] backend = \"cpu\"` to use libx264 instead)",
+                    EncoderBackend::Vaapi => " (VAAPI imposes its own width/height alignment, \
+                        commonly multiples of 16; try `backend = \"cpu\"` if the driver rejects the configured dims)",
+                    _ => "",
+                };
+                EncoderError::message(format!(
+                    "failed to open encoder {codec_name} (codec={}, backend={:?}, \
+                     resolution={}x{}, fps={}, bit_depth={}, chroma={:?}): {err}{hint}",
+                    params.codec.as_str(),
+                    actual_backend,
+                    params.output_width,
+                    params.output_height,
+                    params.fps,
+                    bit_depth,
+                    chroma_subsampling,
+                ))
+            })?;
 
         // Capture extradata before any frame is sent. Codecs without
         // extradata (e.g. MJPG) leave the slice empty.

@@ -193,6 +193,13 @@ textarea {
   aspect-ratio: 16 / 10;
   background: #050a11;
   overflow: hidden;
+  /* Center the inner frame (canvas or image) so the encoded preview's
+   * native aspect ratio is preserved via `max-width/height` rather than
+   * stretched to fill. Without flex centering, a canvas whose intrinsic
+   * buffer is e.g. 1920x1248 would render flush to the top-left edge. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .camera-tile__image {
@@ -204,6 +211,20 @@ textarea {
    * background of `.camera-tile__media` fills any unused area. */
   object-fit: contain;
   object-position: center;
+}
+
+.camera-tile__canvas {
+  /* The canvas's HTML `width`/`height` attributes set the *drawing buffer*
+   * size (matches the decoded VideoFrame's dims), but without CSS the
+   * element would also render at those intrinsic pixels and overflow the
+   * parent's 16:10 box. `max-width/height: 100%` together with `width/
+   * height: auto` lets the browser shrink the canvas to fit while
+   * preserving the drawing buffer's aspect ratio. */
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
 }
 
 .camera-tile__placeholder {

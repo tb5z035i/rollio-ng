@@ -134,14 +134,23 @@ async fn handle_client(
                                         log::warn!("ignoring set_preview_size without height from {peer}");
                                         continue;
                                     };
-                                    let active = preview_config.set_requested_size(width, height);
+                                    let update = preview_config.set_requested_size(width, height);
                                     {
                                         let mut info = stream_info.lock().expect("stream info");
-                                        info.set_active_preview_bounds(active.width, active.height);
+                                        info.set_active_preview_bounds(
+                                            update.size.width,
+                                            update.size.height,
+                                        );
                                     }
-                                    // Forward upstream so every per-camera preview
-                                    // encoder restarts at the new dims.
-                                    preview_control_sender(active.width, active.height);
+                                    // Only forward upstream when the post-clamp dims
+                                    // actually changed; otherwise the encoder would
+                                    // tear down its working codec session for nothing.
+                                    if update.changed {
+                                        preview_control_sender(
+                                            update.size.width,
+                                            update.size.height,
+                                        );
+                                    }
                                     let payload = {
                                         let info = stream_info.lock().expect("stream info");
                                         protocol::encode_stream_info(&info.snapshot())

@@ -1,5 +1,5 @@
 import type { CameraFrame, AggregatedRobotChannel } from "../lib/websocket";
-import type { StreamInfoMessage } from "../lib/protocol";
+import { codecName, type StreamInfoMessage } from "../lib/protocol";
 
 interface InfoPanelProps {
   frames: Map<string, CameraFrame>;
@@ -83,7 +83,7 @@ export function InfoPanel({
             <div className="info-panel__row">
               <span>Preview</span>
               <span>
-                {streamInfo.active_preview_width}x{streamInfo.active_preview_height}
+                {previewCodecLabel(streamInfo, frames)} · {streamInfo.active_preview_width}x{streamInfo.active_preview_height}
               </span>
             </div>
           ) : null}
@@ -91,6 +91,21 @@ export function InfoPanel({
       </div>
     </section>
   );
+}
+
+function previewCodecLabel(
+  streamInfo: StreamInfoMessage,
+  frames: Map<string, CameraFrame>,
+): string {
+  if (streamInfo.preview_output_mode === "jpeg") {
+    return "jpeg";
+  }
+  for (const frame of frames.values()) {
+    if (frame.kind === "video") {
+      return codecName(frame.codecId);
+    }
+  }
+  return "encoded";
 }
 
 function cameraResolution(
@@ -103,7 +118,10 @@ function cameraResolution(
     return `${camera.source_width}x${camera.source_height}`;
   }
   if (frame) {
-    return `${frame.previewWidth}x${frame.previewHeight}`;
+    if (frame.kind === "jpeg") {
+      return `${frame.previewWidth}x${frame.previewHeight}`;
+    }
+    return `${frame.width}x${frame.height}`;
   }
   return "n/a";
 }

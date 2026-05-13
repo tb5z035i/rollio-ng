@@ -48,7 +48,12 @@ export interface VideoCameraFrame {
   videoFrame: VideoFrame;
   width: number;
   height: number;
+  /** Codec PTS in µs (relative to recording start). Not safe to
+   *  compare against wall-clock — use `sourceTimestampUs` for that. */
   timestampUs: number;
+  /** Camera capture wall-clock µs since UNIX epoch. Compare with
+   *  `Date.now() * 1000` for a meaningful end-to-end latency. */
+  sourceTimestampUs: number;
   receivedAtWallTimeMs: number;
   sequence: number;
   payloadBytes: number;
@@ -402,6 +407,7 @@ export function usePreviewSocket(
         width: decoded.width,
         height: decoded.height,
         timestampUs: decoded.timestampUs,
+        sourceTimestampUs: decoded.sourceTimestampUs,
         receivedAtWallTimeMs,
         sequence,
         // Bytes-per-decoded-frame metric is best-effort and lives at
@@ -419,9 +425,13 @@ export function usePreviewSocket(
         `ui.preview_resolution.${decoded.name}`,
         `${decoded.width}x${decoded.height}`,
       );
+      // True end-to-end latency from camera capture to decoded frame.
+      // `sourceTimestampUs` is unix-epoch µs from the encoder header
+      // (propagated through `EncodedPacketHeader.source_timestamp_us`),
+      // so this stays in the same time base as `Date.now()`.
       const decodeLatencyMs = Math.max(
         0,
-        receivedAtWallTimeMs - decoded.timestampUs / 1_000,
+        receivedAtWallTimeMs - decoded.sourceTimestampUs / 1_000,
       );
       setGauge(`ui.video_decode_latency_ms.${decoded.name}`, decodeLatencyMs);
     },
@@ -497,6 +507,12 @@ export function usePreviewSocket(
       }
       if (msg.type === "encoded_packet") {
         incrementGauge(`ws.encoded_packets_total.${msg.name}`);
+        // Mirror the JPEG-path bump so InfoPanel's `Frames: rx=` shows
+        // a non-zero counter in encoded mode too. Without this, the
+        // panel reads rx=0 forever even when packets are flowing,
+        // which makes "no preview" debugging extremely misleading.
+        incrementGauge("ws.frames_received_total");
+        incrementGauge(`ws.frames_received_total.${msg.name}`);
         if (msg.isKeyframe) {
           incrementGauge(`ws.encoded_keyframes_total.${msg.name}`);
         }
@@ -518,6 +534,7 @@ export function usePreviewSocket(
           msg.name,
           msg.payload,
           msg.ptsUs,
+          msg.sourceTimestampUs,
           msg.isKeyframe,
         );
         return;

@@ -53,7 +53,13 @@ pub struct DecodedArtifact {
 static FFMPEG_INITIALIZED: OnceLock<Result<()>> = OnceLock::new();
 
 pub fn ensure_ffmpeg_initialized() -> Result<()> {
-    match FFMPEG_INITIALIZED.get_or_init(|| ffmpeg::init().map_err(Into::into)) {
+    match FFMPEG_INITIALIZED.get_or_init(|| {
+        let result = ffmpeg::init().map_err(Into::into);
+        if std::env::var("ROLLIO_FFMPEG_DEBUG").is_ok() {
+            unsafe { ffmpeg::ffi::av_log_set_level(ffmpeg::ffi::AV_LOG_DEBUG) };
+        }
+        result
+    }) {
         Ok(()) => Ok(()),
         Err(error) => Err(EncoderError::message(error.to_string())),
     }

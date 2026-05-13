@@ -12,7 +12,7 @@ See `design/` for architecture docs and sprint plans.
 
 | Tool       | Minimum version | Purpose              |
 |------------|-----------------|----------------------|
-| Rust       | 1.85+           | Cargo workspace      |
+| Rust       | 1.88+           | Cargo workspace      |
 | CMake      | 3.22+           | C++ modules          |
 | g++ / clang| C++17 support   | C++ modules          |
 | NASM       | recent          | `libjpeg-turbo` SIMD build used by `turbojpeg` |

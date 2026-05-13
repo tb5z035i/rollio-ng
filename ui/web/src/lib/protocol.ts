@@ -3,6 +3,18 @@ const FRAME_TYPE_ENCODED_CONFIG = 0x02;
 const FRAME_TYPE_ENCODED_PACKET = 0x03;
 const textDecoder = new TextDecoder("utf-8");
 
+export const CODEC_NAMES: Record<number, string> = {
+  0: "h264",
+  1: "h265",
+  2: "av1",
+  3: "rvl",
+  4: "mjpg",
+};
+
+export function codecName(codecId: number): string {
+  return CODEC_NAMES[codecId] ?? `codec ${codecId}`;
+}
+
 export type EndEffectorStatus = "unknown" | "disabled" | "enabled";
 
 /**
@@ -55,8 +67,14 @@ export interface EncodedPacketMessage {
   name: string;
   codecId: number;
   isKeyframe: boolean;
+  /** Codec PTS in µs, monotonic from recording start. Used by WebCodecs
+   *  for decoder ordering. */
   ptsUs: number;
   sequence: number;
+  /** Camera capture wall-clock µs since UNIX epoch — propagated by the
+   *  encoder unchanged. Use this (not `ptsUs`) for end-to-end latency
+   *  metrics that compare against `Date.now()`. */
+  sourceTimestampUs: number;
   payload: Uint8Array;
 }
 
@@ -185,13 +203,14 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
       };
     }
     case FRAME_TYPE_ENCODED_PACKET: {
-      const headerEnd = bodyStart + 1 + 1 + 8 + 8 + 4;
+      const headerEnd = bodyStart + 1 + 1 + 8 + 8 + 8 + 4;
       if (data.byteLength < headerEnd) return null;
       const codecId = view.getUint8(bodyStart);
       const flags = view.getUint8(bodyStart + 1);
       const ptsUs = Number(view.getBigUint64(bodyStart + 2, true));
       const sequence = Number(view.getBigUint64(bodyStart + 10, true));
-      const payloadLen = view.getUint32(bodyStart + 18, true);
+      const sourceTimestampUs = Number(view.getBigUint64(bodyStart + 18, true));
+      const payloadLen = view.getUint32(bodyStart + 26, true);
       if (data.byteLength < headerEnd + payloadLen) return null;
       const payload = new Uint8Array(data.slice(headerEnd, headerEnd + payloadLen));
       return {
@@ -201,6 +220,7 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
         isKeyframe: (flags & 0x01) !== 0,
         ptsUs,
         sequence,
+        sourceTimestampUs,
         payload,
       };
     }

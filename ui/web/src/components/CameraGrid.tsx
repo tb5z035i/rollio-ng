@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { MAX_PREVIEW_CAMERAS } from "../lib/camera-layout";
 import { incrementGauge, nowMs, recordTiming, setGauge } from "../lib/debug-metrics";
 import type { PreviewDimensions } from "../lib/layout";
+import { codecName } from "../lib/protocol";
 import type { CameraFrame } from "../lib/websocket";
 
 interface CameraGridProps {
@@ -9,20 +10,11 @@ interface CameraGridProps {
   onPreviewSizeChange?: (size: PreviewDimensions) => void;
 }
 
-const CODEC_NAMES: Record<number, string> = {
-  0: "h264",
-  1: "h265",
-  2: "av1",
-  3: "rvl",
-  4: "mjpg",
-};
-
 function metaLine(frame: CameraFrame): string {
   if (frame.kind === "jpeg") {
-    return `${frame.previewWidth}x${frame.previewHeight} | ${frame.jpegBytes} bytes`;
+    return `${frame.previewWidth}x${frame.previewHeight} | jpeg ${frame.jpegBytes} bytes`;
   }
-  const codecName = CODEC_NAMES[frame.codecId] ?? `codec ${frame.codecId}`;
-  return `${frame.width}x${frame.height} | ${codecName} ${frame.payloadBytes} bytes`;
+  return `${frame.width}x${frame.height} | ${codecName(frame.codecId)} ${frame.payloadBytes} bytes`;
 }
 
 interface VideoCanvasTileProps {
@@ -139,9 +131,14 @@ export function CameraGrid({
         setGauge(`ui.jpeg_bytes.${camera.name}`, frame.jpegBytes);
         setGauge(`ui.frame_index.${camera.name}`, frame.frameIndex);
       } else {
+        // `timestampUs` is the codec's PTS (monotonic-from-recording),
+        // not unix epoch — comparing it to Date.now() gives a ~1.7e9-ms
+        // garbage value. `sourceTimestampUs` carries the camera's
+        // wall-clock capture time, which is the right side of the
+        // capture-to-display latency calculation.
         setGauge(
           `ui.display_latency_ms.${camera.name}`,
-          Math.max(0, Date.now() - frame.timestampUs / 1_000),
+          Math.max(0, Date.now() - frame.sourceTimestampUs / 1_000),
         );
         setGauge(
           `ui.preview_resolution.${camera.name}`,

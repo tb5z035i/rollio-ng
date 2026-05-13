@@ -1,0 +1,99 @@
+# Ubuntu 22.04 amd64 builder for Rollio's linux/arm64 .deb.
+#
+# Build the image:
+#   docker build -f Dockerfile.cross-jammy -t rollio-cross-jammy .
+#
+# QEMU/binfmt must be registered on the Docker host for target-arch build
+# probes that execute arm64 ELFs:
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64
+#
+# Build from the checked-out repo:
+#   docker run --rm -it -v "$PWD":/workspace -w /workspace rollio-cross-jammy
+
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG RUST_VERSION=1.88.0
+ARG NODE_VERSION=20.11.1
+ARG UBUNTU_MIRROR=http://mirrors.ustc.edu.cn/ubuntu
+ARG UBUNTU_PORTS_MIRROR=http://mirrors.ustc.edu.cn/ubuntu-ports
+ARG CARGO_SPARSE_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    NPM_CONFIG_CACHE=/tmp/npm-cache \
+    PIP_CACHE_DIR=/tmp/pip-cache \
+    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    BUILD_TYPE=release \
+    TARGET_ARCH=arm64
+
+RUN set -eux; \
+    dpkg --add-architecture arm64; \
+    { \
+      echo "deb [arch=amd64] ${UBUNTU_MIRROR} jammy main restricted universe multiverse"; \
+      echo "deb [arch=amd64] ${UBUNTU_MIRROR} jammy-updates main restricted universe multiverse"; \
+      echo "deb [arch=amd64] ${UBUNTU_MIRROR} jammy-backports main restricted universe multiverse"; \
+      echo "deb [arch=amd64] ${UBUNTU_MIRROR} jammy-security main restricted universe multiverse"; \
+    } > /etc/apt/sources.list; \
+    { \
+      echo "deb [arch=arm64] ${UBUNTU_PORTS_MIRROR} jammy main restricted universe multiverse"; \
+      echo "deb [arch=arm64] ${UBUNTU_PORTS_MIRROR} jammy-updates main restricted universe multiverse"; \
+      echo "deb [arch=arm64] ${UBUNTU_PORTS_MIRROR} jammy-backports main restricted universe multiverse"; \
+      echo "deb [arch=arm64] ${UBUNTU_PORTS_MIRROR} jammy-security main restricted universe multiverse"; \
+    } > /etc/apt/sources.list.d/ubuntu-ports.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git openssh-client xz-utils \
+      build-essential patch dpkg-dev file \
+      cmake ninja-build pkg-config nasm \
+      clang clang-format lld libclang-dev llvm \
+      libstdc++-11-dev \
+      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+      liburdfdom-dev \
+      libeigen3-dev \
+      libboost-filesystem-dev libboost-serialization-dev \
+      libusb-1.0-0-dev libudev-dev \
+      crossbuild-essential-arm64 \
+      qemu-user-static binfmt-support dpkg-cross \
+      libstdc++-11-dev:arm64 \
+      libavcodec-dev:arm64 libavformat-dev:arm64 \
+      libavutil-dev:arm64 libswscale-dev:arm64 \
+      liburdfdom-dev:arm64 \
+      libeigen3-dev:arm64 \
+      libboost-filesystem-dev:arm64 libboost-serialization-dev:arm64 \
+      libusb-1.0-0-dev:arm64 libudev-dev:arm64 \
+      python3 python3-venv python3-pip python3-build python3-setuptools python3-wheel; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" --no-modify-path; \
+    rustup target add aarch64-unknown-linux-gnu; \
+    chmod -R a+rwX "${RUSTUP_HOME}" "${CARGO_HOME}"
+
+RUN set -eux; \
+    mkdir -p "${CARGO_HOME}"; \
+    { \
+      echo "[source.crates-io]"; \
+      echo "replace-with = 'ustc'"; \
+      echo; \
+      echo "[source.ustc]"; \
+      echo "registry = \"${CARGO_SPARSE_INDEX}\""; \
+      echo; \
+      echo "[registries.ustc]"; \
+      echo "index = \"${CARGO_SPARSE_INDEX}\""; \
+    } > "${CARGO_HOME}/config.toml"; \
+    chmod a+r "${CARGO_HOME}/config.toml"
+
+RUN set -eux; \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1; \
+    rm "node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    node --version; \
+    npm --version
+
+RUN git config --system --add safe.directory '*'
+
+WORKDIR /workspace
+
+CMD ["bash", "-lc", "make build BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH} && make package BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH}"]
