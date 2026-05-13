@@ -15,5 +15,7 @@
 //! one entry to the registry's `default_set()` — no central match arms
 //! to update.
 
+pub mod bsf;
 pub mod color;
 pub mod depth;
+pub mod filter_graph;

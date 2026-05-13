@@ -11,7 +11,7 @@ rvl = { version = "1.0.0", path = "../third_party/rvl-rust" }
 clap = { version = "4.6.0", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
-ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling", "filter"] }
 # Used by the preview-role encoder when output_mode = jpeg: PreviewBuilder
 # decodes/copies the camera frame to RGB24, JpegCompressor compresses to
 # JPEG via libjpeg-turbo, and the result is published on .../preview-jpeg.
@@ -53,4 +53,4 @@ tempfile = "3.27.0"
 # JPEG payloads (mjpeg round-trip test). The lib already depends on
 # this; the dev-dep declaration just makes it visible to the test
 # crate's separate compilation unit.
-ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling", "filter"] }

@@ -702,6 +702,7 @@ fn recording_config_inline(
         EncoderBackend::Cpu => "cpu",
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
+        EncoderBackend::Passthrough => "passthrough",
     };
     format!(
         "process_id = \"{process_id}\"\n\

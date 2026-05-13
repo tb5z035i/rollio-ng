@@ -250,10 +250,46 @@ registry based on its first-frame `pixel_format`.
 
 ---
 
-## Phase 3 implementation notes (deferred)
+## Phase 3 outcome
 
-A partial attempt at Phase 3 was reverted before commit. Capturing
-the dead ends so the next pass doesn't relearn them:
+Implemented and committed. The full CUDA pipeline (cuvid → scale_cuda
+→ NVENC, plus `hwupload` for raw inputs) is plumbed in
+`backend/color/libav_nvidia.rs` (`NvidiaCudaSession`) on top of
+`backend/filter_graph.rs` (raw-FFI `ScaleGraph`). MJPEG input also
+goes through the `mjpeg2jpeg` bitstream filter (`backend/bsf.rs`)
+before reaching `mjpeg_cuvid` so UVC streams without DHT segments
+have a chance of being decoded on the GPU.
+
+**Result on the user's hardware (RTX 4090 mobile, i9-14900HX, UVC
+webcam at 1920x1080@30 MJPG)**:
+
+- `mjpeg_cuvid` rejects the camera's bitstream even with the
+  mjpeg2jpeg BSF in front (likely 4:2:2 subsampling, which the Ada
+  NVDEC's MJPEG block doesn't accept; the chip supports 4:2:0
+  baseline only).
+- `NvidiaCudaSession` returns an error, and
+  `LibavNvidiaBackend::open_session` falls back to the legacy
+  `LibavCodecSession` (CPU swscale + NVENC) — preserves the 16% of
+  one core baseline. No regression.
+- Cameras emitting 4:2:0 MJPEG or H.264 should hit the full-HW path
+  and see the expected CPU drop. (Not testable on this hardware
+  without a different camera.)
+
+**Plumbed but currently unused**:
+
+`InputStrategy::CpuDecode` (SW MJPEG decoder → `hwupload_cuda` →
+`scale_cuda` → NVENC) is implemented and exercised in the code path
+but not selected today. Initial measurements on the UVC camera
+showed it at ~34% CPU vs the legacy 16% — likely because
+`scale_cuda` has to handle YUV422P+J-range input, and either the
+extra hwupload bandwidth or scale_cuda's range conversion is
+heavier than CPU swscale → NV12. Kept as a future fallback target
+for hardware where `mjpeg_cuvid` fails but the YUV422P→NV12 GPU
+path *would* win.
+
+## Phase 3 historical implementation notes
+
+Capturing dead ends so future passes don't relearn them:
 
 - **`AVFilterGraph::hw_device_ctx` is gone** in this libav version
   (the bindgen output for ffmpeg-sys-next 8.x doesn't expose it).
@@ -286,16 +322,30 @@ the dead ends so the next pass doesn't relearn them:
   open NVENC. NVENC reads input format from the hw_frames_ctx's
   `sw_format` (NV12).
 
-Suggested next-session scope: implement MJPG-only path first (cuvid
-decoder → buffersrc params dance → scale_cuda → buffersink →
-NVENC). That gets the user's main CPU win without the hwupload
-complexity. Add raw-input support (`hwupload` for YUYV/RGB/Gray8) in
-a follow-up commit using the manual `alloc_filter` + `init_str`
-pattern.
-
 Dependency note: enabling `ffmpeg-next/filter` requires the host
 system to have `libavfilter-dev` (verified install path on this
 machine).
+
+### `AVBSFContext` struct layout
+
+`ffmpeg-sys-next`'s bindgen config does not include
+`libavcodec/bsf.h`, so the BSF API symbols aren't generated. We
+declare them by hand in `backend/bsf.rs`. The struct layout in
+FFmpeg 6.x is:
+
+```c
+const AVClass *av_class;     // offset  0
+const AVBitStreamFilter *filter; // offset 8
+void *priv_data/tb5z035i/workspace;           // offset 16  <-- important
+AVCodecParameters *par_in;   // offset 24
+AVCodecParameters *par_out;  // offset 32
+```
+
+Skipping `priv_data/tb5z035i/workspace` (as one might from older docs) puts `par_in`
+at offset 16 in the Rust mirror struct, which reads the
+`priv_data/tb5z035i/workspace` pointer instead — manifesting as a runtime "av_bsf_alloc
+returned a context with null par_in" error. Verified against
+`/usr/include/x86_64-linux-gnu/libavcodec/bsf.h`.
 
 ## Phased landing
 
