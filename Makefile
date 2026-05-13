@@ -171,8 +171,10 @@ deps:
 	#   libstdc++-13-dev   -- C++ headers clang searches (and owns
 	#                         /usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so)
 	#   libav*-dev         -- ffmpeg-next dynamic link (rollio-encoder)
-	#   liburdfdom-dev     -- airbot Pinocchio (auto-pulls libconsole-bridge-dev,
-	#                         libtinyxml2-dev, liburdfdom-headers-dev)
+	#   liburdfdom-dev     -- airbot Pinocchio (auto-pulls libconsole-bridge-dev
+	#                         and liburdfdom-headers-dev)
+	#   libtinyxml2-dev    -- urdfdom link dep; explicit for the target-arch
+	#                         linker symlink (libtinyxml2.so)
 	#   libeigen3-dev      -- pinocchio + cxx-build include
 	#   libboost-*-dev     -- pinocchio link deps
 	#   libusb-1.0-0-dev,
@@ -187,6 +189,7 @@ deps:
 	  libstdc++-13-dev \
 	  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
 	  liburdfdom-dev \
+	  libtinyxml2-dev \
 	  libeigen3-dev \
 	  libboost-filesystem-dev libboost-serialization-dev \
 	  libusb-1.0-0-dev libudev-dev \
@@ -214,6 +217,7 @@ ifeq ($(TARGET_ARCH),arm64)
 	  libavcodec-dev:arm64 libavformat-dev:arm64 \
 	  libavutil-dev:arm64 libswscale-dev:arm64 \
 	  liburdfdom-dev:arm64 \
+	  libtinyxml2-dev:arm64 \
 	  libeigen3-dev:arm64 \
 	  libboost-filesystem-dev:arm64 libboost-serialization-dev:arm64 \
 	  libusb-1.0-0-dev:arm64 libudev-dev:arm64

@@ -127,11 +127,56 @@ Rust and Node on `PATH` (rustup, nvm), `dpkg-dev` for `dpkg-deb` + `dpkg-shlibde
 ```bash
 make build BUILD_TYPE=release             # rust + C++ + UI (optimized)
 make package BUILD_TYPE=release           # pack -> deb + wheel (no recompile)
+```
 
-# Cross-compile to linux/arm64 (deb only; the Nero wheel is py3-none-any):
-make deps    TARGET_ARCH=arm64                       # one-time cross toolchain + :arm64 dev libs
-make build   BUILD_TYPE=release TARGET_ARCH=arm64
+### Cross-compile to linux/arm64
+
+The Docker path is the most reproducible way to build an arm64 package from an
+amd64 host. Rebuild the image after changing `Dockerfile.cross-jammy`.
+
+```bash
+# Build the cross toolchain image.
+docker build -f Dockerfile.cross-jammy -t rollio-cross-jammy .
+
+# Register arm64 QEMU/binfmt on the Docker host once.
+# Required by target-arch build probes such as ffmpeg-sys-next's `check.c`;
+# without it, cross builds can fail with "Exec format error".
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+# Build + package from the checked-out repo.
+# The image CMD runs:
+#   make build BUILD_TYPE=release TARGET_ARCH=arm64
+#   make package BUILD_TYPE=release TARGET_ARCH=arm64
+docker run --rm -it \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  rollio-cross-jammy
+
+# Equivalent explicit form, useful when overriding commands/env.
+docker run --rm -it \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  rollio-cross-jammy \
+  bash -lc 'make build BUILD_TYPE=release TARGET_ARCH=arm64 && make package BUILD_TYPE=release TARGET_ARCH=arm64'
+```
+
+Without Docker, install the cross dependencies on the host once, then build and
+package with the same `BUILD_TYPE` and `TARGET_ARCH`.
+
+```bash
+make deps TARGET_ARCH=arm64
+make build BUILD_TYPE=release TARGET_ARCH=arm64
 make package BUILD_TYPE=release TARGET_ARCH=arm64
+```
+
+The arm64 package is written to `dist/rollio_*_arm64.deb`. Run it on an arm64
+device by installing the deb there:
+
+```bash
+scp dist/rollio_*_arm64.deb <arm64-host>:/tmp/
+ssh <arm64-host>
+sudo apt install /tmp/rollio_*_arm64.deb
+rollio collect --config /path/to/config.toml
 ```
 
 Produces in `dist/`:

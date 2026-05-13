@@ -13,11 +13,11 @@ host x86_64 clang, which chokes on aarch64-only attributes such as
 The fix is one line: compile the probe for the target arch. The
 resulting target-arch ELF is then executed by the build script as
 usual; on Linux hosts with `qemu-user-static` + `binfmt_misc`
-registered (Ubuntu's `qemu-user-static` apt package does this on
-install via dpkg postinst hooks) the kernel routes the foreign-arch
-binary through QEMU emulation transparently. Rollio's
-`make deps TARGET_ARCH=arm64` recipe pulls the qemu apt packages so
-this is guaranteed available whenever the cross build is being run.
+registered the kernel routes the foreign-arch binary through QEMU
+emulation transparently. Rollio's `make deps TARGET_ARCH=arm64`
+recipe installs the qemu apt packages for host builds. Docker builds
+also need binfmt registered on the Docker host, e.g.
+`docker run --privileged --rm tonistiigi/binfmt --install arm64`.
 
 Patched into the vendored submodule by `make apply-vendored-patches`
 (invoked transitively by `rust-build` / `rust-test` / `rust-lint`).
@@ -32,7 +32,8 @@ Idempotent: skipped if the patched marker is already present.
 +    // Cross-compile the probe for the target arch. The resulting binary is
 +    // executed below; on Linux hosts with qemu-user-static + binfmt_misc
 +    // registered, foreign-arch binaries run transparently via QEMU emulation
-+    // (see Rollio's `make deps TARGET_ARCH=<arch>` recipe).
++    // (host builds: `make deps TARGET_ARCH=<arch>`; Docker builds: register
++    // binfmt on the Docker host before running the cross image).
      let mut compiler = cc::Build::new()
 -        .target(&env::var("HOST").unwrap()) // don't cross-compile this
 +        .target(&env::var("TARGET").unwrap())

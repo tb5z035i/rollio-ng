@@ -191,6 +191,15 @@ textarea {
    * `aspect-ratio` so the box never stretches. */
   width: 100%;
   aspect-ratio: 16 / 10;
+  /* Cap the tile at 50% of the viewport height so a single tall camera
+   * tile never pushes the rest of the UI (info panel, robot panels)
+   * off-screen on short / split-screen displays. The matching
+   * `max-width` is the 16:10 partner of `max-height: 50vh`
+   * (50vh * 16/10 = 80vh), which lets the box shrink as a unit and
+   * stay 16:10 — without it the grid's `width: 100%` would keep the
+   * box wide and only the height would clamp, breaking the aspect. */
+  max-height: 50vh;
+  max-width: 80vh;
   background: #050a11;
   overflow: hidden;
   /* Center the inner frame (canvas or image) so the encoded preview's
@@ -200,6 +209,11 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* When `max-width: 80vh` kicks in (tall+narrow viewport) the box
+   * becomes narrower than its grid cell; center it horizontally so
+   * the empty horizontal space splits evenly instead of pinning the
+   * preview to the left edge of the cell. */
+  margin-inline: auto;
 }
 
 .camera-tile__image {
