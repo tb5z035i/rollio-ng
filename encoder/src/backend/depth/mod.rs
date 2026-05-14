@@ -119,3 +119,41 @@ impl DepthBackendRegistry {
         backend.open_session(params, first_frame)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_set_contains_rvl_backend() {
+        let r = DepthBackendRegistry::default_set();
+        let ids: Vec<_> = r.backends().iter().map(|b| b.id()).collect();
+        assert_eq!(ids, vec![DepthBackendId::Rvl]);
+    }
+
+    #[test]
+    fn depth_codec_round_trips_rvl() {
+        let dc = DepthCodec::try_from(EncoderCodec::Rvl).expect("rvl -> depth");
+        assert_eq!(dc, DepthCodec::Rvl);
+        let back: EncoderCodec = dc.into();
+        assert_eq!(back, EncoderCodec::Rvl);
+    }
+
+    #[test]
+    fn depth_codec_rejects_color_codecs() {
+        for c in [
+            EncoderCodec::H264,
+            EncoderCodec::H265,
+            EncoderCodec::Av1,
+            EncoderCodec::Mjpg,
+        ] {
+            let err = DepthCodec::try_from(c)
+                .err()
+                .unwrap_or_else(|| panic!("expected error converting {c:?} to DepthCodec"));
+            assert!(
+                err.to_string().contains("color codec"),
+                "expected `color codec` in error for {c:?}, got: {err}"
+            );
+        }
+    }
+}

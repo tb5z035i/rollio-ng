@@ -33,13 +33,11 @@ use std::ffi::CString;
 use std::ptr;
 use std::time::Instant;
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::ffi as f;
 use ffmpeg::util::format::pixel::Pixel;
+use ffmpeg_next as ffmpeg;
 use rollio_types::config::{EncoderBackend, EncoderCodec};
-use rollio_types::messages::{
-    EncodedPacketHeader, EncodedPacketKind, PixelFormat,
-};
+use rollio_types::messages::{EncodedPacketHeader, EncodedPacketKind, PixelFormat};
 
 use super::libav_cpu::{libav_codec_available, with_backend};
 use super::{ColorBackendId, ColorCodec, ColorEncoderBackend};
@@ -51,8 +49,8 @@ use crate::codec::{
 };
 use crate::error::{EncoderError, Result};
 use crate::media::{
-    build_codec_options, color_space_metadata, create_hw_device, select_encoder_name,
-    AvBufferRef, EncodeMetrics,
+    build_codec_options, color_space_metadata, create_hw_device, select_encoder_name, AvBufferRef,
+    EncodeMetrics,
 };
 
 pub struct LibavNvidiaBackend;
@@ -187,10 +185,7 @@ pub(crate) struct NvidiaCudaSession {
 }
 
 impl NvidiaCudaSession {
-    pub(crate) fn new(
-        params: &CodecSessionParams<'_>,
-        first_frame: &OwnedFrame,
-    ) -> Result<Self> {
+    pub(crate) fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
         crate::media::ensure_ffmpeg_initialized()?;
 
         // Eagerly create the CUDA device so a host without CUDA
@@ -336,9 +331,7 @@ impl NvidiaCudaSession {
         decoder.send_packet(&packet)?;
         let mut decoded = ffmpeg::frame::Video::empty();
         decoder.receive_frame(&mut decoded).map_err(|e| {
-            EncoderError::message(format!(
-                "SW decoder failed on first packet: {e}"
-            ))
+            EncoderError::message(format!("SW decoder failed on first packet: {e}"))
         })?;
         let decoded_pixel = decoded.format();
         let source_pixel = match decoded_pixel {
@@ -353,8 +346,7 @@ impl NvidiaCudaSession {
         // the YUV → NV12 conversion.
         unsafe {
             (*decoded.as_mut_ptr()).color_range = f::AVColorRange::AVCOL_RANGE_JPEG;
-            (*decoded.as_mut_ptr()).format =
-                f::AVPixelFormat::from(source_pixel) as i32;
+            (*decoded.as_mut_ptr()).format = f::AVPixelFormat::from(source_pixel) as i32;
         }
 
         let filter = ScaleGraph::build(ScaleGraphConfig {
@@ -372,7 +364,11 @@ impl NvidiaCudaSession {
 
         let (encoder, extradata) = self.open_encoder(&filter)?;
 
-        let mut output = OutputStage { filter, encoder, extradata };
+        let mut output = OutputStage {
+            filter,
+            encoder,
+            extradata,
+        };
         // Seed the filter with the first decoded frame; PTS gets
         // (re)set inside drain_filter_and_encode based on the
         // recording-start anchor.
@@ -405,25 +401,24 @@ impl NvidiaCudaSession {
         let (encoder, extradata) = self.open_encoder(&filter)?;
         Ok(Pipeline {
             input: InputStage::Raw { source_pixel },
-            output: Some(OutputStage { filter, encoder, extradata }),
+            output: Some(OutputStage {
+                filter,
+                encoder,
+                extradata,
+            }),
         })
     }
 
-    fn open_encoder(
-        &self,
-        filter: &ScaleGraph,
-    ) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
-        let codec_name = select_encoder_name(self.codec, EncoderBackend::Nvidia).ok_or_else(
-            || {
+    fn open_encoder(&self, filter: &ScaleGraph) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
+        let codec_name =
+            select_encoder_name(self.codec, EncoderBackend::Nvidia).ok_or_else(|| {
                 EncoderError::message(format!(
                     "no NVENC encoder available for {}",
                     self.codec.as_str()
                 ))
-            },
-        )?;
-        let codec = ffmpeg::encoder::find_by_name(codec_name).ok_or_else(|| {
-            EncoderError::message(format!("encoder `{codec_name}` not found"))
-        })?;
+            })?;
+        let codec = ffmpeg::encoder::find_by_name(codec_name)
+            .ok_or_else(|| EncoderError::message(format!("encoder `{codec_name}` not found")))?;
         let fps = ffmpeg::Rational(self.fps as i32, 1);
         let mut encoder = ffmpeg::codec::context::Context::new_with_codec(codec)
             .encoder()
@@ -457,13 +452,8 @@ impl NvidiaCudaSession {
             (*encoder.as_mut_ptr()).hw_frames_ctx = filter.clone_output_hw_frames_ctx()?;
         }
 
-        let codec_options = build_codec_options(
-            codec_name,
-            EncoderBackend::Nvidia,
-            self.crf,
-            None,
-            None,
-        );
+        let codec_options =
+            build_codec_options(codec_name, EncoderBackend::Nvidia, self.crf, None, None);
         let opened = encoder.open_as_with(codec, codec_options).map_err(|err| {
             EncoderError::message(format!(
                 "NVENC open_as_with(`{codec_name}`) failed for {}x{}@{}: {err}",
@@ -563,10 +553,7 @@ impl NvidiaCudaSession {
     /// Build the output stage (filter graph + NVENC) using the
     /// `hw_frames_ctx` from a freshly-decoded CUDA frame. Called the
     /// first time the cuvid path produces a frame.
-    fn build_cuvid_output_for_frame(
-        &self,
-        decoded: &ffmpeg::frame::Video,
-    ) -> Result<OutputStage> {
+    fn build_cuvid_output_for_frame(&self, decoded: &ffmpeg::frame::Video) -> Result<OutputStage> {
         let hw_frames_ctx = unsafe { (*decoded.as_ptr()).hw_frames_ctx };
         if hw_frames_ctx.is_null() {
             return Err(EncoderError::message(
@@ -588,7 +575,11 @@ impl NvidiaCudaSession {
             time_base: self.encoder_time_base,
         })?;
         let (encoder, extradata) = self.open_encoder(&filter)?;
-        Ok(OutputStage { filter, encoder, extradata })
+        Ok(OutputStage {
+            filter,
+            encoder,
+            extradata,
+        })
     }
 
     /// Push the camera packet/frame into the decoder (Cuvid /
@@ -639,8 +630,7 @@ impl NvidiaCudaSession {
                     if let Some(target) = relabel {
                         unsafe {
                             (*decoded.as_mut_ptr()).color_range = f::AVColorRange::AVCOL_RANGE_JPEG;
-                            (*decoded.as_mut_ptr()).format =
-                                f::AVPixelFormat::from(target) as i32;
+                            (*decoded.as_mut_ptr()).format = f::AVPixelFormat::from(target) as i32;
                         }
                     }
                     decoded.set_pts(Some(pts_us));
@@ -663,11 +653,7 @@ impl NvidiaCudaSession {
 }
 
 impl CodecSession for NvidiaCudaSession {
-    fn encode(
-        &mut self,
-        frame: &OwnedFrame,
-        sink: &mut dyn EncodedPacketSink,
-    ) -> Result<()> {
+    fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
         // Phase 1: push input into the decoder/upload stage and
         // collect any decoded frames that fall out. For the Cuvid
         // path this may be empty for the first ~3 calls (CUVID is
@@ -689,7 +675,12 @@ impl CodecSession for NvidiaCudaSession {
         // (filter + NVENC) lazily if not yet built (Cuvid path),
         // then push the frame through the filter graph.
         for mut decoded in decoded {
-            if self.pipeline.as_ref().and_then(|p| p.output.as_ref()).is_none() {
+            if self
+                .pipeline
+                .as_ref()
+                .and_then(|p| p.output.as_ref())
+                .is_none()
+            {
                 let output = self.build_cuvid_output_for_frame(&decoded)?;
                 self.pipeline.as_mut().expect("pipeline ready").output = Some(output);
             }
@@ -705,20 +696,12 @@ impl CodecSession for NvidiaCudaSession {
 
         // Phase 3: drain filter → encoder → sink.
         self.drain_filter_and_encode(frame, sink)?;
-        self.metrics.encode_time =
-            self.metrics.encode_time.saturating_add(started.elapsed());
+        self.metrics.encode_time = self.metrics.encode_time.saturating_add(started.elapsed());
         Ok(())
     }
 
-    fn finish(
-        mut self: Box<Self>,
-        sink: &mut dyn EncodedPacketSink,
-    ) -> Result<()> {
-        if let Some(output) = self
-            .pipeline
-            .as_mut()
-            .and_then(|p| p.output.as_mut())
-        {
+    fn finish(mut self: Box<Self>, sink: &mut dyn EncodedPacketSink) -> Result<()> {
+        if let Some(output) = self.pipeline.as_mut().and_then(|p| p.output.as_mut()) {
             // Flush filter + encoder. (If the output stage was never
             // built — Cuvid path that hit fewer than ~3 frames before
             // shutdown — there's nothing to drain.)
@@ -883,4 +866,77 @@ fn drain_encoder_packets(
 fn _silence() {
     let _ = CString::new("").unwrap();
     let _ = ptr::null::<u8>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_strategy_mjpeg_routes_via_cuvid_with_bsf() {
+        let s = input_strategy(PixelFormat::Mjpeg);
+        match s {
+            InputStrategy::CuvidWithMjpegBsf(id) => {
+                assert_eq!(id, ffmpeg::codec::Id::MJPEG);
+            }
+            _ => panic!("MJPEG must route to CuvidWithMjpegBsf"),
+        }
+    }
+
+    #[test]
+    fn input_strategy_h264_annexb_routes_via_plain_cuvid() {
+        let s = input_strategy(PixelFormat::H264AnnexB);
+        match s {
+            InputStrategy::Cuvid(id) => assert_eq!(id, ffmpeg::codec::Id::H264),
+            _ => panic!("H264AnnexB must route to Cuvid(H264)"),
+        }
+    }
+
+    #[test]
+    fn input_strategy_raw_inputs_use_correct_pixel_format() {
+        let cases = [
+            (PixelFormat::Rgb24, Pixel::RGB24),
+            (PixelFormat::Bgr24, Pixel::BGR24),
+            (PixelFormat::Yuyv, Pixel::YUYV422),
+            (PixelFormat::Gray8, Pixel::GRAY8),
+        ];
+        for (input, expected) in cases {
+            match input_strategy(input) {
+                InputStrategy::Raw(pix) => assert_eq!(pix, expected, "for input {input:?}"),
+                other => panic!(
+                    "{input:?} should route to Raw({expected:?}), got {other:?}",
+                    other = format!("{:?}", std::mem::discriminant(&other))
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn cuvid_decoder_name_maps_known_codecs() {
+        assert_eq!(
+            cuvid_decoder_name(ffmpeg::codec::Id::MJPEG).unwrap(),
+            "mjpeg_cuvid"
+        );
+        assert_eq!(
+            cuvid_decoder_name(ffmpeg::codec::Id::H264).unwrap(),
+            "h264_cuvid"
+        );
+        assert_eq!(
+            cuvid_decoder_name(ffmpeg::codec::Id::HEVC).unwrap(),
+            "hevc_cuvid"
+        );
+        assert_eq!(
+            cuvid_decoder_name(ffmpeg::codec::Id::AV1).unwrap(),
+            "av1_cuvid"
+        );
+    }
+
+    #[test]
+    fn cuvid_decoder_name_errors_for_unmapped() {
+        let err = cuvid_decoder_name(ffmpeg::codec::Id::VP9).unwrap_err();
+        assert!(
+            err.to_string().contains("no Cuvid decoder mapped"),
+            "expected unmapped-decoder error, got: {err}"
+        );
+    }
 }

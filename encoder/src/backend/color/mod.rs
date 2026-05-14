@@ -232,3 +232,347 @@ fn color_backend_id_from_config(value: EncoderBackend) -> Result<ColorBackendId>
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use rollio_types::config::{ChromaSubsampling, EncoderColorSpace};
+    use rollio_types::messages::CameraFrameHeader;
+
+    use super::*;
+    use crate::media::EncodeMetrics;
+
+    /// Programmable fake backend: lets each test wire in a specific
+    /// (id, priority, available, supports) tuple and observe whether
+    /// `open_session` was actually invoked.
+    struct FakeBackend {
+        id: ColorBackendId,
+        priority: u32,
+        available: bool,
+        accepts: fn(ColorCodec, PixelFormat) -> bool,
+        opens: AtomicU32,
+    }
+
+    impl FakeBackend {
+        fn new(
+            id: ColorBackendId,
+            priority: u32,
+            available: bool,
+            accepts: fn(ColorCodec, PixelFormat) -> bool,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                id,
+                priority,
+                available,
+                accepts,
+                opens: AtomicU32::new(0),
+            })
+        }
+
+        fn open_count(&self) -> u32 {
+            self.opens.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ColorEncoderBackend for FakeBackend {
+        fn id(&self) -> ColorBackendId {
+            self.id
+        }
+        fn priority(&self) -> u32 {
+            self.priority
+        }
+        fn available(&self) -> bool {
+            self.available
+        }
+        fn supports(&self, codec: ColorCodec, input: PixelFormat) -> bool {
+            (self.accepts)(codec, input)
+        }
+        fn open_session(
+            &self,
+            _params: &CodecSessionParams<'_>,
+            _first_frame: &OwnedFrame,
+        ) -> Result<Box<dyn CodecSession>> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeSession {
+                metrics: EncodeMetrics::default(),
+            }))
+        }
+    }
+
+    struct FakeSession {
+        metrics: EncodeMetrics,
+    }
+
+    impl CodecSession for FakeSession {
+        fn encode(
+            &mut self,
+            _frame: &OwnedFrame,
+            _sink: &mut dyn crate::codec::EncodedPacketSink,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn finish(
+            self: Box<Self>,
+            _sink: &mut dyn crate::codec::EncodedPacketSink,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn metrics(&self) -> &EncodeMetrics {
+            &self.metrics
+        }
+        fn record_dropped(&mut self) {}
+    }
+
+    fn always(_: ColorCodec, _: PixelFormat) -> bool {
+        true
+    }
+    fn never(_: ColorCodec, _: PixelFormat) -> bool {
+        false
+    }
+    fn only_h264(c: ColorCodec, _: PixelFormat) -> bool {
+        matches!(c, ColorCodec::H264)
+    }
+
+    fn make_frame() -> OwnedFrame {
+        OwnedFrame {
+            header: CameraFrameHeader {
+                timestamp_us: 0,
+                width: 16,
+                height: 16,
+                pixel_format: PixelFormat::Mjpeg,
+                frame_index: 0,
+            },
+            payload: vec![0u8; 4],
+        }
+    }
+
+    fn make_params() -> CodecSessionParams<'static> {
+        CodecSessionParams {
+            codec: EncoderCodec::H264,
+            backend: EncoderBackend::Auto,
+            fps: 30,
+            crf: None,
+            preset: None,
+            tune: None,
+            bit_depth: 8,
+            chroma_subsampling: ChromaSubsampling::S420,
+            color_space: EncoderColorSpace::Auto,
+            process_id: "test",
+            episode_index: 0,
+            recording_start_us: 0,
+            output_width: 16,
+            output_height: 16,
+            allow_rescale: false,
+        }
+    }
+
+    fn registry_of(backends: Vec<Arc<dyn ColorEncoderBackend>>) -> ColorBackendRegistry {
+        let mut sorted = backends;
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        ColorBackendRegistry { backends: sorted }
+    }
+
+    /// `Result<Box<dyn CodecSession>, _>::unwrap_err()` requires
+    /// `Debug` on the Ok variant, which trait objects don't carry.
+    /// This helper converts to a Result we can call `.unwrap_err()`
+    /// on.
+    fn err_of(
+        r: Result<Box<dyn CodecSession>>,
+    ) -> EncoderError {
+        match r {
+            Ok(_) => panic!("expected Err but got Ok"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn default_set_priority_order_is_passthrough_nvidia_vaapi_cpu() {
+        let r = ColorBackendRegistry::default_set();
+        let ids: Vec<_> = r.backends().iter().map(|b| b.id()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                ColorBackendId::Passthrough,
+                ColorBackendId::Nvidia,
+                ColorBackendId::Vaapi,
+                ColorBackendId::Cpu,
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_walks_highest_priority_available_and_supporting() {
+        let high = FakeBackend::new(ColorBackendId::Nvidia, 100, true, always);
+        let low = FakeBackend::new(ColorBackendId::Cpu, 10, true, always);
+        let r = registry_of(vec![high.clone(), low.clone()]);
+        r.open(
+            ColorCodec::H264,
+            EncoderBackend::Auto,
+            &make_params(),
+            &make_frame(),
+        )
+        .expect("open should succeed");
+        assert_eq!(high.open_count(), 1);
+        assert_eq!(low.open_count(), 0);
+    }
+
+    #[test]
+    fn auto_skips_unavailable_backends_and_walks_to_next() {
+        let unavailable = FakeBackend::new(ColorBackendId::Nvidia, 100, false, always);
+        let available = FakeBackend::new(ColorBackendId::Cpu, 10, true, always);
+        let r = registry_of(vec![unavailable.clone(), available.clone()]);
+        r.open(
+            ColorCodec::H264,
+            EncoderBackend::Auto,
+            &make_params(),
+            &make_frame(),
+        )
+        .expect("open should succeed via fallback");
+        assert_eq!(unavailable.open_count(), 0);
+        assert_eq!(available.open_count(), 1);
+    }
+
+    #[test]
+    fn auto_skips_backends_that_dont_support_the_combo() {
+        let h264_only = FakeBackend::new(ColorBackendId::Nvidia, 100, true, only_h264);
+        let universal = FakeBackend::new(ColorBackendId::Cpu, 10, true, always);
+        let r = registry_of(vec![h264_only.clone(), universal.clone()]);
+        // Request HEVC: only the universal backend supports it.
+        r.open(
+            ColorCodec::H265,
+            EncoderBackend::Auto,
+            &make_params(),
+            &make_frame(),
+        )
+        .expect("open should pick universal");
+        assert_eq!(h264_only.open_count(), 0);
+        assert_eq!(universal.open_count(), 1);
+    }
+
+    #[test]
+    fn auto_errors_when_nothing_supports_combo() {
+        let nope = FakeBackend::new(ColorBackendId::Cpu, 10, true, never);
+        let r = registry_of(vec![nope]);
+        let err = err_of(r.open(
+            ColorCodec::H264,
+            EncoderBackend::Auto,
+            &make_params(),
+            &make_frame(),
+        ));
+        assert!(
+            err.to_string().contains("no color backend available"),
+            "expected `no color backend available` in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_backend_routes_directly() {
+        let nvidia = FakeBackend::new(ColorBackendId::Nvidia, 100, true, always);
+        let cpu = FakeBackend::new(ColorBackendId::Cpu, 10, true, always);
+        let r = registry_of(vec![nvidia.clone(), cpu.clone()]);
+        // Explicit Cpu should land on Cpu even though Nvidia would
+        // win under Auto.
+        r.open(
+            ColorCodec::H264,
+            EncoderBackend::Cpu,
+            &make_params(),
+            &make_frame(),
+        )
+        .expect("explicit Cpu open should succeed");
+        assert_eq!(nvidia.open_count(), 0);
+        assert_eq!(cpu.open_count(), 1);
+    }
+
+    #[test]
+    fn explicit_backend_errors_when_not_registered() {
+        let cpu = FakeBackend::new(ColorBackendId::Cpu, 10, true, always);
+        let r = registry_of(vec![cpu]);
+        let err = err_of(r.open(
+            ColorCodec::H264,
+            EncoderBackend::Nvidia,
+            &make_params(),
+            &make_frame(),
+        ));
+        assert!(
+            err.to_string().contains("not registered"),
+            "expected `not registered`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_backend_errors_when_unavailable() {
+        let nvidia = FakeBackend::new(ColorBackendId::Nvidia, 100, false, always);
+        let r = registry_of(vec![nvidia]);
+        let err = err_of(r.open(
+            ColorCodec::H264,
+            EncoderBackend::Nvidia,
+            &make_params(),
+            &make_frame(),
+        ));
+        assert!(
+            err.to_string().contains("not available"),
+            "expected `not available`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_backend_errors_when_unsupported_combo() {
+        let nvidia = FakeBackend::new(ColorBackendId::Nvidia, 100, true, only_h264);
+        let r = registry_of(vec![nvidia]);
+        let err = err_of(r.open(
+            ColorCodec::H265,
+            EncoderBackend::Nvidia,
+            &make_params(),
+            &make_frame(),
+        ));
+        assert!(
+            err.to_string().contains("does not support"),
+            "expected `does not support`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn color_codec_conversion_round_trips_color_codecs() {
+        for c in [
+            ColorCodec::H264,
+            ColorCodec::H265,
+            ColorCodec::Av1,
+            ColorCodec::Mjpg,
+        ] {
+            let ec: EncoderCodec = c.into();
+            let back = ColorCodec::try_from(ec).expect("color codec round-trip");
+            assert_eq!(back, c);
+        }
+    }
+
+    #[test]
+    fn color_codec_conversion_rejects_rvl() {
+        let err = ColorCodec::try_from(EncoderCodec::Rvl).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("rvl"),
+            "expected `rvl` in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn color_backend_id_from_config_rejects_auto() {
+        assert!(color_backend_id_from_config(EncoderBackend::Auto).is_err());
+        assert_eq!(
+            color_backend_id_from_config(EncoderBackend::Cpu).unwrap(),
+            ColorBackendId::Cpu
+        );
+        assert_eq!(
+            color_backend_id_from_config(EncoderBackend::Nvidia).unwrap(),
+            ColorBackendId::Nvidia
+        );
+        assert_eq!(
+            color_backend_id_from_config(EncoderBackend::Vaapi).unwrap(),
+            ColorBackendId::Vaapi
+        );
+        assert_eq!(
+            color_backend_id_from_config(EncoderBackend::Passthrough).unwrap(),
+            ColorBackendId::Passthrough
+        );
+    }
+}
