@@ -268,16 +268,19 @@ webcam at 1920x1080@30 MJPG)**:
   full cuvid → scale_cuda → NVENC pipeline. NVDEC + NVENC + scaling
   all run on the GPU; CPU only handles iceoryx2 marshalling, the
   mjpeg2jpeg BSF, and packet glue.
-- Cuvid latency model: `mjpeg_cuvid` is asynchronous and holds ~3
-  packets in its parser pipeline before emitting the first decoded
-  frame. The original "decode the first packet eagerly to extract
-  hw_frames_ctx" approach in `build_cuvid_pipeline` always failed
-  on this — `avcodec_receive_frame` returned `EAGAIN` for every
-  retry because the cuvid parser hadn't yet seen enough lookahead.
-  Solution: defer filter graph + NVENC construction until the first
-  decoded frame actually emerges inside `encode()` (lazy output
-  stage). The 3-frame warmup is invisible to downstream (~100ms at
-  30 FPS) and the data path is fully GPU-resident from there.
+- Cuvid latency model: `mjpeg_cuvid` defaults to a 3-packet display
+  reorder buffer (`CUVIDPARSERPARAMS::ulMaxDisplayDelay = 4` inside
+  FFmpeg's `cuviddec.c`). Setting `AV_CODEC_FLAG_LOW_DELAY` on the
+  codec context tells FFmpeg to pass `ulMaxDisplayDelay = 0` to the
+  parser, which is correct for MJPEG (no inter-frame deps) and any
+  H.264/HEVC stream without B-frames (true for all our cameras).
+  With that flag on the cuvid path is 1-in-1-out from packet 0; see
+  `encoder/examples/cuvid_low_delay.rs` for the A/B measurement.
+  End-to-end cuvid latency drops from ~100 ms (3 packets at 30 fps)
+  to a single GPU-decode tick. The output stage (filter + NVENC)
+  is still built lazily on the first decoded frame because cuvid
+  only populates `hw_frames_ctx` once a surface emerges — keeps the
+  architecture robust if a future codec path does buffer.
 - mjpeg2jpeg BSF still on by default for V4L2 / UVC MJPG streams —
   the camera in this rig happens to include DHT, so the BSF is a
   no-op, but cameras that strip DHT (which is the more common UVC

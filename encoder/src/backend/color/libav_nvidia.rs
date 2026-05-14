@@ -283,6 +283,14 @@ impl NvidiaCudaSession {
             // CUDA surface pool.
             (*ctx.as_mut_ptr()).width = first_frame.header.width as i32;
             (*ctx.as_mut_ptr()).height = first_frame.header.height as i32;
+            // Tell cuviddec to set CUVIDPARSERPARAMS::ulMaxDisplayDelay = 0
+            // (the parser's display-reorder buffer). Default is 4, which
+            // is what produces the ~3 packet warmup. For MJPEG (no
+            // inter-frame deps, no reordering ever needed) zero is
+            // correct; for H.264/HEVC with B-frames it would force
+            // decode-order output, but our cameras never publish
+            // B-frames so we keep it on across the cuvid family.
+            (*ctx.as_mut_ptr()).flags |= f::AV_CODEC_FLAG_LOW_DELAY as i32;
         }
         let decoder = ctx.decoder().video()?;
 
