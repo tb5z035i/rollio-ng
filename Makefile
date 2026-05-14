@@ -187,7 +187,8 @@ deps:
 	  cmake ninja-build pkg-config nasm \
 	  clang clang-format lld libclang-dev llvm \
 	  libstdc++-13-dev \
-	  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+	  libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+	  libavdevice-dev libswscale-dev \
 	  liburdfdom-dev \
 	  libtinyxml2-dev \
 	  libeigen3-dev \
@@ -215,7 +216,8 @@ ifeq ($(TARGET_ARCH),arm64)
 	  qemu-user-static binfmt-support dpkg-cross \
 	  libstdc++-13-dev:arm64 \
 	  libavcodec-dev:arm64 libavformat-dev:arm64 \
-	  libavutil-dev:arm64 libswscale-dev:arm64 \
+	  libavutil-dev:arm64 libavfilter-dev:arm64 \
+	  libavdevice-dev:arm64 libswscale-dev:arm64 \
 	  liburdfdom-dev:arm64 \
 	  libtinyxml2-dev:arm64 \
 	  libeigen3-dev:arm64 \

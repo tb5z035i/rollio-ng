@@ -337,7 +337,14 @@ pub(crate) fn scaled_pixel_format(
             Pixel::P010LE
         }
         (EncoderBackend::Nvidia | EncoderBackend::Vaapi, ChromaSubsampling::S422, 10) => {
-            Pixel::P210LE
+            #[cfg(not(feature = "ffmpeg_5_0"))]
+            {
+                Pixel::P010LE
+            }
+            #[cfg(feature = "ffmpeg_5_0")]
+            {
+                Pixel::P210LE
+            }
         }
         (_, _, depth) => {
             return Err(EncoderError::message(format!(
@@ -355,7 +362,16 @@ pub(crate) fn encoder_pixel_format(
     bit_depth: u8,
 ) -> Result<ffmpeg::util::format::pixel::Pixel> {
     if backend == EncoderBackend::Vaapi {
-        return Ok(ffmpeg::util::format::pixel::Pixel::VAAPI);
+        #[cfg(feature = "ffmpeg_5_1")]
+        {
+            return Ok(ffmpeg::util::format::pixel::Pixel::VAAPI);
+        }
+        #[cfg(not(feature = "ffmpeg_5_1"))]
+        {
+            // Fall through to scaled_pixel_format() — FFmpeg < 5.1 does not
+            // expose a dedicated VAAPI pixel format; the sw format is used
+            // alongside the hw_frames_ctx pool.
+        }
     }
     scaled_pixel_format(codec, backend, subsampling, bit_depth)
 }
@@ -446,7 +462,14 @@ pub(crate) fn resolve_bit_depth(
             ffmpeg::util::format::pixel::Pixel::P010LE
         }
         (EncoderBackend::Nvidia, ChromaSubsampling::S422) => {
-            ffmpeg::util::format::pixel::Pixel::P210LE
+            #[cfg(feature = "ffmpeg_5_0")]
+            {
+                ffmpeg::util::format::pixel::Pixel::P210LE
+            }
+            #[cfg(not(feature = "ffmpeg_5_0"))]
+            {
+                ffmpeg::util::format::pixel::Pixel::P010LE
+            }
         }
         (EncoderBackend::Vaapi, _) => unreachable!("vaapi handled above"),
         (EncoderBackend::Passthrough, _) => {
@@ -955,10 +978,17 @@ fn process_decoded_frame(
 }
 
 fn is_hardware_pixel(pixel: ffmpeg::util::format::pixel::Pixel) -> bool {
-    matches!(
-        pixel,
-        ffmpeg::util::format::pixel::Pixel::CUDA | ffmpeg::util::format::pixel::Pixel::VAAPI
-    )
+    #[cfg(feature = "ffmpeg_5_1")]
+    {
+        matches!(
+            pixel,
+            ffmpeg::util::format::pixel::Pixel::CUDA | ffmpeg::util::format::pixel::Pixel::VAAPI
+        )
+    }
+    #[cfg(not(feature = "ffmpeg_5_1"))]
+    {
+        matches!(pixel, ffmpeg::util::format::pixel::Pixel::CUDA)
+    }
 }
 
 fn decoder_sw_pixel(decoder: &ffmpeg::decoder::Video) -> ffmpeg::util::format::pixel::Pixel {

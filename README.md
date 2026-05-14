@@ -51,6 +51,8 @@ sudo apt-get install -y \
   libavcodec-dev \
   libavformat-dev \
   libavutil-dev \
+  libavfilter-dev \
+  libavdevice-dev \
   libswscale-dev
 
 # Rust (debug). For release binaries, use `cargo build --workspace --release`
@@ -91,7 +93,7 @@ development libraries instead of the full `ffmpeg` package:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y pkg-config libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+sudo apt-get install -y pkg-config libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev
 ```
 
 ## Pre-commit hooks (optional)
