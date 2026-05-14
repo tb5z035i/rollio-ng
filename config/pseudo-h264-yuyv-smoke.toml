@@ -1,0 +1,103 @@
+# Manual smoke config: two pseudo camera devices.
+# - camera_h264/color publishes pre-encoded H.264 Annex B on the camera bus.
+# - camera_yuyv/color publishes raw YUYV on the camera bus.
+#
+# Preview mode is encoded so the H.264 camera can use fixed-source passthrough
+# while the YUYV camera is transcoded for preview.
+
+project_name = "pseudo-h264-yuyv-smoke"
+mode = "intervention"
+pairings = []
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+
+[[devices]]
+name = "camera_h264"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "camera_h264"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+preview_enabled = true
+
+[devices.channels.profile]
+width = 640
+height = 480
+fps = 30
+pixel_format = "h264-annex-b"
+h264_bitrate_bps = 1200000
+h264_gop = 30
+h264_preset = "ultrafast"
+h264_tune = "zerolatency"
+h264_profile = "baseline"
+
+[[devices]]
+name = "camera_yuyv"
+driver = "pseudo"
+id = "pseudo_camera_1"
+bus_root = "camera_yuyv"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+preview_enabled = true
+
+[devices.channels.profile]
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+video_backend = "auto"
+depth_backend = "cpu"
+chroma_subsampling = "422"
+queue_size = 32
+
+[encoder.preview]
+output_mode = "encoded"
+color_codec = "h264"
+depth_codec = "rvl"
+#backend = "cpu"
+width = 320
+height = 240
+fps = 15
+gop_seconds = 1
+crf = 32
+jpeg_quality = 30
+
+[assembler]
+missing_eos_timeout_ms = 5000
+staging_dir = "/dev/shm/rollio"
+
+[storage]
+backend = "local"
+output_path = "./output/pseudo-h264-yuyv-smoke"
+queue_size = 32
+
+[monitor]
+metrics_frequency_hz = 1.0
+
+[controller]
+shutdown_timeout_ms = 3000
+child_poll_interval_ms = 100
+
+[visualizer]
+port = 19090
+
+[ui]
+http_host = "0.0.0.0"
+http_port = 3000
+start_key = "s"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"

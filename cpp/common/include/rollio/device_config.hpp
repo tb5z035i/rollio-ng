@@ -45,24 +45,6 @@ struct BinaryDeviceConfig {
     std::vector<DeviceChannelConfigV2> channels;
 };
 
-// ---------------------------------------------------------------------------
-// Legacy flat camera device config (e.g. rollio-camera-pseudo)
-// ---------------------------------------------------------------------------
-
-struct CameraDeviceConfig {
-    std::string name;
-    std::string type;
-    std::string driver;
-    std::string id;
-    uint32_t width{0};
-    uint32_t height{0};
-    uint32_t fps{0};
-    PixelFormat pixel_format{PixelFormat::Rgb24};
-    std::optional<std::string> stream;
-    std::optional<uint32_t> channel;
-    std::optional<std::string> transport;
-};
-
 namespace detail {
 
 inline auto trim(std::string value) -> std::string {
@@ -163,40 +145,6 @@ inline auto parse_bool_value(std::string_view raw) -> bool {
         return false;
     }
     throw std::runtime_error("expected boolean true/false, got: " + std::string(raw));
-}
-
-inline auto parse_simple_toml(std::string_view text)
-    -> std::unordered_map<std::string, std::string> {
-    std::unordered_map<std::string, std::string> values;
-    std::size_t cursor = 0;
-
-    while (cursor <= text.size()) {
-        const auto next_newline = text.find('\n', cursor);
-        const auto line_end = next_newline == std::string_view::npos ? text.size() : next_newline;
-        auto line = strip_comment(std::string(text.substr(cursor, line_end - cursor)));
-        cursor = line_end == text.size() ? text.size() + 1 : line_end + 1;
-
-        if (line.empty()) {
-            continue;
-        }
-        if (line.front() == '[') {
-            throw std::runtime_error("legacy device config must not contain TOML tables");
-        }
-
-        const auto separator = line.find('=');
-        if (separator == std::string::npos) {
-            throw std::runtime_error("invalid TOML line: " + line);
-        }
-
-        auto key = trim(line.substr(0, separator));
-        auto value = trim(line.substr(separator + 1));
-        if (key.empty()) {
-            throw std::runtime_error("invalid TOML key");
-        }
-        values[key] = value;
-    }
-
-    return values;
 }
 
 inline auto split_key_value(const std::string& line) -> std::pair<std::string, std::string> {
@@ -439,43 +387,8 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
 
 }  // namespace detail
 
-inline auto parse_camera_device_config(std::string_view text) -> CameraDeviceConfig {
-    const auto values = detail::parse_simple_toml(text);
-
-    CameraDeviceConfig config;
-    config.name = detail::parse_required_string(values, "name");
-    config.type = detail::parse_required_string(values, "type");
-    config.driver = detail::parse_required_string(values, "driver");
-    config.id = detail::parse_required_string(values, "id");
-    config.width = detail::parse_u32(values, "width");
-    config.height = detail::parse_u32(values, "height");
-    config.fps = detail::parse_u32(values, "fps");
-    config.stream = detail::parse_optional_string(values, "stream");
-    config.channel = detail::parse_optional_u32(values, "channel");
-    config.transport = detail::parse_optional_string(values, "transport");
-
-    const auto pixel_format_name = detail::parse_required_string(values, "pixel_format");
-    const auto pixel_format = pixel_format_from_string(pixel_format_name);
-    if (!pixel_format.has_value()) {
-        throw std::runtime_error("unsupported pixel_format: " + pixel_format_name);
-    }
-    config.pixel_format = *pixel_format;
-
-    return config;
-}
-
 inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceConfig {
     return detail::parse_binary_device_config(text);
-}
-
-inline auto load_camera_device_config_from_file(const std::string& path) -> CameraDeviceConfig {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        throw std::runtime_error("failed to open config file: " + path);
-    }
-
-    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return parse_camera_device_config(text);
 }
 
 inline auto load_binary_device_config_from_file(const std::string& path) -> BinaryDeviceConfig {

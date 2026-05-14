@@ -159,8 +159,8 @@ pub fn open_session(
     use crate::backend::color::{ColorBackendRegistry, ColorCodec};
     use crate::backend::depth::{DepthBackendRegistry, DepthCodec};
 
-    let is_depth =
-        params.codec == EncoderCodec::Rvl || first_frame.header.pixel_format == PixelFormat::Depth16;
+    let is_depth = params.codec == EncoderCodec::Rvl
+        || first_frame.header.pixel_format == PixelFormat::Depth16;
     if is_depth {
         let codec = DepthCodec::try_from(params.codec)?;
         DepthBackendRegistry::global().open(codec, &params, first_frame)

@@ -83,7 +83,7 @@ export function InfoPanel({
             <div className="info-panel__row">
               <span>Preview</span>
               <span>
-                {previewCodecLabel(streamInfo, frames)} · {streamInfo.active_preview_width}x{streamInfo.active_preview_height}
+                {previewCodecLabel(streamInfo, frames)} · {previewResolutionLabel(streamInfo)}
               </span>
             </div>
           ) : null}
@@ -91,6 +91,14 @@ export function InfoPanel({
       </div>
     </section>
   );
+}
+
+function previewResolutionLabel(streamInfo: StreamInfoMessage): string {
+  const fixedCount = streamInfo.cameras.filter(
+    (camera) => camera.preview_resizable === false,
+  ).length;
+  const dynamicLabel = `${streamInfo.active_preview_width}x${streamInfo.active_preview_height}`;
+  return fixedCount > 0 ? `${dynamicLabel} + ${fixedCount} native` : dynamicLabel;
 }
 
 function previewCodecLabel(

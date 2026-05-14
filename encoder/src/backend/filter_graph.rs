@@ -76,7 +76,10 @@ impl HwAccel {
     fn hw_pixel(self) -> Pixel {
         match self {
             HwAccel::Cuda => Pixel::CUDA,
+            #[cfg(feature = "ffmpeg_5_1")]
             HwAccel::Vaapi => Pixel::VAAPI,
+            #[cfg(not(feature = "ffmpeg_5_1"))]
+            HwAccel::Vaapi => Pixel::NV12,
         }
     }
 
@@ -464,6 +467,7 @@ fn pix_fmt_name(fmt: Pixel) -> Result<&'static str> {
         Pixel::YUYV422 => "yuyv422",
         Pixel::GRAY8 => "gray",
         Pixel::CUDA => "cuda",
+        #[cfg(feature = "ffmpeg_5_1")]
         Pixel::VAAPI => "vaapi",
         other => {
             return Err(EncoderError::message(format!(

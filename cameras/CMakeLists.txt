@@ -53,5 +53,4 @@ target_include_directories(
 )
 target_link_libraries(rollio-common INTERFACE iceoryx2-cxx::static-lib-cxx)
 
-add_subdirectory(pseudo)
 add_subdirectory(realsense)

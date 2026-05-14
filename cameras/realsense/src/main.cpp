@@ -135,6 +135,8 @@ auto pixel_format_byte_size(const rollio::PixelFormat pixel_format) -> uint32_t 
             return 1;
         case rollio::PixelFormat::Mjpeg:
             return 1;
+        case rollio::PixelFormat::H264AnnexB:
+            return 1;
     }
     return 1;
 }
@@ -180,6 +182,8 @@ auto pixel_format_json_name(const rollio::PixelFormat fmt) -> const char* {
             return "depth16";
         case rollio::PixelFormat::Gray8:
             return "gray8";
+        case rollio::PixelFormat::H264AnnexB:
+            return "h264-annex-b";
     }
     return "rgb24";
 }

@@ -87,7 +87,7 @@ TARGET_BUILD_DIR     := target/$(BUILD_PROFILE_SUBDIR)
 else ifeq ($(TARGET_ARCH),arm64)
 RUST_TARGET          := aarch64-unknown-linux-gnu
 CARGO_TARGET_ARGS    := --target $(RUST_TARGET)
-CMAKE_TOOLCHAIN_ARGS := -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/cmake/aarch64-linux-gnu.cmake
+CMAKE_TOOLCHAIN_ARGS := -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/cmake/aarch64-linux-gnu.cmake -DLIBUSB_LIB=/usr/lib/aarch64-linux-gnu/libusb-1.0.so -DLIBUSB_INC=/usr/include/libusb-1.0
 NPM_PLATFORM_ARGS    := --cpu=arm64 --os=linux --libc=glibc
 DEB_ARCH             := arm64
 TARGET_BUILD_DIR     := target/$(RUST_TARGET)/$(BUILD_PROFILE_SUBDIR)

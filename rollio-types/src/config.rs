@@ -743,6 +743,27 @@ impl PreviewOutputMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewResizePolicy {
+    #[default]
+    Dynamic,
+    FixedSource,
+}
+
+impl PreviewResizePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dynamic => "dynamic",
+            Self::FixedSource => "fixed-source",
+        }
+    }
+
+    pub fn is_resizable(self) -> bool {
+        self == Self::Dynamic
+    }
+}
+
 /// `[encoder.preview]` project-config block. Owns every preview-only
 /// production setting (size, fps, quality, codec). Recording knobs
 /// stay on `[encoder]`.
@@ -1698,6 +1719,24 @@ pub struct CameraChannelProfile {
     pub pixel_format: PixelFormat,
     #[serde(default)]
     pub native_pixel_format: Option<String>,
+    /// MJPEG quality (libavcodec qscale, 1-31, lower = better). Default: 5.
+    #[serde(default)]
+    pub mjpeg_quality: Option<u32>,
+    /// H.264 target bitrate in bits per second. Default: width*height*fps/10.
+    #[serde(default)]
+    pub h264_bitrate_bps: Option<u32>,
+    /// H.264 GOP size (keyframe interval). Default: fps.
+    #[serde(default)]
+    pub h264_gop: Option<u32>,
+    /// H.264 x264 preset. Default: "ultrafast".
+    #[serde(default)]
+    pub h264_preset: Option<String>,
+    /// H.264 x264 tune. Default: "zerolatency".
+    #[serde(default)]
+    pub h264_tune: Option<String>,
+    /// H.264 x264 profile. Default: "baseline".
+    #[serde(default)]
+    pub h264_profile: Option<String>,
 }
 
 impl CameraChannelProfile {
@@ -2305,6 +2344,12 @@ pub struct VisualizerCameraSourceConfig {
     ///   `<bus_root>/<channel_type>/preview-packets`
     pub bus_root: String,
     pub channel_type: String,
+    #[serde(default)]
+    pub preview_resize_policy: PreviewResizePolicy,
+    #[serde(default)]
+    pub source_width: Option<u32>,
+    #[serde(default)]
+    pub source_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2527,6 +2572,8 @@ pub struct PreviewEncoderConfig {
     pub depth_codec: EncoderCodec,
     #[serde(default)]
     pub backend: EncoderBackend,
+    #[serde(default)]
+    pub resize_policy: PreviewResizePolicy,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -2710,6 +2757,12 @@ impl PreviewEncoderConfig {
                 }
             }
             PreviewOutputMode::Jpeg => {
+                if self.resize_policy == PreviewResizePolicy::FixedSource {
+                    return Err(ConfigError::Validation(
+                        "encoder runtime v2: preview.resize_policy=fixed-source requires output_mode=encoded"
+                            .into(),
+                    ));
+                }
                 if self
                     .jpeg_topic
                     .as_deref()
@@ -2960,6 +3013,20 @@ pub struct ResolvedRobotChannel {
     pub value_limits: Vec<StateValueLimitsEntry>,
 }
 
+fn preview_resize_policy(
+    pixel_format: PixelFormat,
+    preview: &EncoderPreviewConfig,
+) -> PreviewResizePolicy {
+    if pixel_format == PixelFormat::H264AnnexB
+        && preview.output_mode == PreviewOutputMode::Encoded
+        && preview.color_codec == EncoderCodec::H264
+    {
+        PreviewResizePolicy::FixedSource
+    } else {
+        PreviewResizePolicy::Dynamic
+    }
+}
+
 impl ProjectConfig {
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path)?;
@@ -3024,12 +3091,42 @@ impl ProjectConfig {
         // configs still tolerate stray pairings without taking action.
         let _ = self.mode;
         self.encoder.validate()?;
+        self.validate_preview_compatibility()?;
         self.assembler.validate()?;
         self.storage.validate()?;
         self.monitor.validate()?;
         self.controller.validate()?;
         self.visualizer.validate()?;
         self.ui.validate()?;
+        Ok(())
+    }
+
+    fn validate_preview_compatibility(&self) -> Result<(), ConfigError> {
+        if self.encoder.preview.output_mode == PreviewOutputMode::Encoded {
+            return Ok(());
+        }
+
+        for device in &self.devices {
+            for channel in &device.channels {
+                if channel.kind != DeviceType::Camera
+                    || !channel.enabled
+                    || !channel.preview_enabled
+                {
+                    continue;
+                }
+                if channel
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.pixel_format == PixelFormat::H264AnnexB)
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": h264-annex-b previews require [encoder.preview] output_mode = \"encoded\"",
+                        device.name, channel.channel_type
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -3133,10 +3230,17 @@ impl ProjectConfig {
                     })
                     .is_some_and(|channel| channel.preview_enabled)
             })
-            .map(|camera| VisualizerCameraSourceConfig {
-                channel_id: camera.channel_id,
-                bus_root: camera.bus_root,
-                channel_type: camera.channel_type,
+            .map(|camera| {
+                let preview_resize_policy =
+                    preview_resize_policy(camera.pixel_format, &self.encoder.preview);
+                VisualizerCameraSourceConfig {
+                    channel_id: camera.channel_id,
+                    bus_root: camera.bus_root,
+                    channel_type: camera.channel_type,
+                    preview_resize_policy,
+                    source_width: Some(camera.width),
+                    source_height: Some(camera.height),
+                }
             })
             .collect();
         let robot_sources = self
@@ -3225,6 +3329,18 @@ impl ProjectConfig {
                     self.encoder.preview.color_codec,
                     self.encoder.preview.depth_codec,
                 );
+                let resize_policy =
+                    preview_resize_policy(camera.pixel_format, &self.encoder.preview);
+                let (preview_width, preview_height) = match resize_policy {
+                    PreviewResizePolicy::Dynamic => {
+                        (self.encoder.preview.width, self.encoder.preview.height)
+                    }
+                    PreviewResizePolicy::FixedSource => (camera.width, camera.height),
+                };
+                let preview_backend = match resize_policy {
+                    PreviewResizePolicy::Dynamic => self.encoder.preview.backend,
+                    PreviewResizePolicy::FixedSource => EncoderBackend::Passthrough,
+                };
                 let depth_channel = camera.pixel_format == PixelFormat::Depth16;
                 let _effective_codec = if depth_channel {
                     preview_codec_depth
@@ -3265,9 +3381,10 @@ impl ProjectConfig {
                         output_mode: self.encoder.preview.output_mode,
                         color_codec: preview_codec_color,
                         depth_codec: preview_codec_depth,
-                        backend: self.encoder.preview.backend,
-                        width: self.encoder.preview.width,
-                        height: self.encoder.preview.height,
+                        backend: preview_backend,
+                        resize_policy,
+                        width: preview_width,
+                        height: preview_height,
                         fps: self.encoder.preview.fps,
                         gop_seconds: self.encoder.preview.gop_seconds,
                         crf: self.encoder.preview.crf,

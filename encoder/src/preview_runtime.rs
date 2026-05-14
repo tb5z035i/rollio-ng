@@ -31,7 +31,9 @@ use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::CAMERA_FRAMES_MAX_SUBSCRIBERS;
 use rollio_bus::CONTROL_EVENTS_SERVICE;
-use rollio_types::config::{EncoderRuntimeConfigV2, PreviewEncoderConfig, PreviewOutputMode};
+use rollio_types::config::{
+    EncoderRuntimeConfigV2, PreviewEncoderConfig, PreviewOutputMode, PreviewResizePolicy,
+};
 use rollio_types::messages::{CameraFrameHeader, ControlEvent, PixelFormat, PreviewControl};
 use std::time::Duration;
 
@@ -132,6 +134,9 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
             .map_err(map_iceoryx_error)?
         {
             let PreviewControl::SetSize { width, height } = *sample.payload();
+            if preview.resize_policy == PreviewResizePolicy::FixedSource {
+                continue;
+            }
             if !is_valid_preview_dim(width) || !is_valid_preview_dim(height) {
                 eprintln!(
                     "rollio-encoder: ignoring SetSize {}x{} on {} \
@@ -376,6 +381,9 @@ impl PreviewState {
                 session,
                 preview,
             } => {
+                if preview.resize_policy == PreviewResizePolicy::FixedSource {
+                    return Ok(());
+                }
                 preview.width = width;
                 preview.height = height;
                 if let Some(s) = session.take() {

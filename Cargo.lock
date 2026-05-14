@@ -2135,6 +2135,7 @@ name = "rollio-device-pseudo"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "ffmpeg-next",
  "iceoryx2",
  "rollio-bus",
  "rollio-types",

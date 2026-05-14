@@ -66,6 +66,10 @@ enum class PixelFormat : uint32_t {
     Mjpeg = 3,
     Depth16 = 4,
     Gray8 = 5,
+    // Pre-encoded H.264 in Annex B framing (start-code-prefixed NAL
+    // units, with in-band SPS/PPS before each IDR). Mirrors the Rust
+    // PixelFormat::H264AnnexB = 6 in rollio-types.
+    H264AnnexB = 6,
 };
 
 inline auto pixel_format_to_string(const PixelFormat pixel_format) -> const char* {
@@ -82,6 +86,8 @@ inline auto pixel_format_to_string(const PixelFormat pixel_format) -> const char
             return "depth16";
         case PixelFormat::Gray8:
             return "gray8";
+        case PixelFormat::H264AnnexB:
+            return "h264-annex-b";
     }
 
     return "rgb24";
@@ -105,6 +111,9 @@ inline auto pixel_format_from_string(const std::string_view value) -> std::optio
     }
     if (value == "gray8") {
         return PixelFormat::Gray8;
+    }
+    if (value == "h264-annex-b") {
+        return PixelFormat::H264AnnexB;
     }
 
     return std::nullopt;

@@ -514,6 +514,12 @@ fn query_device(path: &str) -> Result<DeviceQueryResponse, DynError> {
             // that crashes the runtime per-frame.
             pixel_format: bus_pixel_format_for_native(&profile.native_pixel_format),
             native_pixel_format: Some(profile.native_pixel_format),
+            mjpeg_quality: None,
+            h264_bitrate_bps: None,
+            h264_gop: None,
+            h264_preset: None,
+            h264_tune: None,
+            h264_profile: None,
         })
         .collect::<Vec<_>>();
     Ok(DeviceQueryResponse {

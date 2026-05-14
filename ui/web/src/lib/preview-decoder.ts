@@ -14,6 +14,8 @@
  * `PreviewDecoderRegistry` defined here.
  */
 
+import { videoDecoderAvailability } from "./browser-codecs";
+
 export interface DecodedFrame {
   name: string;
   videoFrame: VideoFrame;
@@ -105,9 +107,10 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
     height: number,
     onFrame: DecoderRegistryFrameCallback,
   ): void {
-    if (typeof VideoDecoder === "undefined") {
+    const availability = videoDecoderAvailability();
+    if (!availability.available) {
       console.warn(
-        `[preview-decoder] WebCodecs VideoDecoder unavailable; cannot configure ${name}`,
+        `[preview-decoder] ${availability.detail} Cannot configure ${name}.`,
       );
       return;
     }

@@ -207,6 +207,103 @@ port = 19090
     assert_eq!(depth_rec.backend, EncoderBackend::Cpu);
 }
 
+#[test]
+fn h264_annex_b_preview_uses_fixed_source_passthrough() {
+    let toml_text = r#"
+project_name = "h264-preview"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "cam"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[encoder.preview]
+output_mode = "encoded"
+width = 320
+height = 240
+fps = 15
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#;
+    let config = ProjectConfig::from_str(toml_text).expect("config should parse");
+    let preview = config
+        .encoder_runtime_configs_v2()
+        .into_iter()
+        .find(|cfg| cfg.channel_id == "cam/color" && cfg.role == EncoderRole::Preview)
+        .and_then(|cfg| cfg.preview)
+        .expect("preview encoder should be derived");
+    assert_eq!(preview.resize_policy, PreviewResizePolicy::FixedSource);
+    assert_eq!(preview.backend, EncoderBackend::Passthrough);
+    assert_eq!((preview.width, preview.height), (640, 480));
+
+    let visualizer = config.visualizer_runtime_config_v2();
+    assert_eq!(
+        visualizer.camera_sources[0].preview_resize_policy,
+        PreviewResizePolicy::FixedSource
+    );
+    assert_eq!(visualizer.camera_sources[0].source_width, Some(640));
+    assert_eq!(visualizer.camera_sources[0].source_height, Some(480));
+}
+
+#[test]
+fn h264_annex_b_preview_rejects_jpeg_mode() {
+    let toml_text = r#"
+project_name = "bad-h264-preview"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "cam"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[encoder.preview]
+output_mode = "jpeg"
+
+[storage]
+backend = "local"
+output_path = "./out"
+"#;
+    let err = ProjectConfig::from_str(toml_text).expect_err("jpeg preview should be rejected");
+    assert!(
+        err.to_string().contains("h264-annex-b previews require"),
+        "unexpected error: {err}"
+    );
+}
+
 // The `rvl + (Nvidia|Vaapi) → error` validation test that lived here
 // was removed when the encoder crate split depth and color into
 // separate backend traits (see `encoder/src/backend/{color,depth}`).

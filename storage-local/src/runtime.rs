@@ -80,7 +80,8 @@ struct FeatureSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VideoInfo {
     codec: String,
-    artifact_format: String,
+    #[serde(alias = "artifact_format")]
+    container: String,
     width: u32,
     height: u32,
     fps: u32,
@@ -555,6 +556,96 @@ mod tests {
         );
         assert_eq!(info.total_episodes, 2);
         assert_eq!(info.total_frames, 30);
+    }
+
+    #[test]
+    fn read_dataset_info_accepts_current_video_info_container_field() {
+        let root = temp_dir("storage-info-container");
+        let info_path = root.join("info.json");
+        fs::write(
+            &info_path,
+            r#"{
+  "codebase_version": "1.0.0",
+  "robot_type": null,
+  "total_episodes": 1,
+  "total_frames": 10,
+  "total_tasks": 1,
+  "chunks_size": 1000,
+  "fps": 30,
+  "splits": {"train": "0:1"},
+  "data_path": "data/chunk-000/episode_000000.parquet",
+  "video_path": "videos/chunk-000/{video_key}/episode_000000.mp4",
+  "features": {
+    "observation.images.camera_top__color": {
+      "dtype": "video",
+      "shape": [480, 640, 3],
+      "names": null,
+      "video_info": {
+        "codec": "h264",
+        "container": "mp4",
+        "width": 640,
+        "height": 480,
+        "fps": 30
+      }
+    }
+  },
+  "embedded_config_toml": ""
+}"#,
+        )
+        .expect("info fixture should be written");
+
+        let info = read_dataset_info(&info_path).expect("current info should parse");
+        let video_info = info
+            .features
+            .get("observation.images.camera_top__color")
+            .and_then(|feature| feature.video_info.as_ref())
+            .expect("video feature should include metadata");
+        assert_eq!(video_info.container, "mp4");
+    }
+
+    #[test]
+    fn read_dataset_info_accepts_legacy_video_info_artifact_format_field() {
+        let root = temp_dir("storage-info-artifact-format");
+        let info_path = root.join("info.json");
+        fs::write(
+            &info_path,
+            r#"{
+  "codebase_version": "1.0.0",
+  "robot_type": null,
+  "total_episodes": 1,
+  "total_frames": 10,
+  "total_tasks": 1,
+  "chunks_size": 1000,
+  "fps": 30,
+  "splits": {"train": "0:1"},
+  "data_path": "data/chunk-000/episode_000000.parquet",
+  "video_path": "videos/chunk-000/{video_key}/episode_000000.mp4",
+  "features": {
+    "observation.images.camera_top__color": {
+      "dtype": "video",
+      "shape": [480, 640, 3],
+      "names": null,
+      "video_info": {
+        "codec": "h264",
+        "artifact_format": "mp4",
+        "width": 640,
+        "height": 480,
+        "fps": 30
+      }
+    }
+  },
+  "embedded_config_toml": ""
+}"#,
+        )
+        .expect("info fixture should be written");
+
+        let info = read_dataset_info(&info_path).expect("legacy info should parse");
+        let video_info = info
+            .features
+            .get("observation.images.camera_top__color")
+            .and_then(|feature| feature.video_info.as_ref())
+            .expect("video feature should include metadata");
+        assert_eq!(video_info.container, "mp4");
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub struct IpcPoller {
 
 pub struct PreviewControlPublisher {
     pub channel_id: String,
+    pub resizable: bool,
     pub publisher: iceoryx2::port::publisher::Publisher<ipc::Service, PreviewControl, ()>,
 }
 
@@ -171,6 +172,7 @@ impl IpcPoller {
                 .open_or_create()?;
             preview_control.push(PreviewControlPublisher {
                 channel_id: source.channel_id.clone(),
+                resizable: source.preview_resize_policy.is_resizable(),
                 publisher: control_svc.publisher_builder().create()?,
             });
         }

@@ -805,6 +805,12 @@ impl SetupSession {
                 fps: profile.fps,
                 pixel_format: profile.pixel_format,
                 native_pixel_format: profile.native_pixel_format.clone(),
+                mjpeg_quality: None,
+                h264_bitrate_bps: None,
+                h264_gop: None,
+                h264_preset: None,
+                h264_tune: None,
+                h264_profile: None,
             });
             available.current.clone()
         };
@@ -3149,6 +3155,12 @@ fn pick_default_camera_profile(profiles: &[CameraProfile]) -> Option<CameraChann
             fps: profile.fps,
             pixel_format: profile.pixel_format,
             native_pixel_format: profile.native_pixel_format.clone(),
+            mjpeg_quality: None,
+            h264_bitrate_bps: None,
+            h264_gop: None,
+            h264_preset: None,
+            h264_tune: None,
+            h264_profile: None,
         })
 }
 
@@ -4413,6 +4425,7 @@ fn parse_pixel_format_name(value: &str) -> Option<PixelFormat> {
         "mjpeg" => Some(PixelFormat::Mjpeg),
         "depth16" => Some(PixelFormat::Depth16),
         "gray8" => Some(PixelFormat::Gray8),
+        "h264-annex-b" => Some(PixelFormat::H264AnnexB),
         _ => None,
     }
 }
@@ -4450,6 +4463,7 @@ fn parse_pixel_format(value: &str) -> Option<PixelFormat> {
         "mjpeg" | "mjpg" => Some(PixelFormat::Mjpeg),
         "depth16" | "z16" => Some(PixelFormat::Depth16),
         "gray8" | "grey" | "gray" | "y8" => Some(PixelFormat::Gray8),
+        "h264-annex-b" => Some(PixelFormat::H264AnnexB),
         _ => None,
     }
 }

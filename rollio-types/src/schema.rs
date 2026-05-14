@@ -176,7 +176,7 @@ pub fn config_schema() -> ConfigSchema {
                         "Camera pixel format.",
                         false,
                         None,
-                        &["rgb24", "bgr24", "yuyv", "mjpeg", "depth16", "gray8"],
+                        &["rgb24", "bgr24", "yuyv", "mjpeg", "depth16", "gray8", "h264-annex-b"],
                         &["camera"],
                     ),
                     scoped_string_field(

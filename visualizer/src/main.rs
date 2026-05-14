@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (broadcast_tx, _) = broadcast::channel::<BroadcastMessage>(64);
     let stream_info = Arc::new(Mutex::new(StreamInfoRegistry::new(
-        &camera_names,
+        &runtime_config.camera_sources,
         &robot_names,
         match runtime_config.preview_output_mode {
             PreviewOutputMode::Jpeg => "jpeg",
@@ -226,9 +226,14 @@ fn ipc_poll_loop(
         }
 
         // Forward any pending preview-size requests to the
-        // per-camera preview encoders.
+        // per-camera preview encoders. Fixed-source previews (H.264
+        // passthrough) keep their native coded dimensions and are scaled
+        // visually by the web UI instead.
         while let Ok((width, height)) = resize_rx.try_recv() {
             for entry in &preview_publishers {
+                if !entry.resizable {
+                    continue;
+                }
                 if let Err(e) = entry
                     .publisher
                     .send_copy(PreviewControl::SetSize { width, height })

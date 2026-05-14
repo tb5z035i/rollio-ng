@@ -115,8 +115,13 @@ assert_built() {
         [[ -x "$TARGET_DIR/$b" ]] || die "missing $TARGET_DIR/$b -- run \`make build\` (or \`make package-all\`) first"
     done
     for entry in "${CAMERA_BINS[@]}"; do
-        [[ -x "$CAMERAS_BUILD_DIR/$entry" ]] \
-            || die "missing $CAMERAS_BUILD_DIR/$entry -- run \`make cpp-build\` (or \`make build\`) first"
+        if [[ -x "$CAMERAS_BUILD_DIR/$entry" ]]; then
+            :
+        elif [[ "${ROLLIO_SKIP_CAMERAS:-}" == "1" ]]; then
+            warn "skipping $CAMERAS_BUILD_DIR/$entry (ROLLIO_SKIP_CAMERAS=1)"
+        else
+            die "missing $CAMERAS_BUILD_DIR/$entry -- run \`make cpp-build\` (or \`make build\`) first"
+        fi
     done
     [[ -d ui/web/dist ]]      || die "missing ui/web/dist -- run \`make ui-build\` (or \`make build\`) first"
     [[ -d ui/terminal/dist ]] || die "missing ui/terminal/dist -- run \`make ui-build\` (or \`make build\`) first"
@@ -333,7 +338,11 @@ build_core() {
     # guarded on ROLLIO_HAVE_REALSENSE) but still ships under the same
     # name so `rollio setup` discovery doesn't blow up.
     for entry in "${CAMERA_BINS[@]}"; do
-        install -m755 "$CAMERAS_BUILD_DIR/$entry" "$CORE_STAGING/usr/bin/"
+        if [[ -f "$CAMERAS_BUILD_DIR/$entry" ]]; then
+            install -m755 "$CAMERAS_BUILD_DIR/$entry" "$CORE_STAGING/usr/bin/"
+        else
+            warn "skipping $entry (not built; ROLLIO_SKIP_CAMERAS=1)"
+        fi
     done
     cp -a ui/web/dist      "$CORE_STAGING/usr/share/rollio/ui/web/dist"
     cp -a ui/terminal/dist "$CORE_STAGING/usr/share/rollio/ui/terminal/dist"

@@ -14,7 +14,7 @@ FROM ubuntu:22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG RUST_VERSION=1.88.0
-ARG NODE_VERSION=20.11.1
+ARG NODE_VERSION=22.14.0
 ARG UBUNTU_MIRROR=http://mirrors.ustc.edu.cn/ubuntu
 ARG UBUNTU_PORTS_MIRROR=http://mirrors.ustc.edu.cn/ubuntu-ports
 ARG CARGO_SPARSE_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
@@ -70,8 +70,12 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" --no-modify-path; \
+    curl -fsSLo /tmp/rustup-init \
+      "https://mirrors.ustc.edu.cn/rust-static/rustup/dist/x86_64-unknown-linux-gnu/rustup-init"; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --profile minimal \
+      --default-toolchain "${RUST_VERSION}" --no-modify-path; \
+    rm /tmp/rustup-init; \
     rustup target add aarch64-unknown-linux-gnu; \
     chmod -R a+rwX "${RUSTUP_HOME}" "${CARGO_HOME}"
 
@@ -83,14 +87,11 @@ RUN set -eux; \
       echo; \
       echo "[source.ustc]"; \
       echo "registry = \"${CARGO_SPARSE_INDEX}\""; \
-      echo; \
-      echo "[registries.ustc]"; \
-      echo "index = \"${CARGO_SPARSE_INDEX}\""; \
     } > "${CARGO_HOME}/config.toml"; \
     chmod a+r "${CARGO_HOME}/config.toml"
 
 RUN set -eux; \
-    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    curl -fsSLO "https://mirrors.ustc.edu.cn/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
     tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1; \
     rm "node-v${NODE_VERSION}-linux-x64.tar.xz"; \
     node --version; \

@@ -7,8 +7,8 @@
 use std::env;
 use std::fs;
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::ffi as f;
+use ffmpeg_next as ffmpeg;
 
 fn main() {
     ffmpeg::init().expect("ffmpeg init");
