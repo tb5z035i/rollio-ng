@@ -42,7 +42,7 @@ use rollio_types::messages::{EncodedPacketHeader, EncodedPacketKind, PixelFormat
 use super::libav_cpu::{libav_codec_available, with_backend};
 use super::{ColorBackendId, ColorCodec, ColorEncoderBackend};
 use crate::backend::bsf::Mjpeg2JpegBsf;
-use crate::backend::filter_graph::{InputResidency, ScaleGraph, ScaleGraphConfig};
+use crate::backend::filter_graph::{HwAccel, InputResidency, ScaleGraph, ScaleGraphConfig};
 use crate::codec::{
     encoded_codec_id, CodecSession, CodecSessionParams, EncodedPacketSink, LibavCodecSession,
     OwnedFrame,
@@ -350,6 +350,7 @@ impl NvidiaCudaSession {
         }
 
         let filter = ScaleGraph::build(ScaleGraphConfig {
+            hw_accel: HwAccel::Cuda,
             hw_device: &self.cuda_device,
             residency: InputResidency::Cpu,
             src_width: first_frame.header.width,
@@ -386,6 +387,7 @@ impl NvidiaCudaSession {
         first_frame: &OwnedFrame,
     ) -> Result<Pipeline> {
         let filter = ScaleGraph::build(ScaleGraphConfig {
+            hw_accel: HwAccel::Cuda,
             hw_device: &self.cuda_device,
             residency: InputResidency::Cpu,
             src_width: first_frame.header.width,
@@ -563,8 +565,9 @@ impl NvidiaCudaSession {
         let src_width = decoded.width();
         let src_height = decoded.height();
         let filter = ScaleGraph::build(ScaleGraphConfig {
+            hw_accel: HwAccel::Cuda,
             hw_device: &self.cuda_device,
-            residency: InputResidency::Cuda,
+            residency: InputResidency::Hw,
             src_width,
             src_height,
             src_pixel: Pixel::CUDA,

@@ -38,44 +38,81 @@
 use std::ffi::CString;
 use std::ptr;
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::ffi as f;
 use ffmpeg::filter::Graph;
 use ffmpeg::util::format::pixel::Pixel;
+use ffmpeg_next as ffmpeg;
 
 use crate::error::{EncoderError, Result};
 use crate::media::AvBufferRef;
 
 /// Whether the input frames arrive on CPU (raw camera bytes, needing
-/// `hwupload`) or already on the GPU (output of a `*_cuvid` decoder).
+/// `hwupload`) or already on the GPU (output of a hardware decoder).
+/// `Hw` is generic — the actual hw type is selected via
+/// [`ScaleGraphConfig::hw_accel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputResidency {
     Cpu,
+    Hw,
+}
+
+/// Which hardware-acceleration backend the graph runs on. Picks the
+/// scale filter name (`scale_cuda` vs `scale_vaapi`) and the hardware
+/// pixel format (`Pixel::CUDA` vs `Pixel::VAAPI`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HwAccel {
     Cuda,
+    Vaapi,
+}
+
+impl HwAccel {
+    fn scale_filter_name(self) -> &'static str {
+        match self {
+            HwAccel::Cuda => "scale_cuda",
+            HwAccel::Vaapi => "scale_vaapi",
+        }
+    }
+
+    fn hw_pixel(self) -> Pixel {
+        match self {
+            HwAccel::Cuda => Pixel::CUDA,
+            HwAccel::Vaapi => Pixel::VAAPI,
+        }
+    }
+
+    fn hw_pixel_name(self) -> &'static str {
+        match self {
+            HwAccel::Cuda => "cuda",
+            HwAccel::Vaapi => "vaapi",
+        }
+    }
 }
 
 /// Inputs to [`ScaleGraph::build`].
 pub(crate) struct ScaleGraphConfig<'a> {
-    /// CUDA hardware device the graph runs on. The helper clones the
-    /// AVBufferRef as needed; the caller continues to own the
-    /// original.
+    /// Which HW family (CUDA or VAAPI).
+    pub hw_accel: HwAccel,
+    /// Hardware device the graph runs on (CUDA or VAAPI AVBufferRef).
+    /// The helper clones the AVBufferRef as needed; the caller
+    /// continues to own the original.
     pub hw_device: &'a AvBufferRef,
     pub residency: InputResidency,
     pub src_width: u32,
     pub src_height: u32,
-    /// libav pixel format of the source. For Cuvid this should be
-    /// `AV_PIX_FMT_CUDA`; for raw it's the actual CPU pixel format
-    /// (RGB24, YUYV422, NV12, …).
+    /// libav pixel format of the source. For hardware input this
+    /// should be `Pixel::CUDA` or `Pixel::VAAPI` per `hw_accel`; for
+    /// raw input it's the actual CPU pixel format (RGB24, YUYV422,
+    /// NV12, …).
     pub src_pixel: Pixel,
-    /// Used only for the Cuvid path: the decoder's `hw_frames_ctx`
-    /// (`AVCodecContext::hw_frames_ctx`). Required when `residency =
-    /// Cuda`; ignored otherwise. The helper clones it; caller keeps
-    /// ownership of the original ref.
+    /// Used only for the hardware-input path: the decoder's
+    /// `hw_frames_ctx`. Required when `residency = Hw`; ignored
+    /// otherwise. The helper clones it; caller keeps ownership of
+    /// the original ref.
     pub src_hw_frames_ctx: Option<*mut f::AVBufferRef>,
     pub dst_width: u32,
     pub dst_height: u32,
-    /// Encoder-input "software" format inside the CUDA frame.
-    /// `Pixel::NV12` for NVENC's standard path.
+    /// Encoder-input "software" format inside the hardware frame.
+    /// `Pixel::NV12` for both NVENC and VA-API's standard paths.
     pub dst_sw_format: Pixel,
     pub time_base: ffmpeg::Rational,
 }
@@ -138,14 +175,12 @@ impl ScaleGraph {
             )));
         }
 
-        // For the Cuvid path, attach `hw_frames_ctx` to the buffer
-        // source so scale_cuda picks up the device from the input
-        // link's hw_frames_ctx.
-        if let InputResidency::Cuda = config.residency {
+        // For the hardware-decoder path, attach `hw_frames_ctx` to the
+        // buffer source so the scale filter picks up the device from
+        // the input link's hw_frames_ctx.
+        if let InputResidency::Hw = config.residency {
             let frames_src = config.src_hw_frames_ctx.ok_or_else(|| {
-                EncoderError::message(
-                    "ScaleGraph: Cuvid residency requires `src_hw_frames_ctx`",
-                )
+                EncoderError::message("ScaleGraph: Hw residency requires `src_hw_frames_ctx`")
             })?;
             if frames_src.is_null() {
                 return Err(EncoderError::message(
@@ -159,7 +194,7 @@ impl ScaleGraph {
                         "av_buffersrc_parameters_alloc returned null",
                     ));
                 }
-                (*params).format = f::AVPixelFormat::from(Pixel::CUDA) as i32;
+                (*params).format = f::AVPixelFormat::from(config.hw_accel.hw_pixel()) as i32;
                 (*params).width = config.src_width as i32;
                 (*params).height = config.src_height as i32;
                 (*params).time_base = f::AVRational {
@@ -221,12 +256,14 @@ impl ScaleGraph {
 
         // -- scale_cuda -------------------------------------------
         let scale_name = CString::new("scale").unwrap();
-        let scale_filter_name = CString::new("scale_cuda").unwrap();
+        let scale_filter_name = CString::new(config.hw_accel.scale_filter_name()).unwrap();
         let scale_filter = unsafe { f::avfilter_get_by_name(scale_filter_name.as_ptr()) };
         if scale_filter.is_null() {
-            return Err(EncoderError::message(
-                "filter `scale_cuda` not registered (does libavfilter have CUDA support compiled in?)",
-            ));
+            return Err(EncoderError::message(format!(
+                "filter `{}` not registered (libavfilter built without {} support?)",
+                config.hw_accel.scale_filter_name(),
+                config.hw_accel.hw_pixel_name()
+            )));
         }
         let scale_args = format!(
             "w={dw}:h={dh}:format={fmt}",
@@ -235,7 +272,10 @@ impl ScaleGraph {
             fmt = pix_fmt_name(config.dst_sw_format)?,
         );
         let scale_args_c = CString::new(scale_args.as_str()).map_err(|e| {
-            EncoderError::message(format!("scale_cuda args CString failed: {e}"))
+            EncoderError::message(format!(
+                "{} args CString failed: {e}",
+                config.hw_accel.scale_filter_name()
+            ))
         })?;
         let mut scale_ctx: *mut f::AVFilterContext = ptr::null_mut();
         let rc = unsafe {
@@ -250,8 +290,10 @@ impl ScaleGraph {
         };
         if rc < 0 {
             return Err(EncoderError::message(format!(
-                "avfilter_graph_create_filter(scale_cuda, `{}`) failed: rc={}",
-                scale_args, rc
+                "avfilter_graph_create_filter({}, `{}`) failed: rc={}",
+                config.hw_accel.scale_filter_name(),
+                scale_args,
+                rc
             )));
         }
 
@@ -283,7 +325,7 @@ impl ScaleGraph {
 
         // -- Link --------------------------------------------------
         match config.residency {
-            InputResidency::Cuda => {
+            InputResidency::Hw => {
                 link(src_ctx, 0, scale_ctx, 0)?;
                 link(scale_ctx, 0, sink_ctx, 0)?;
             }
@@ -324,10 +366,7 @@ impl ScaleGraph {
 
     /// Pull one frame from the graph's sink. Returns `Ok(None)` when
     /// the sink is empty (no error, just no frame ready).
-    pub(crate) fn receive_frame(
-        &mut self,
-        frame: &mut ffmpeg::frame::Video,
-    ) -> Result<Option<()>> {
+    pub(crate) fn receive_frame(&mut self, frame: &mut ffmpeg::frame::Video) -> Result<Option<()>> {
         let rc = unsafe { f::av_buffersink_get_frame(self.sink_ctx, frame.as_mut_ptr()) };
         if rc == 0 {
             Ok(Some(()))
@@ -385,13 +424,13 @@ fn link(
     Ok(())
 }
 
-/// Build the `args` string for the buffer source filter. For Cuvid
-/// input the actual `hw_frames_ctx` arrives later via
+/// Build the `args` string for the buffer source filter. For the
+/// hardware-input path the actual `hw_frames_ctx` arrives later via
 /// `av_buffersrc_parameters_set`; the args still need a sensible
-/// `pix_fmt` so init succeeds (we pass `cuda`).
+/// `pix_fmt` so init succeeds (we pass `cuda` or `vaapi`).
 fn source_args(config: &ScaleGraphConfig<'_>) -> Result<String> {
     let pix_fmt = match config.residency {
-        InputResidency::Cuda => "cuda",
+        InputResidency::Hw => config.hw_accel.hw_pixel_name(),
         InputResidency::Cpu => pix_fmt_name(config.src_pixel)?,
     };
     Ok(format!(
@@ -425,6 +464,7 @@ fn pix_fmt_name(fmt: Pixel) -> Result<&'static str> {
         Pixel::YUYV422 => "yuyv422",
         Pixel::GRAY8 => "gray",
         Pixel::CUDA => "cuda",
+        Pixel::VAAPI => "vaapi",
         other => {
             return Err(EncoderError::message(format!(
                 "filter_graph: unsupported pixel format {other:?} (extend pix_fmt_name to plumb \
