@@ -250,6 +250,38 @@ textarea {
   color: var(--text-muted);
 }
 
+/* SCALING_LOCKED badge — overlaid on the top-right of the media box
+ * when the active encoder is in passthrough mode. The badge sits
+ * above the canvas/image (z-index) and is non-interactive (pointer
+ * events fall through to the underlying media). */
+.camera-tile__lock {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(8, 12, 20, 0.78);
+  color: #e6e9f0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+.camera-tile__lock-glyph {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.camera-tile__lock-text {
+  text-transform: uppercase;
+}
+
 .camera-tile__meta {
   padding: 0.5rem 0.75rem;
   border-top: 1px solid var(--border);

@@ -14,6 +14,7 @@ import {
   snapshotDebugMetrics,
   type DebugSnapshot,
 } from "./lib/debug-metrics";
+import { videoDecoderAvailability } from "./lib/browser-codecs";
 import {
   buildPreviewNegotiationKey,
   isWideLayout,
@@ -126,6 +127,7 @@ export default function App({
   const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshot>(() =>
     snapshotDebugMetrics(),
   );
+  const videoDecoderSupport = useMemo(() => videoDecoderAvailability(), []);
 
   const cameraNames = Array.from(frames.keys());
   const configuredCameraNames = streamInfo?.cameras?.map((camera) => camera.name) ?? [];
@@ -133,10 +135,23 @@ export default function App({
     () => resolveCameraNames(configuredCameraNames, cameraNames),
     [cameraNames, configuredCameraNames],
   );
-  const cameraData = useMemo(
-    () => resolvedCameraNames.map((name) => ({ name, frame: frames.get(name) })),
-    [frames, resolvedCameraNames],
-  );
+  const cameraData = useMemo(() => {
+    const lockedByName = new Map<string, boolean>();
+    for (const camera of streamInfo?.cameras ?? []) {
+      lockedByName.set(camera.name, camera.scaling_locked === true);
+    }
+    const encodedPreviewIssue =
+      streamInfo?.preview_output_mode === "encoded" && !videoDecoderSupport.available
+        ? videoDecoderSupport
+        : null;
+    return resolvedCameraNames.map((name) => ({
+      name,
+      frame: frames.get(name),
+      scalingLocked: lockedByName.get(name) ?? false,
+      previewIssue: frames.has(name) ? undefined : encodedPreviewIssue?.summary,
+      previewIssueTitle: frames.has(name) ? undefined : encodedPreviewIssue?.detail,
+    }));
+  }, [frames, resolvedCameraNames, streamInfo, videoDecoderSupport]);
   const robotEntries = Array.from(robotChannels.values()).sort((a, b) =>
     a.name.localeCompare(b.name),
   );
@@ -250,6 +265,10 @@ export default function App({
     );
     setGauge("ui.robot_count", robotChannels.size);
     setGauge("ui.debug_enabled", showDebug ? "On" : "Off");
+    setGauge(
+      "ui.video_decoder",
+      videoDecoderSupport.available ? "Ready" : videoDecoderSupport.summary,
+    );
     setGauge("ui.episode_state", effectiveEpisodeStatus.state);
     setGauge("ui.episode_count", effectiveEpisodeStatus.episode_count);
     setGauge("ui.episode_elapsed_ms", effectiveEpisodeStatus.elapsed_ms);
@@ -267,6 +286,7 @@ export default function App({
     robotChannels.size,
     showDebug,
     streamInfo,
+    videoDecoderSupport,
     viewport.height,
     viewport.width,
     wideLayout,

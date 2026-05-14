@@ -6,7 +6,19 @@ import { codecName } from "../lib/protocol";
 import type { CameraFrame } from "../lib/websocket";
 
 interface CameraGridProps {
-  cameras: Array<{ name: string; frame: CameraFrame | undefined }>;
+  cameras: Array<{
+    name: string;
+    frame: CameraFrame | undefined;
+    /**
+     * True when the active encoder reports SCALING_LOCKED on its
+     * stream_info — the preview cannot be rescaled (passthrough
+     * mode). We render a small lock badge over the tile so users
+     * understand why resize gestures aren't taking effect.
+     */
+    scalingLocked?: boolean;
+    previewIssue?: string;
+    previewIssueTitle?: string;
+  }>;
   onPreviewSizeChange?: (size: PreviewDimensions) => void;
 }
 
@@ -185,8 +197,32 @@ export function CameraGrid({
                 <VideoCanvasTile name={camera.name} frame={camera.frame} />
               )
             ) : (
-              <div className="camera-tile__placeholder">No signal</div>
+              <div
+                className="camera-tile__placeholder"
+                data-testid={`camera-placeholder-${camera.name}`}
+                title={camera.previewIssueTitle}
+              >
+                {camera.previewIssue ?? "No signal"}
+              </div>
             )}
+            {camera.scalingLocked ? (
+              <div
+                className="camera-tile__lock"
+                title={
+                  "Encoder is in passthrough mode: output dims are pinned " +
+                  "to source dims, so the preview size can't be changed " +
+                  "from the UI."
+                }
+                data-testid={`camera-lock-${camera.name}`}
+                role="img"
+                aria-label={`${camera.name} preview size is locked to source dimensions`}
+              >
+                <span aria-hidden="true" className="camera-tile__lock-glyph">
+                  &#x1F512;
+                </span>
+                <span className="camera-tile__lock-text">locked</span>
+              </div>
+            ) : null}
           </div>
           <div className="camera-tile__meta">
             {camera.frame ? metaLine(camera.frame) : "Waiting for frames"}
