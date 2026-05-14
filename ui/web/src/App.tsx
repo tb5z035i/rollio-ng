@@ -182,9 +182,24 @@ export default function App({
     setPreviewTileSize(size);
   }, []);
 
+  // When ANY active camera reports `scaling_locked` on stream_info,
+  // the preview encoder cannot accept resize requests for that stream
+  // (passthrough mode pins output dims to source dims). Avoid sending
+  // `set_preview_size` against any stream — the visualizer would log
+  // a noisy rejection. The UI still tracks the latest negotiated tile
+  // size locally so layout/rendering proceed normally.
+  const scalingLocked =
+    streamInfo?.cameras?.some((camera) => camera.scaling_locked === true) ?? false;
+
   useEffect(() => {
     if (!previewConnected) {
       lastPreviewNegotiationKeyRef.current = null;
+      return;
+    }
+    if (scalingLocked) {
+      lastPreviewNegotiationKeyRef.current = null;
+      setGauge("ui.preview_request", "locked");
+      setGauge("ui.preview_target", "locked");
       return;
     }
 
@@ -201,13 +216,20 @@ export default function App({
       return;
     }
 
-    const delayMs = lastPreviewNegotiationKeyRef.current === null ? 0 : 75;
-    const timer = window.setTimeout(() => {
+    const sendResize = () => {
       sendPreview(encodeSetPreviewSize(negotiatedSize.width, negotiatedSize.height));
       lastPreviewNegotiationKeyRef.current = negotiationKey;
       setGauge("ui.preview_request", `${negotiatedSize.width}x${negotiatedSize.height}`);
       setGauge("ui.preview_target", `${negotiatedSize.width}x${negotiatedSize.height}`);
-    }, delayMs);
+    };
+
+    const delayMs = lastPreviewNegotiationKeyRef.current === null ? 0 : 75;
+    if (delayMs === 0) {
+      sendResize();
+      return;
+    }
+
+    const timer = window.setTimeout(sendResize, delayMs);
 
     return () => {
       window.clearTimeout(timer);
@@ -215,6 +237,7 @@ export default function App({
   }, [
     previewConnected,
     requestedPreviewTileSize,
+    scalingLocked,
     sendPreview,
     viewport.height,
     viewport.width,

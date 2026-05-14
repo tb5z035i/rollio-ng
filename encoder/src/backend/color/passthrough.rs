@@ -203,6 +203,11 @@ impl PassthroughCodecSession {
             payload_len,
         };
         header.set_keyframe(keyframe);
+        // Passthrough never rescales — the session-open code rejects
+        // any dim mismatch outright. Surface this on the wire so the
+        // UI can suppress `set_preview_size` requests instead of
+        // letting them bounce off the encoder repeatedly.
+        header.set_scaling_locked(true);
         header
     }
 }
@@ -271,7 +276,7 @@ impl CodecSession for PassthroughCodecSession {
     }
 
     fn finish(self: Box<Self>, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        let header = EncodedPacketHeader {
+        let mut header = EncodedPacketHeader {
             kind: EncodedPacketKind::EndOfStream,
             codec: EncodedCodecId::H264,
             flags: 0,
@@ -290,6 +295,7 @@ impl CodecSession for PassthroughCodecSession {
             episode_index: self.episode_index,
             payload_len: 0,
         };
+        header.set_scaling_locked(true);
         sink.write_eos(header)
     }
 
@@ -391,28 +397,28 @@ mod tests {
 
     #[derive(Debug)]
     enum SinkCall {
-        Config { header: EncodedPacketHeader, extradata: Vec<u8> },
-        Packet { header: EncodedPacketHeader, payload: Vec<u8> },
-        Eos { header: EncodedPacketHeader },
+        Config {
+            header: EncodedPacketHeader,
+            extradata: Vec<u8>,
+        },
+        Packet {
+            header: EncodedPacketHeader,
+            payload: Vec<u8>,
+        },
+        Eos {
+            header: EncodedPacketHeader,
+        },
     }
 
     impl EncodedPacketSink for CaptureSink {
-        fn write_config(
-            &mut self,
-            header: EncodedPacketHeader,
-            extradata: &[u8],
-        ) -> Result<()> {
+        fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()> {
             self.calls.push(SinkCall::Config {
                 header,
                 extradata: extradata.to_vec(),
             });
             Ok(())
         }
-        fn write_packet(
-            &mut self,
-            header: EncodedPacketHeader,
-            payload: &[u8],
-        ) -> Result<()> {
+        fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
             self.calls.push(SinkCall::Packet {
                 header,
                 payload: payload.to_vec(),
@@ -488,10 +494,7 @@ mod tests {
         // Order: Config, Packet (keyframe), Packet (delta), EOS.
         assert!(matches!(sink.calls[0], SinkCall::Config { .. }));
         match &sink.calls[0] {
-            SinkCall::Config {
-                header,
-                extradata,
-            } => {
+            SinkCall::Config { header, extradata } => {
                 assert_eq!(header.codec, EncodedCodecId::H264);
                 assert_eq!(header.width, 1920);
                 assert_eq!(header.height, 1080);
@@ -499,16 +502,23 @@ mod tests {
                 // Should contain SPS and PPS, each prefixed with the
                 // 4-byte Annex B start code.
                 assert!(extradata.starts_with(&[0x00, 0x00, 0x00, 0x01]));
-                assert!(extradata.windows(5).any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x67]));
-                assert!(extradata.windows(5).any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x68]));
+                assert!(extradata
+                    .windows(5)
+                    .any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x67]));
+                assert!(extradata
+                    .windows(5)
+                    .any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x68]));
             }
             _ => unreachable!(),
         }
         match &sink.calls[1] {
             SinkCall::Packet { header, payload } => {
                 assert!(header.is_keyframe(), "first packet must be keyframe");
-                assert_eq!(payload, &synthetic_keyframe_au(),
-                    "passthrough must forward the AU bytes verbatim");
+                assert_eq!(
+                    payload,
+                    &synthetic_keyframe_au(),
+                    "passthrough must forward the AU bytes verbatim"
+                );
             }
             other => panic!("expected packet, got {other:?}"),
         }
@@ -520,6 +530,32 @@ mod tests {
             other => panic!("expected delta packet, got {other:?}"),
         }
         assert!(matches!(sink.calls[3], SinkCall::Eos { .. }));
+    }
+
+    #[test]
+    fn passthrough_sets_scaling_locked_on_every_emitted_header() {
+        let backend = PassthroughBackend;
+        let p = params("test", 1920, 1080);
+        let f = frame(1920, 1080, synthetic_keyframe_au(), 1_000_000);
+        let mut session = backend.open_session(&p, &f).expect("open");
+        let mut sink = CaptureSink::default();
+
+        session.encode(&f, &mut sink).expect("encode keyframe");
+        let delta = frame(1920, 1080, synthetic_delta_au(), 1_033_000);
+        session.encode(&delta, &mut sink).expect("encode delta");
+        session.finish(&mut sink).expect("finish");
+
+        for call in &sink.calls {
+            let header = match call {
+                SinkCall::Config { header, .. } => header,
+                SinkCall::Packet { header, .. } => header,
+                SinkCall::Eos { header } => header,
+            };
+            assert!(
+                header.is_scaling_locked(),
+                "passthrough must set SCALING_LOCKED on every header, missing on {call:?}",
+            );
+        }
     }
 
     #[test]
@@ -535,8 +571,10 @@ mod tests {
         // against). Session silently drops and waits for the next
         // keyframe.
         session.encode(&first_delta, &mut sink).expect("encode");
-        assert!(sink.calls.is_empty(),
-            "delta before SPS/PPS must not emit Config or Packet");
+        assert!(
+            sink.calls.is_empty(),
+            "delta before SPS/PPS must not emit Config or Packet"
+        );
 
         let key = frame(1920, 1080, synthetic_keyframe_au(), 1_033_000);
         session.encode(&key, &mut sink).expect("encode keyframe");

@@ -2,6 +2,7 @@
 //! `stream_info` JSON message. Replaces the legacy JPEG-flavoured
 //! fields with packet-stream metrics.
 
+use rollio_types::config::{PreviewResizePolicy, VisualizerCameraSourceConfig};
 use rollio_types::messages::EncodedPacketHeader;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ pub struct StreamInfoRegistry {
 
 #[derive(Debug, Default)]
 struct CameraRuntimeInfo {
+    preview_resize_policy: PreviewResizePolicy,
     source_width: Option<u32>,
     source_height: Option<u32>,
     latest_timestamp_ms: Option<u64>,
@@ -32,6 +34,11 @@ struct CameraRuntimeInfo {
     bytes_per_sec: Option<f64>,
     bytes_window_start_ms: Option<u64>,
     bytes_in_window: u64,
+    /// Observed from `EncodedPacketHeader.flags` —
+    /// `ENCODED_PACKET_FLAG_SCALING_LOCKED` is set by the passthrough
+    /// backend (and any other backend whose output dims are pinned
+    /// to source dims). UI uses this to suppress `set_preview_size`.
+    scaling_locked: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,27 +64,44 @@ pub struct CameraInfoSnapshot {
     pub name: String,
     pub source_width: Option<u32>,
     pub source_height: Option<u32>,
+    pub preview_resizable: bool,
+    pub preview_resize_policy: &'static str,
     pub latest_timestamp_ms: Option<u64>,
     pub latest_frame_index: Option<u64>,
     pub received_fps_estimate: Option<f64>,
     pub bytes_per_sec: Option<f64>,
     pub keyframe_age_ms: Option<u64>,
+    /// True when the encoder's output dims are pinned to source dims
+    /// (passthrough mode). UI should suppress `set_preview_size`
+    /// when set; sending it produces a no-op rejection from the
+    /// encoder and clutters the visualizer log.
+    pub scaling_locked: bool,
 }
 
 impl StreamInfoRegistry {
     pub fn new(
-        camera_names: &[String],
+        camera_sources: &[VisualizerCameraSourceConfig],
         robot_names: &[String],
         output_mode: &'static str,
         active_preview_width: u32,
         active_preview_height: u32,
     ) -> Self {
-        let mut cameras = HashMap::with_capacity(camera_names.len());
-        for name in camera_names {
-            cameras.insert(name.clone(), CameraRuntimeInfo::default());
+        let mut cameras = HashMap::with_capacity(camera_sources.len());
+        let mut camera_order = Vec::with_capacity(camera_sources.len());
+        for source in camera_sources {
+            camera_order.push(source.channel_id.clone());
+            cameras.insert(
+                source.channel_id.clone(),
+                CameraRuntimeInfo {
+                    preview_resize_policy: source.preview_resize_policy,
+                    source_width: source.source_width,
+                    source_height: source.source_height,
+                    ..CameraRuntimeInfo::default()
+                },
+            );
         }
         Self {
-            camera_order: camera_names.to_vec(),
+            camera_order,
             robot_order: robot_names.to_vec(),
             output_mode,
             active_preview_width,
@@ -139,6 +163,12 @@ impl StreamInfoRegistry {
         if header.is_keyframe() {
             camera.last_keyframe_ms = Some(wall_time_ms());
         }
+        // The encoder stamps SCALING_LOCKED on every header it emits
+        // for the session, so it's safe to overwrite on every packet
+        // observation — there's no flip-flop in a healthy stream.
+        // (When the session is re-opened, the new first Config
+        // packet refreshes this.)
+        camera.scaling_locked = header.is_scaling_locked();
     }
 
     pub fn snapshot(&self) -> StreamInfoSnapshot {
@@ -146,10 +176,13 @@ impl StreamInfoRegistry {
         let mut cameras = Vec::with_capacity(self.camera_order.len());
         for name in &self.camera_order {
             let camera = self.cameras.get(name);
+            let preview_resize_policy = camera.map(|c| c.preview_resize_policy).unwrap_or_default();
             cameras.push(CameraInfoSnapshot {
                 name: name.clone(),
                 source_width: camera.and_then(|c| c.source_width),
                 source_height: camera.and_then(|c| c.source_height),
+                preview_resizable: preview_resize_policy.is_resizable(),
+                preview_resize_policy: preview_resize_policy.as_str(),
                 latest_timestamp_ms: camera.and_then(|c| c.latest_timestamp_ms),
                 latest_frame_index: camera.and_then(|c| c.latest_frame_index),
                 received_fps_estimate: camera.and_then(|c| c.received_fps_estimate),
@@ -157,6 +190,7 @@ impl StreamInfoRegistry {
                 keyframe_age_ms: camera
                     .and_then(|c| c.last_keyframe_ms)
                     .map(|ms| now_ms.saturating_sub(ms)),
+                scaling_locked: camera.map(|c| c.scaling_locked).unwrap_or(false),
             });
         }
         StreamInfoSnapshot {
@@ -223,4 +257,82 @@ fn wall_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_exposes_fixed_source_preview_metadata() {
+        let sources = vec![VisualizerCameraSourceConfig {
+            channel_id: "cam/color".into(),
+            bus_root: "cam".into(),
+            channel_type: "color".into(),
+            preview_resize_policy: PreviewResizePolicy::FixedSource,
+            source_width: Some(640),
+            source_height: Some(480),
+        }];
+        let registry = StreamInfoRegistry::new(&sources, &[], "encoded", 320, 240);
+
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.cameras.len(), 1);
+        assert_eq!(snapshot.cameras[0].source_width, Some(640));
+        assert_eq!(snapshot.cameras[0].source_height, Some(480));
+        assert!(!snapshot.cameras[0].preview_resizable);
+        assert_eq!(snapshot.cameras[0].preview_resize_policy, "fixed-source");
+        // Default before any packet observed.
+        assert!(!snapshot.cameras[0].scaling_locked);
+    }
+
+    fn header(flags: u32) -> EncodedPacketHeader {
+        let mut h = EncodedPacketHeader::default();
+        h.flags = flags;
+        h.width = 1920;
+        h.height = 1080;
+        h.source_timestamp_us = 1_000_000;
+        h.source_frame_index = 0;
+        h
+    }
+
+    #[test]
+    fn observe_packet_reflects_scaling_locked_flag_into_snapshot() {
+        let sources = vec![VisualizerCameraSourceConfig {
+            channel_id: "cam/color".into(),
+            bus_root: "cam".into(),
+            channel_type: "color".into(),
+            preview_resize_policy: PreviewResizePolicy::Dynamic,
+            source_width: None,
+            source_height: None,
+        }];
+        let mut registry = StreamInfoRegistry::new(&sources, &[], "encoded", 320, 240);
+
+        // Initially the flag is false until we see a packet.
+        assert!(!registry.snapshot().cameras[0].scaling_locked);
+
+        // A packet without the flag keeps it false.
+        registry.observe_encoded_packet(
+            "cam/color",
+            &header(rollio_types::messages::ENCODED_PACKET_FLAG_KEYFRAME),
+            128,
+        );
+        assert!(!registry.snapshot().cameras[0].scaling_locked);
+
+        // A packet with the flag flips it to true.
+        registry.observe_encoded_packet(
+            "cam/color",
+            &header(
+                rollio_types::messages::ENCODED_PACKET_FLAG_KEYFRAME
+                    | rollio_types::messages::ENCODED_PACKET_FLAG_SCALING_LOCKED,
+            ),
+            128,
+        );
+        assert!(registry.snapshot().cameras[0].scaling_locked);
+
+        // And a subsequent packet without the flag flips it back —
+        // the encoder is the source of truth, the visualizer just
+        // mirrors what's on the wire.
+        registry.observe_encoded_packet("cam/color", &header(0), 128);
+        assert!(!registry.snapshot().cameras[0].scaling_locked);
+    }
 }

@@ -112,11 +112,20 @@ export interface StreamInfoCamera {
   name: string;
   source_width: number | null;
   source_height: number | null;
+  preview_resizable?: boolean;
+  preview_resize_policy?: "dynamic" | "fixed-source";
   latest_timestamp_ms: number | null;
   latest_frame_index: number | null;
   received_fps_estimate: number | null;
   bytes_per_sec: number | null;
   keyframe_age_ms: number | null;
+  /**
+   * True when the active encoder's output dims are pinned to source dims
+   * (passthrough mode). UI must not send `set_preview_size` against the
+   * preview stream while this is set; the encoder would reject any size
+   * other than the source size and clutter the visualizer log.
+   */
+  scaling_locked?: boolean;
 }
 
 export interface StreamInfoMessage {

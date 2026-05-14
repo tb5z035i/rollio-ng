@@ -482,6 +482,16 @@ pub const ENCODED_PACKET_FLAG_KEYFRAME: u32 = 1 << 0;
 /// the assembler/visualizer know it can skip caching the duplicate.
 pub const ENCODED_PACKET_FLAG_CONFIG_INLINE: u32 = 1 << 1;
 
+/// Bit set in `EncodedPacketHeader.flags` when the encoder cannot
+/// rescale the stream — output dims are pinned to source dims. The
+/// passthrough backend always sets this because its very contract is
+/// "rewrite headers and relay NAL bytes verbatim". The visualizer
+/// surfaces this flag on `stream_info` so the UI knows not to send
+/// `set_preview_size` requests (which the passthrough session would
+/// reject anyway). Set on the `Config` packet and inherited by every
+/// `Packet` from the same session.
+pub const ENCODED_PACKET_FLAG_SCALING_LOCKED: u32 = 1 << 2;
+
 /// Metadata for one encoded packet. Used as a user header on an iceoryx2
 /// `publish_subscribe::<[u8]>()` service so the encoded access unit
 /// stays zero-copy. The same header type is used for recording and
@@ -560,6 +570,18 @@ impl EncodedPacketHeader {
             self.flags |= ENCODED_PACKET_FLAG_CONFIG_INLINE;
         } else {
             self.flags &= !ENCODED_PACKET_FLAG_CONFIG_INLINE;
+        }
+    }
+
+    pub fn is_scaling_locked(&self) -> bool {
+        self.flags & ENCODED_PACKET_FLAG_SCALING_LOCKED != 0
+    }
+
+    pub fn set_scaling_locked(&mut self, value: bool) {
+        if value {
+            self.flags |= ENCODED_PACKET_FLAG_SCALING_LOCKED;
+        } else {
+            self.flags &= !ENCODED_PACKET_FLAG_SCALING_LOCKED;
         }
     }
 }
