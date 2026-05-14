@@ -144,12 +144,19 @@ enum InputStage {
     },
 }
 
-/// Per-stream NVIDIA HW pipeline. Created lazily on the first frame
-/// so the filter graph's `hw_frames_ctx` (which depends on the
-/// decoder's first output for Cuvid path) is available before NVENC
-/// opens.
+/// Per-stream NVIDIA HW pipeline. `output` is split off because for
+/// the Cuvid path it depends on `hw_frames_ctx` extracted from the
+/// first *decoded* frame, and the cuvid family has a ~3-packet
+/// pipeline depth (the parser is asynchronous). So the input stage
+/// runs until the first frame falls out, and only then can we build
+/// the filter graph + NVENC encoder. For the Raw and CpuDecode paths
+/// the output stage is built eagerly in `NvidiaCudaSession::new`.
 struct Pipeline {
     input: InputStage,
+    output: Option<OutputStage>,
+}
+
+struct OutputStage {
     filter: ScaleGraph,
     encoder: ffmpeg::encoder::Video,
     extradata: Vec<u8>,
@@ -172,11 +179,6 @@ pub(crate) struct NvidiaCudaSession {
     cuda_device: AvBufferRef,
     encoder_time_base: ffmpeg::Rational,
     pipeline: Option<Pipeline>,
-    /// True once the first frame has been pushed through the input
-    /// stage. For the Cuvid path this is set in `build_cuvid_pipeline`
-    /// (which decodes the first packet to get `hw_frames_ctx`); for
-    /// the Raw path it's false until the first `encode()` call.
-    first_frame_consumed: bool,
     config_sent: bool,
     next_sequence: u64,
     last_pts_us: Option<i64>,
@@ -210,7 +212,6 @@ impl NvidiaCudaSession {
             cuda_device,
             encoder_time_base: ffmpeg::Rational(1, 1_000_000),
             pipeline: None,
-            first_frame_consumed: false,
             config_sent: false,
             next_sequence: 0,
             last_pts_us: None,
@@ -234,45 +235,26 @@ impl NvidiaCudaSession {
         // way to legacy CPU swscale.
         let pipeline = match input_strategy(first_frame.header.pixel_format) {
             InputStrategy::Cuvid(source_codec) => {
-                let p = session.build_cuvid_pipeline(source_codec, first_frame, None)?;
-                // build_cuvid_pipeline decodes + pushes the first
-                // frame into the filter as part of obtaining
-                // hw_frames_ctx, so the input stage has already seen
-                // it.
-                session.first_frame_consumed = true;
-                p
+                session.build_cuvid_pipeline(source_codec, first_frame, None)?
             }
             InputStrategy::CuvidWithMjpegBsf(source_codec) => {
-                // Try cuvid+BSF for full-GPU MJPEG decode. If
-                // mjpeg_cuvid still won't ingest the bitstream
-                // (cameras with 4:2:2 / 4:4:4 subsampling, damaged
-                // SOFs, etc.), propagate the error so
-                // `LibavNvidiaBackend::open_session` can fall through
-                // to the legacy CPU-swscale + NVENC path. That path
-                // is the proven 16%-of-one-core baseline; the
-                // CpuDecode + hwupload + scale_cuda alternative is
-                // plumbed below for completeness but in practice has
-                // higher steady-state CPU on this hardware (the
-                // hwupload of YUV422P + scale_cuda's J-range
-                // handling are heavier than CPU swscale → NV12).
+                // Try cuvid + mjpeg2jpeg first (full GPU MJPEG
+                // pipeline). If mjpeg_cuvid still rejects the
+                // bitstream (e.g. damaged SOF), the error propagates
+                // up to `LibavNvidiaBackend::open_session` which
+                // falls back to the legacy CPU-swscale + NVENC
+                // path. The output stage is built lazily on the
+                // first decoded frame (cuvid is async with a ~3
+                // packet pipeline depth), so failures from the
+                // decoder show up during `encode()` rather than
+                // here.
                 let bsf = Mjpeg2JpegBsf::new()?;
-                let p = session.build_cuvid_pipeline(source_codec, first_frame, Some(bsf))?;
-                session.first_frame_consumed = true;
-                p
+                session.build_cuvid_pipeline(source_codec, first_frame, Some(bsf))?
             }
             InputStrategy::CpuDecode(source_codec) => {
-                let p = session.build_cpu_decode_pipeline(source_codec, first_frame)?;
-                // Same as the Cuvid path: the SW decoder produced
-                // the first frame to detect its output pixel format
-                // and we pushed it through the filter to prime
-                // scale_cuda.
-                session.first_frame_consumed = true;
-                p
+                session.build_cpu_decode_pipeline(source_codec, first_frame)?
             }
             InputStrategy::Raw(source_pixel) => {
-                // Raw path doesn't decode anything at open time; the
-                // first frame still needs to flow through on the
-                // first `encode()` call.
                 session.build_raw_pipeline(source_pixel, first_frame)?
             }
         };
@@ -284,7 +266,7 @@ impl NvidiaCudaSession {
         &self,
         source_codec: ffmpeg::codec::Id,
         first_frame: &OwnedFrame,
-        mut bsf: Option<Mjpeg2JpegBsf>,
+        bsf: Option<Mjpeg2JpegBsf>,
     ) -> Result<Pipeline> {
         let decoder_name = cuvid_decoder_name(source_codec)?;
         let decoder_filter = ffmpeg::decoder::find_by_name(decoder_name).ok_or_else(|| {
@@ -295,94 +277,28 @@ impl NvidiaCudaSession {
         let mut ctx = ffmpeg::codec::context::Context::new_with_codec(decoder_filter);
         unsafe {
             (*ctx.as_mut_ptr()).hw_device_ctx = f::av_buffer_ref(self.cuda_device.as_ptr());
-            // The cuvid family needs `width`/`height` set on the
-            // codec context *before* avcodec_open2 fires (which
-            // happens inside `.decoder().video()`); without them
-            // mjpeg_cuvid can't size its CUDA surface pool and
-            // silently fails to produce frames. ffmpeg's CLI gets
-            // away with this because its image2 demuxer pre-parses
-            // the JPEG SOF marker; we feed raw V4L2 bytes so we have
-            // to set them ourselves.
+            // ffmpeg-CLI fills width/height from the demuxer's stream
+            // parameters before avcodec_open2; we set them from the
+            // camera frame header. mjpeg_cuvid uses them to size its
+            // CUDA surface pool.
             (*ctx.as_mut_ptr()).width = first_frame.header.width as i32;
             (*ctx.as_mut_ptr()).height = first_frame.header.height as i32;
         }
-        let mut decoder = ctx.decoder().video()?;
+        let decoder = ctx.decoder().video()?;
 
-        // Decode the first frame so we have the decoder's
-        // `hw_frames_ctx` populated before we build the filter graph.
-        // For codecs that genuinely belong on Cuvid (H.264 / HEVC /
-        // AV1) one packet should produce one frame within a couple
-        // of receive polls. We allow 2 EAGAIN retries to absorb
-        // driver-side setup latency, then give up — anything longer
-        // suggests the decoder doesn't like this bitstream and the
-        // backend should fall back rather than burn CPU retrying on
-        // every session-open.
-        let mut packet = ffmpeg::Packet::copy(&first_frame.payload);
-        if let Some(bsf) = bsf.as_mut() {
-            bsf.filter(&mut packet)?;
-        }
-        decoder.send_packet(&packet)?;
-        let mut decoded = ffmpeg::frame::Video::empty();
-        let mut got_frame = false;
-        for _ in 0..3 {
-            let rc = unsafe {
-                f::avcodec_receive_frame(decoder.as_mut_ptr(), decoded.as_mut_ptr())
-            };
-            if rc == 0 {
-                got_frame = true;
-                break;
-            }
-            if rc != f::AVERROR(f::EAGAIN) {
-                return Err(EncoderError::message(format!(
-                    "Cuvid decoder `{decoder_name}` errored on first packet: rc={rc}",
-                )));
-            }
-        }
-        if !got_frame {
-            return Err(EncoderError::message(format!(
-                "Cuvid decoder `{decoder_name}` produced no frame after 3 receive polls; \
-                 the bitstream still has quirks the cuvid family rejects \
-                 (e.g. damaged JPEG SOF, non-baseline subsampling).",
-            )));
-        }
-
-        let hw_frames_ctx = unsafe { (*decoder.as_ptr()).hw_frames_ctx };
-        if hw_frames_ctx.is_null() {
-            return Err(EncoderError::message(format!(
-                "Cuvid decoder `{decoder_name}` did not populate hw_frames_ctx after first frame",
-            )));
-        }
-
-        let filter = ScaleGraph::build(ScaleGraphConfig {
-            hw_device: &self.cuda_device,
-            residency: InputResidency::Cuda,
-            src_width: first_frame.header.width,
-            src_height: first_frame.header.height,
-            src_pixel: Pixel::CUDA,
-            src_hw_frames_ctx: Some(hw_frames_ctx),
-            dst_width: self.width,
-            dst_height: self.height,
-            dst_sw_format: Pixel::NV12,
-            time_base: self.encoder_time_base,
-        })?;
-
-        let (encoder, extradata) = self.open_encoder(&filter)?;
-
-        // Push the first decoded frame through immediately so the
-        // packet path is primed; the caller's `encode()` then drains
-        // the encoder normally.
+        // CUVID is asynchronous. cuvidParseVideoData queues each
+        // packet and the decoded surface only appears after the
+        // parser has enough lookahead (empirically ~3 packets for
+        // mjpeg_cuvid). We therefore cannot extract `hw_frames_ctx`
+        // synchronously here from a first decoded frame. Instead we
+        // defer the filter graph + NVENC construction until the first
+        // decoded frame actually emerges inside the `encode()` loop.
+        // See `Pipeline::output` + `build_cuda_output_from_frame`.
         let _ = source_codec;
-        let mut session = Pipeline {
+        Ok(Pipeline {
             input: InputStage::Cuvid { decoder, bsf },
-            filter,
-            encoder,
-            extradata,
-        };
-        session.filter.send_frame(&mut decoded)?;
-        // Empty decode-side staging frame; the encoder side is drained
-        // by the caller after ensure_pipeline returns.
-        drop(decoded);
-        Ok(session)
+            output: None,
+        })
     }
 
     fn build_cpu_decode_pipeline(
@@ -448,18 +364,16 @@ impl NvidiaCudaSession {
 
         let (encoder, extradata) = self.open_encoder(&filter)?;
 
-        let mut session = Pipeline {
-            input: InputStage::CpuDecode { decoder },
-            filter,
-            encoder,
-            extradata,
-        };
+        let mut output = OutputStage { filter, encoder, extradata };
         // Seed the filter with the first decoded frame; PTS gets
         // (re)set inside drain_filter_and_encode based on the
         // recording-start anchor.
         decoded.set_pts(Some(0));
-        session.filter.send_frame(&mut decoded)?;
-        Ok(session)
+        output.filter.send_frame(&mut decoded)?;
+        Ok(Pipeline {
+            input: InputStage::CpuDecode { decoder },
+            output: Some(output),
+        })
     }
 
     fn build_raw_pipeline(
@@ -483,9 +397,7 @@ impl NvidiaCudaSession {
         let (encoder, extradata) = self.open_encoder(&filter)?;
         Ok(Pipeline {
             input: InputStage::Raw { source_pixel },
-            filter,
-            encoder,
-            extradata,
+            output: Some(OutputStage { filter, encoder, extradata }),
         })
     }
 
@@ -567,9 +479,13 @@ impl NvidiaCudaSession {
         if self.config_sent {
             return Ok(());
         }
-        let extradata: &[u8] = match self.pipeline.as_ref() {
-            Some(p) => &p.extradata,
-            None => return Ok(()), // pipeline not built yet
+        // The output stage (which owns extradata) is built lazily on
+        // the first decoded frame for the Cuvid path. Until then we
+        // have no SPS/PPS to publish, so skip; encode() retries on
+        // every call.
+        let extradata: &[u8] = match self.pipeline.as_ref().and_then(|p| p.output.as_ref()) {
+            Some(o) => &o.extradata,
+            None => return Ok(()),
         };
         let header = EncodedPacketHeader {
             kind: EncodedPacketKind::Config,
@@ -605,20 +521,24 @@ impl NvidiaCudaSession {
             .pipeline
             .as_mut()
             .ok_or_else(|| EncoderError::message("pipeline not initialised"))?;
+        let output = match pipeline.output.as_mut() {
+            Some(o) => o,
+            None => return Ok(()), // Cuvid warmup; nothing to drain yet.
+        };
         // Pull every frame the filter has ready; for each, send to
         // encoder; then drain encoder packets.
         loop {
             let mut scaled = ffmpeg::frame::Video::empty();
-            match pipeline.filter.receive_frame(&mut scaled)? {
+            match output.filter.receive_frame(&mut scaled)? {
                 Some(()) => {
-                    pipeline.encoder.send_frame(&scaled)?;
+                    output.encoder.send_frame(&scaled)?;
                     drop(scaled);
                 }
                 None => break,
             }
         }
         drain_encoder_packets(
-            &mut pipeline.encoder,
+            &mut output.encoder,
             self.codec,
             self.width,
             self.height,
@@ -631,6 +551,107 @@ impl NvidiaCudaSession {
         )?;
         Ok(())
     }
+
+    /// Build the output stage (filter graph + NVENC) using the
+    /// `hw_frames_ctx` from a freshly-decoded CUDA frame. Called the
+    /// first time the cuvid path produces a frame.
+    fn build_cuvid_output_for_frame(
+        &self,
+        decoded: &ffmpeg::frame::Video,
+    ) -> Result<OutputStage> {
+        let hw_frames_ctx = unsafe { (*decoded.as_ptr()).hw_frames_ctx };
+        if hw_frames_ctx.is_null() {
+            return Err(EncoderError::message(
+                "first decoded cuvid frame has no hw_frames_ctx; cannot build NVENC pipeline",
+            ));
+        }
+        let src_width = decoded.width();
+        let src_height = decoded.height();
+        let filter = ScaleGraph::build(ScaleGraphConfig {
+            hw_device: &self.cuda_device,
+            residency: InputResidency::Cuda,
+            src_width,
+            src_height,
+            src_pixel: Pixel::CUDA,
+            src_hw_frames_ctx: Some(hw_frames_ctx),
+            dst_width: self.width,
+            dst_height: self.height,
+            dst_sw_format: Pixel::NV12,
+            time_base: self.encoder_time_base,
+        })?;
+        let (encoder, extradata) = self.open_encoder(&filter)?;
+        Ok(OutputStage { filter, encoder, extradata })
+    }
+
+    /// Push the camera packet/frame into the decoder (Cuvid /
+    /// CpuDecode) or build the AVFrame directly (Raw), and collect
+    /// any decoded frames that come out. For the Cuvid path this
+    /// may be empty for the first ~3 calls because CUVID is async
+    /// with a small packet pipeline depth.
+    fn push_input_and_collect(
+        &mut self,
+        frame: &OwnedFrame,
+        pts_us: i64,
+    ) -> Result<Vec<ffmpeg::frame::Video>> {
+        let pipeline = self
+            .pipeline
+            .as_mut()
+            .ok_or_else(|| EncoderError::message("pipeline not initialised"))?;
+        let mut out: Vec<ffmpeg::frame::Video> = Vec::new();
+        match &mut pipeline.input {
+            InputStage::Cuvid { decoder, bsf } => {
+                let mut packet = ffmpeg::Packet::copy(&frame.payload);
+                if let Some(bsf) = bsf.as_mut() {
+                    bsf.filter(&mut packet)?;
+                }
+                decoder.send_packet(&packet)?;
+                loop {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    if decoder.receive_frame(&mut decoded).is_err() {
+                        break;
+                    }
+                    decoded.set_pts(Some(pts_us));
+                    out.push(decoded);
+                }
+            }
+            InputStage::CpuDecode { decoder } => {
+                let packet = ffmpeg::Packet::copy(&frame.payload);
+                decoder.send_packet(&packet)?;
+                loop {
+                    let mut decoded = ffmpeg::frame::Video::empty();
+                    if decoder.receive_frame(&mut decoded).is_err() {
+                        break;
+                    }
+                    let relabel = match decoded.format() {
+                        Pixel::YUVJ420P => Some(Pixel::YUV420P),
+                        Pixel::YUVJ422P => Some(Pixel::YUV422P),
+                        Pixel::YUVJ444P => Some(Pixel::YUV444P),
+                        _ => None,
+                    };
+                    if let Some(target) = relabel {
+                        unsafe {
+                            (*decoded.as_mut_ptr()).color_range = f::AVColorRange::AVCOL_RANGE_JPEG;
+                            (*decoded.as_mut_ptr()).format =
+                                f::AVPixelFormat::from(target) as i32;
+                        }
+                    }
+                    decoded.set_pts(Some(pts_us));
+                    out.push(decoded);
+                }
+            }
+            InputStage::Raw { source_pixel } => {
+                let mut av = ffmpeg::frame::Video::new(
+                    *source_pixel,
+                    frame.header.width,
+                    frame.header.height,
+                );
+                crate::media::copy_frame_payload(&mut av, &frame.header, &frame.payload)?;
+                av.set_pts(Some(pts_us));
+                out.push(av);
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl CodecSession for NvidiaCudaSession {
@@ -639,32 +660,42 @@ impl CodecSession for NvidiaCudaSession {
         frame: &OwnedFrame,
         sink: &mut dyn EncodedPacketSink,
     ) -> Result<()> {
-        // The pipeline is fully built in `new()`. For Cuvid the
-        // first frame was pre-pushed during build (to populate
-        // `hw_frames_ctx`); for Raw the first frame still needs to
-        // flow through on this call. Subsequent calls always push.
-        self.ensure_config_sent(sink)?;
-        if self.first_frame_consumed {
-            push_frame_through_decoder_or_upload(
-                self.pipeline.as_mut().expect("pipeline ready"),
-                frame,
-                self.recording_start_us,
-                &mut self.last_pts_us,
-                &mut self.nonmonotonic_warning_logged,
-            )?;
-        } else {
-            // First frame on the Raw path: push it now.
-            push_frame_through_decoder_or_upload(
-                self.pipeline.as_mut().expect("pipeline ready"),
-                frame,
-                self.recording_start_us,
-                &mut self.last_pts_us,
-                &mut self.nonmonotonic_warning_logged,
-            )?;
-            self.first_frame_consumed = true;
+        // Phase 1: push input into the decoder/upload stage and
+        // collect any decoded frames that fall out. For the Cuvid
+        // path this may be empty for the first ~3 calls (CUVID is
+        // asynchronous with a few packets of pipeline depth); for
+        // Raw and CpuDecode every call produces exactly one frame.
+        let started = Instant::now();
+        let pts_us = match crate::media::compute_pts_us(
+            frame.header.timestamp_us,
+            self.recording_start_us,
+            &mut self.last_pts_us,
+            &mut self.nonmonotonic_warning_logged,
+        ) {
+            Some(v) => v,
+            None => return Ok(()), // dropped by monotonicity check
+        };
+        let decoded = self.push_input_and_collect(frame, pts_us)?;
+
+        // Phase 2: for each decoded frame, build the output stage
+        // (filter + NVENC) lazily if not yet built (Cuvid path),
+        // then push the frame through the filter graph.
+        for mut decoded in decoded {
+            if self.pipeline.as_ref().and_then(|p| p.output.as_ref()).is_none() {
+                let output = self.build_cuvid_output_for_frame(&decoded)?;
+                self.pipeline.as_mut().expect("pipeline ready").output = Some(output);
+            }
+            let output = self
+                .pipeline
+                .as_mut()
+                .and_then(|p| p.output.as_mut())
+                .expect("output built");
+            output.filter.send_frame(&mut decoded)?;
         }
 
-        let started = Instant::now();
+        self.ensure_config_sent(sink)?;
+
+        // Phase 3: drain filter → encoder → sink.
         self.drain_filter_and_encode(frame, sink)?;
         self.metrics.encode_time =
             self.metrics.encode_time.saturating_add(started.elapsed());
@@ -675,11 +706,15 @@ impl CodecSession for NvidiaCudaSession {
         mut self: Box<Self>,
         sink: &mut dyn EncodedPacketSink,
     ) -> Result<()> {
-        if let Some(pipeline) = self.pipeline.as_mut() {
-            // Flush filter + encoder.
-            // Send empty frame to encoder to signal end-of-stream.
-            pipeline.encoder.send_eof()?;
-            // Drain remaining encoder packets.
+        if let Some(output) = self
+            .pipeline
+            .as_mut()
+            .and_then(|p| p.output.as_mut())
+        {
+            // Flush filter + encoder. (If the output stage was never
+            // built — Cuvid path that hit fewer than ~3 frames before
+            // shutdown — there's nothing to drain.)
+            output.encoder.send_eof()?;
             let synth = OwnedFrame {
                 header: rollio_types::messages::CameraFrameHeader {
                     timestamp_us: self.recording_start_us,
@@ -691,7 +726,7 @@ impl CodecSession for NvidiaCudaSession {
                 payload: Vec::new(),
             };
             drain_encoder_packets(
-                &mut pipeline.encoder,
+                &mut output.encoder,
                 self.codec,
                 self.width,
                 self.height,
@@ -788,89 +823,6 @@ fn cuvid_decoder_name(source: ffmpeg::codec::Id) -> Result<&'static str> {
             )))
         }
     })
-}
-
-/// Push one frame from `OwnedFrame` into the filter graph,
-/// going through either the Cuvid decoder or building a CPU AVFrame
-/// directly. PTS rewriting (relative to `recording_start_us`) lives
-/// here too so the decoder / filter / encoder chain sees a monotonic
-/// 1µs-tick PTS.
-fn push_frame_through_decoder_or_upload(
-    pipeline: &mut Pipeline,
-    frame: &OwnedFrame,
-    recording_start_us: u64,
-    last_pts_us: &mut Option<i64>,
-    nonmonotonic_warning_logged: &mut bool,
-) -> Result<()> {
-    let pts_us = match crate::media::compute_pts_us(
-        frame.header.timestamp_us,
-        recording_start_us,
-        last_pts_us,
-        nonmonotonic_warning_logged,
-    ) {
-        Some(value) => value,
-        None => return Ok(()), // dropped by monotonicity check
-    };
-    match &mut pipeline.input {
-        InputStage::Cuvid { decoder, bsf } => {
-            // GPU-side decode. For MJPG we run the packet through
-            // mjpeg2jpeg first to prepend a standard JFIF DHT segment;
-            // the cuvid decoder requires JFIF-compliant payloads and
-            // V4L2 / UVC cameras strip DHT for bandwidth.
-            let mut packet = ffmpeg::Packet::copy(&frame.payload);
-            if let Some(bsf) = bsf.as_mut() {
-                bsf.filter(&mut packet)?;
-            }
-            decoder.send_packet(&packet)?;
-            loop {
-                let mut decoded = ffmpeg::frame::Video::empty();
-                if decoder.receive_frame(&mut decoded).is_err() {
-                    break;
-                }
-                decoded.set_pts(Some(pts_us));
-                pipeline.filter.send_frame(&mut decoded)?;
-            }
-        }
-        InputStage::CpuDecode { decoder } => {
-            // CPU-side decode, used as the MJPG fallback when the
-            // cuvid + mjpeg2jpeg chain rejects the bitstream. The
-            // decoder produces a YUV* AVFrame which we relabel from
-            // YUVJ* to YUV* with color_range=JPEG so hwupload_cuda
-            // accepts it without an auto-inserted CPU swscale (see
-            // build_cpu_decode_pipeline for the rationale).
-            let packet = ffmpeg::Packet::copy(&frame.payload);
-            decoder.send_packet(&packet)?;
-            loop {
-                let mut decoded = ffmpeg::frame::Video::empty();
-                if decoder.receive_frame(&mut decoded).is_err() {
-                    break;
-                }
-                let relabel = match decoded.format() {
-                    Pixel::YUVJ420P => Some(Pixel::YUV420P),
-                    Pixel::YUVJ422P => Some(Pixel::YUV422P),
-                    Pixel::YUVJ444P => Some(Pixel::YUV444P),
-                    _ => None,
-                };
-                if let Some(target) = relabel {
-                    unsafe {
-                        (*decoded.as_mut_ptr()).color_range = f::AVColorRange::AVCOL_RANGE_JPEG;
-                        (*decoded.as_mut_ptr()).format =
-                            f::AVPixelFormat::from(target) as i32;
-                    }
-                }
-                decoded.set_pts(Some(pts_us));
-                pipeline.filter.send_frame(&mut decoded)?;
-            }
-        }
-        InputStage::Raw { source_pixel } => {
-            let mut av =
-                ffmpeg::frame::Video::new(*source_pixel, frame.header.width, frame.header.height);
-            crate::media::copy_frame_payload(&mut av, &frame.header, &frame.payload)?;
-            av.set_pts(Some(pts_us));
-            pipeline.filter.send_frame(&mut av)?;
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

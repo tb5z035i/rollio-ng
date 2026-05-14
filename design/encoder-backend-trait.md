@@ -263,29 +263,35 @@ have a chance of being decoded on the GPU.
 **Result on the user's hardware (RTX 4090 mobile, i9-14900HX, UVC
 webcam at 1920x1080@30 MJPG)**:
 
-- `mjpeg_cuvid` rejects the camera's bitstream even with the
-  mjpeg2jpeg BSF in front (likely 4:2:2 subsampling, which the Ada
-  NVDEC's MJPEG block doesn't accept; the chip supports 4:2:0
-  baseline only).
-- `NvidiaCudaSession` returns an error, and
-  `LibavNvidiaBackend::open_session` falls back to the legacy
-  `LibavCodecSession` (CPU swscale + NVENC) — preserves the 16% of
-  one core baseline. No regression.
-- Cameras emitting 4:2:0 MJPEG or H.264 should hit the full-HW path
-  and see the expected CPU drop. (Not testable on this hardware
-  without a different camera.)
+- Preview encoder steady-state CPU drops from **~16% of one core
+  (legacy CPU swscale + NVENC)** to **~7% of one core** with the
+  full cuvid → scale_cuda → NVENC pipeline. NVDEC + NVENC + scaling
+  all run on the GPU; CPU only handles iceoryx2 marshalling, the
+  mjpeg2jpeg BSF, and packet glue.
+- Cuvid latency model: `mjpeg_cuvid` is asynchronous and holds ~3
+  packets in its parser pipeline before emitting the first decoded
+  frame. The original "decode the first packet eagerly to extract
+  hw_frames_ctx" approach in `build_cuvid_pipeline` always failed
+  on this — `avcodec_receive_frame` returned `EAGAIN` for every
+  retry because the cuvid parser hadn't yet seen enough lookahead.
+  Solution: defer filter graph + NVENC construction until the first
+  decoded frame actually emerges inside `encode()` (lazy output
+  stage). The 3-frame warmup is invisible to downstream (~100ms at
+  30 FPS) and the data path is fully GPU-resident from there.
+- mjpeg2jpeg BSF still on by default for V4L2 / UVC MJPG streams —
+  the camera in this rig happens to include DHT, so the BSF is a
+  no-op, but cameras that strip DHT (which is the more common UVC
+  variant) need it.
 
 **Plumbed but currently unused**:
 
 `InputStrategy::CpuDecode` (SW MJPEG decoder → `hwupload_cuda` →
-`scale_cuda` → NVENC) is implemented and exercised in the code path
-but not selected today. Initial measurements on the UVC camera
-showed it at ~34% CPU vs the legacy 16% — likely because
-`scale_cuda` has to handle YUV422P+J-range input, and either the
-extra hwupload bandwidth or scale_cuda's range conversion is
-heavier than CPU swscale → NV12. Kept as a future fallback target
-for hardware where `mjpeg_cuvid` fails but the YUV422P→NV12 GPU
-path *would* win.
+`scale_cuda` → NVENC) is implemented in `push_input_and_collect`
+but `input_strategy()` doesn't route to it. Initial measurements
+showed it at ~34% CPU vs the cuvid path's 7% — likely because the
+hwupload of YUV422P is heavier than the cuvid family's direct
+GPU-side decode. Kept as a fallback target for hardware where
+`mjpeg_cuvid` fails.
 
 ## Phase 3 historical implementation notes
 
