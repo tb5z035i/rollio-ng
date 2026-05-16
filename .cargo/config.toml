@@ -35,15 +35,13 @@ CC_x86_64-unknown-linux-gnu  = "clang"
 CXX_x86_64-unknown-linux-gnu = "clang++"
 AR_x86_64-unknown-linux-gnu  = "llvm-ar"
 
-# aarch64 cross: clang's gcc-detection auto-finds the sysroot from
-# crossbuild-essential-arm64 (via /usr/lib/gcc/aarch64-linux-gnu/13/...)
-# AND the multiarch :arm64 includes at /usr/include/aarch64-linux-gnu/.
-# DO NOT pass --sysroot=/usr/aarch64-linux-gnu explicitly: the libc.so
-# linker script there has absolute paths that conflict with sysroot
-# rewriting. `-fuse-ld=lld` routes cross-arch links through lld (which
-# natively speaks aarch64) instead of the host /usr/bin/ld.
-CC_aarch64-unknown-linux-gnu  = "clang --target=aarch64-linux-gnu -fuse-ld=lld"
-CXX_aarch64-unknown-linux-gnu = "clang++ --target=aarch64-linux-gnu -fuse-ld=lld"
+# aarch64 cross: use thin wrappers that normalize cc-rs' Rust target flag
+# (`--target=aarch64-unknown-linux-gnu`) back to Debian's compiler triple
+# (`--target=aarch64-linux-gnu`). With the Debian triple, clang's
+# gcc-detection auto-finds the cross runtime and C++ headers from
+# crossbuild-essential-arm64.
+CC_aarch64-unknown-linux-gnu  = { value = "cmake/cross-wrappers/aarch64-linux-gnu-clang", relative = true }
+CXX_aarch64-unknown-linux-gnu = { value = "cmake/cross-wrappers/aarch64-linux-gnu-clang++", relative = true }
 # llvm-ar is target-agnostic (operates on archive metadata); it produces
 # arm64-compatible .a files when fed arm64 .o files. aarch64-linux-gnu-ar
 # from binutils-aarch64-linux-gnu would also work.

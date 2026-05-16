@@ -8,7 +8,16 @@
 #   docker run --privileged --rm tonistiigi/binfmt --install arm64
 #
 # Build from the checked-out repo:
-#   docker run --rm -it -v "$PWD":/workspace -w /workspace rollio-cross-jammy
+#   docker run --rm -it --user "$(id -u):$(id -g)" \
+#     -v "$PWD":/workspace -w /workspace rollio-cross-jammy
+#
+# If runtime downloads are behind a proxy, pass it through explicitly:
+#   docker run --rm -it --network host --user "$(id -u):$(id -g)" \
+#     -e HTTP_PROXY=http://172.17.0.1:7897 \
+#     -e HTTPS_PROXY=http://172.17.0.1:7897 \
+#     -e CARGO_HTTP_PROXY=http://172.17.0.1:7897 \
+#     -e CARGO_NET_RETRY=10 -e CARGO_HTTP_TIMEOUT=120 \
+#     -v "$PWD":/workspace -w /workspace rollio-cross-jammy
 
 FROM ubuntu:22.04
 
@@ -21,6 +30,7 @@ ARG CARGO_SPARSE_INDEX=sparse+https://mirrors.ustc.edu.cn/crates.io-index/
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
+    HOME=/tmp \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
     PIP_CACHE_DIR=/tmp/pip-cache \
     PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -73,10 +83,10 @@ RUN set -eux; \
     curl -fsSLo /tmp/rustup-init \
       "https://mirrors.ustc.edu.cn/rust-static/rustup/dist/x86_64-unknown-linux-gnu/rustup-init"; \
     chmod +x /tmp/rustup-init; \
-    /tmp/rustup-init -y --profile minimal \
+    HOME=/root /tmp/rustup-init -y --profile minimal \
       --default-toolchain "${RUST_VERSION}" --no-modify-path; \
     rm /tmp/rustup-init; \
-    rustup target add aarch64-unknown-linux-gnu; \
+    HOME=/root rustup target add aarch64-unknown-linux-gnu; \
     chmod -R a+rwX "${RUSTUP_HOME}" "${CARGO_HOME}"
 
 RUN set -eux; \
@@ -101,4 +111,4 @@ RUN git config --system --add safe.directory '*'
 
 WORKDIR /workspace
 
-CMD ["bash", "-lc", "make build BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH} && make package BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH}"]
+CMD ["bash", "-lc", "CAMERAS_BUILD_DIR=${CAMERAS_BUILD_DIR:-/tmp/rollio-cameras-build-${TARGET_ARCH}-${BUILD_TYPE}}; STAGING=${STAGING:-/tmp/rollio-deb-staging-${TARGET_ARCH}-${BUILD_TYPE}}; make build BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH} CAMERAS_BUILD_DIR=${CAMERAS_BUILD_DIR} && make package BUILD_TYPE=${BUILD_TYPE} TARGET_ARCH=${TARGET_ARCH} CAMERAS_BUILD_DIR=${CAMERAS_BUILD_DIR} STAGING=${STAGING}"]

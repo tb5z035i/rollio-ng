@@ -1,8 +1,28 @@
-#!/bin/sh
-# Thin clang wrapper that bakes --target=aarch64-linux-gnu in. Used as
-# CMAKE_C_COMPILER by cmake/aarch64-linux-gnu.cmake so that probes which
-# invoke "${CMAKE_C_COMPILER} -dumpmachine" / "-print-multi-os-directory"
-# / "-print-supported-cpus" return the *target* triple instead of the
-# host. librealsense's CMake/unix_config.cmake is the canonical example
-# (it auto-adds -mssse3 unless -dumpmachine reports aarch64-*).
-exec /usr/bin/clang --target=aarch64-linux-gnu "$@"
+#!/usr/bin/env bash
+# Thin clang wrapper that bakes --target=aarch64-linux-gnu in. Used by
+# CMake and Cargo C build scripts so probes that invoke the compiler see
+# the Debian target triple instead of the host or Rust target triple.
+#
+# cc-rs appends --target=aarch64-unknown-linux-gnu for Rust's target. That
+# triple makes clang miss Debian's multiarch C runtime and C++ headers, so
+# normalize any caller-provided target flag before invoking clang.
+args=()
+skip_next=0
+for arg in "$@"; do
+  if [[ "$skip_next" == 1 ]]; then
+    skip_next=0
+    continue
+  fi
+  case "$arg" in
+    --target=*|-target=*)
+      continue
+      ;;
+    --target|-target)
+      skip_next=1
+      continue
+      ;;
+  esac
+  args+=("$arg")
+done
+
+exec /usr/bin/clang --target=aarch64-linux-gnu "${args[@]}"

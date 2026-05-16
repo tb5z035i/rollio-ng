@@ -18,7 +18,8 @@
 #   CAMERAS_BUILD_DIR   cmake build dir for C++ camera drivers
 #                       (default: cameras/build)
 
-set -euo pipefail
+set -Eeuo pipefail
+shopt -s inherit_errexit 2>/dev/null || true
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
@@ -103,8 +104,10 @@ preflight_deb() {
 preflight_wheel() {
     if command -v uv >/dev/null 2>&1; then
         WHEEL_BUILDER=(uv build --wheel)
+        WHEEL_OUT_FLAG=--out-dir
     elif python3 -c 'import build' >/dev/null 2>&1; then
         WHEEL_BUILDER=(python3 -m build --wheel)
+        WHEEL_OUT_FLAG=--outdir
     else
         die "need uv (preferred) or python3-build for the Nero wheel; try \`pipx install uv\`"
     fi
@@ -381,8 +384,10 @@ build_nero() {
     [[ -f robots/nero/pyproject.toml ]] || die "robots/nero/pyproject.toml not found"
     install -d "$DEB_DIST"
     log "Building Nero wheel via ${WHEEL_BUILDER[*]}"
-    # `uv build` and `python -m build` both accept a project directory.
-    "${WHEEL_BUILDER[@]}" --out-dir "$DEB_DIST" robots/nero >&2
+    # `uv build` and `python -m build` both accept a project directory,
+    # but their output-dir flag spelling differs.
+    "${WHEEL_BUILDER[@]}" "$WHEEL_OUT_FLAG" "$DEB_DIST" robots/nero >&2 \
+        || die "Nero wheel build failed"
     # Print resulting wheel paths (newest match wins for matching name).
     find "$DEB_DIST" -maxdepth 1 -name 'rollio_device_nero-*.whl' -printf '%p\n' | sort
 }
@@ -395,17 +400,17 @@ clean() {
 cmd="${1:-all}"
 case "$cmd" in
     core)
-        out="$(build_core)"
+        out="$(build_core)" || exit 1
         log "Done: $out"
         ;;
     nero)
-        outs="$(build_nero)"
+        outs="$(build_nero)" || exit 1
         log "Done:"
         printf '  %s\n' $outs >&2
         ;;
     all)
-        c="$(build_core)"
-        n="$(build_nero)"
+        c="$(build_core)" || exit 1
+        n="$(build_nero)" || exit 1
         log "All artifacts:"
         printf '  %s\n' "$c" $n >&2
         ;;

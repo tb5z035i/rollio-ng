@@ -279,7 +279,7 @@ apply-airbot-pinocchio-patch:
 	@test -d "$(AIRBOT_PINOCCHIO_DIR)" \
 		|| (echo "missing $(AIRBOT_PINOCCHIO_DIR); run git submodule update --init --recursive" >&2; exit 1)
 	@if ! grep -Fq 'option(BUILD_SHARED_LIBS "Build Pinocchio libraries as shared objects" ON)' "$(AIRBOT_PINOCCHIO_DIR)/CMakeLists.txt"; then \
-		patch --batch -d "$(AIRBOT_PINOCCHIO_DIR)" -p1 < "$(AIRBOT_PINOCCHIO_PATCH)"; \
+		patch --batch --no-backup-if-mismatch -d "$(AIRBOT_PINOCCHIO_DIR)" -p1 < "$(AIRBOT_PINOCCHIO_PATCH)"; \
 	fi
 
 # ffmpeg-sys-next 8.1.0 hard-codes the version-detection probe to compile
@@ -304,7 +304,7 @@ apply-ffmpeg-sys-cross-patch:
 	@# from the unrelated `let target = env::var("TARGET").unwrap();` at
 	@# build.rs:295).
 	@if ! grep -Fq '.target(&env::var("TARGET").unwrap())' "$(FFMPEG_SYS_DIR)/build.rs"; then \
-		patch --batch -d "$(FFMPEG_SYS_DIR)" -p1 < "$(FFMPEG_SYS_CROSS_PATCH)"; \
+		patch --batch --no-backup-if-mismatch -d "$(FFMPEG_SYS_DIR)" -p1 < "$(FFMPEG_SYS_CROSS_PATCH)"; \
 	fi
 
 # Rust ----------------------------------------------------------------

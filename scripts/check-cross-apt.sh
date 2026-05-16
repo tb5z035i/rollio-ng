@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
-# Validate that the host's apt config is set up to cross-install
-# packages for TARGET_ARCH. Called from `make deps` before any
-# apt-get invocation; auto-skips for native builds (target == host).
+# Ensure the host's apt config is set up to cross-install packages for
+# TARGET_ARCH. Called from `make deps` before apt-get update/install;
+# auto-skips for native builds (target == host).
 #
 # Usage: scripts/check-cross-apt.sh <target-arch>
 #
-# On cross builds, runs three checks:
-#   1. TARGET_ARCH is a registered foreign architecture (hard fail).
-#   2. Every /etc/apt/sources.list.d/* file carries an Architectures:
+# On arm64 cross builds, this script:
+#   1. Registers TARGET_ARCH as a foreign architecture when needed.
+#   2. Adds a Rollio-owned Ubuntu ports deb822 source when needed.
+#   3. Checks that every /etc/apt/sources.list.d/* file carries an Architectures:
 #      constraint (warn only -- third-party repos missing this cause
 #      cosmetic 404 noise during `apt-get update` but do not break the
 #      install).
-#   3. A canary <target> package resolves through the configured
-#      sources (hard fail).
-#
-# This script deliberately does NOT mutate apt config. Adding a foreign
-# architecture and wiring up sources.list.d/ entries is a host-policy
-# decision left to the operator. On a hard-fail, the printed message
-# carries the exact sudo commands the operator can copy-paste.
+#   4. Verifies a canary target package resolves when the apt cache is
+#      already fresh enough to do so.
 
 set -euo pipefail
 
@@ -34,31 +30,51 @@ if [[ "$target_arch" == "$host_arch" ]]; then
     exit 0
 fi
 
-# ── Preflight 1/3: foreign-arch registration ────────────────────────
-if ! dpkg --print-foreign-architectures | grep -qx "$target_arch"; then
-    cat <<EOF >&2
-
-make deps TARGET_ARCH=${target_arch}: ${target_arch} is not a registered foreign architecture.
-
-Run these once on this host (NOT done by make):
-
-  sudo dpkg --add-architecture ${target_arch}
-  # then drop a sources file for ports.ubuntu.com (or a mirror), e.g.:
-  sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null <<'PORTSEOF'
-  Types: deb
-  URIs: http://ports.ubuntu.com/ubuntu-ports
-  Suites: noble noble-updates noble-backports noble-security
-  Components: main restricted universe multiverse
-  Architectures: ${target_arch}
-  Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-  PORTSEOF
-  sudo apt-get update
-
-EOF
+if [[ "$target_arch" != "arm64" ]]; then
+    echo "unsupported cross TARGET_ARCH=${target_arch}; only arm64 setup is implemented" >&2
     exit 1
 fi
 
-# ── Preflight 2/3: Architectures: constraint scan (WARN only) ───────
+codename="$(
+    . /etc/os-release 2>/dev/null
+    printf '%s' "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+)"
+if [[ -z "$codename" ]]; then
+    echo "failed to detect Ubuntu codename from /etc/os-release" >&2
+    exit 1
+fi
+
+ports_uri="${ROLLIO_UBUNTU_PORTS_MIRROR:-http://ports.ubuntu.com/ubuntu-ports}"
+ports_source="/etc/apt/sources.list.d/rollio-ubuntu-ports-${target_arch}.sources"
+changed=0
+
+# ── Preflight 1/4: foreign-arch registration ────────────────────────
+if ! dpkg --print-foreign-architectures | grep -qx "$target_arch"; then
+    echo "Registering ${target_arch} as a foreign dpkg architecture..."
+    sudo dpkg --add-architecture "$target_arch"
+    changed=1
+fi
+
+# ── Preflight 2/4: target apt source ────────────────────────────────
+if ! {
+    grep -RqsE "^[[:space:]]*Architectures:[[:space:]]+(.*[[:space:]])?${target_arch}([[:space:]]|$)" \
+        /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null \
+    || grep -RqsE "^[[:space:]]*deb[[:space:]]+\[[^]]*arch=[^]]*${target_arch}([,[:space:]]|])" \
+        /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null
+}; then
+    echo "Writing ${ports_source} for Ubuntu ${codename} ${target_arch} packages..."
+    sudo tee "$ports_source" >/dev/null <<EOF
+Types: deb
+URIs: ${ports_uri}
+Suites: ${codename} ${codename}-updates ${codename}-backports ${codename}-security
+Components: main restricted universe multiverse
+Architectures: ${target_arch}
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+    changed=1
+fi
+
+# ── Preflight 3/4: Architectures: constraint scan (WARN only) ───────
 # Without per-source Architectures:, apt fans out every registered arch
 # over every source -- main archive 404s on arm64, ports 404s on amd64,
 # many third-party repos only ship one arch. This is cosmetic noise,
@@ -102,17 +118,20 @@ the arch its mirror actually serves, e.g.:
   sudo apt-get update
 
 Continuing without fixing (the install below will still work as long as
-some source serves ${target_arch} packages -- preflight 3/3 verifies).
+some source serves ${target_arch} packages -- preflight 4/4 verifies).
 
 EOF
     } >&2
 fi
 
-# ── Preflight 3/3: canary package resolves ──────────────────────────
+# ── Preflight 4/4: canary package resolves ──────────────────────────
 # `libc6` is the most universal canary -- every Debian-derived system
 # ships it. If it's not resolvable for the target arch, no source is
 # actually serving target-arch packages.
-if ! apt-cache show "libc6:${target_arch}" >/dev/null 2>&1; then
+#
+# If this script just mutated apt configuration, the Makefile's next step
+# is `sudo apt-get update`, so the cache is expected to be stale here.
+if (( changed == 0 )) && ! apt-cache show "libc6:${target_arch}" >/dev/null 2>&1; then
     cat <<EOF >&2
 
 make deps TARGET_ARCH=${target_arch}: ${target_arch} is registered, but

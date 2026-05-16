@@ -25,7 +25,7 @@ Idempotent: skipped if the patched marker is already present.
 
 --- a/build.rs
 +++ b/build.rs
-@@ -788,8 +788,12 @@ fn check_features(
+@@ -788,7 +788,12 @@ fn check_features(
      .expect("Write failed");
 
      let executable = out_dir.join(if cfg!(windows) { "check.exe" } else { "check" });

@@ -1,3 +1,22 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Thin clang++ wrapper, see aarch64-linux-gnu-clang for rationale.
-exec /usr/bin/clang++ --target=aarch64-linux-gnu "$@"
+args=()
+skip_next=0
+for arg in "$@"; do
+  if [[ "$skip_next" == 1 ]]; then
+    skip_next=0
+    continue
+  fi
+  case "$arg" in
+    --target=*|-target=*)
+      continue
+      ;;
+    --target|-target)
+      skip_next=1
+      continue
+      ;;
+  esac
+  args+=("$arg")
+done
+
+exec /usr/bin/clang++ --target=aarch64-linux-gnu "${args[@]}"
