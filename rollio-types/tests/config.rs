@@ -96,10 +96,55 @@ fn parse_example_project_config() {
     assert_eq!(assembler_runtime.cameras.len(), 2);
     assert_eq!(assembler_runtime.observations.len(), 6);
     assert_eq!(assembler_runtime.actions.len(), 1);
+    assert_eq!(assembler_runtime.staging_slots, 4);
 
     let storage_runtime = config.storage_runtime_config();
-    assert_eq!(storage_runtime.process_id, "storage-local");
+    // config.example.toml uses format = "lerobot-v2.1" + backend = "local",
+    // which dispatches to the merging lerobot-specific storage binary.
+    assert_eq!(storage_runtime.process_id, "storage-local-lerobot");
     assert_eq!(storage_runtime.queue_size, 32);
+}
+
+#[test]
+fn assembler_staging_slots_defaults_and_validates() {
+    // Default surfaces when the field is omitted from TOML.
+    let omitted: AssemblerConfig = toml::from_str("").expect("empty [assembler] parses");
+    assert_eq!(
+        omitted.staging_slots, 4,
+        "omitted staging_slots must default to 4",
+    );
+
+    let explicit: AssemblerConfig =
+        toml::from_str("staging_slots = 8").expect("explicit staging_slots parses");
+    assert_eq!(explicit.staging_slots, 8);
+
+    // Validation is exercised through ProjectConfig::validate (which runs the
+    // private per-section validators), mirroring the pattern used for other
+    // section-level rules in this file.
+    let toml_text = include_str!("../../config/config.example.toml");
+    let mut config = ProjectConfig::from_str(toml_text).expect("example should parse");
+    config.assembler.staging_slots = 0;
+    let err = config
+        .validate()
+        .expect_err("staging_slots = 0 must be rejected");
+    assert!(
+        format!("{err}").contains("staging_slots"),
+        "rejection should mention staging_slots, got: {err}",
+    );
+
+    config.assembler.staging_slots = 65;
+    let err = config
+        .validate()
+        .expect_err("staging_slots > 64 must be rejected");
+    assert!(
+        format!("{err}").contains("staging_slots"),
+        "rejection should mention staging_slots, got: {err}",
+    );
+
+    config.assembler.staging_slots = 64;
+    config
+        .validate()
+        .expect("staging_slots = 64 is the inclusive upper bound");
 }
 
 /// The wizard binds `rollio-web-gateway` (HTTP) to all interfaces by default so a
@@ -879,4 +924,16 @@ fn direct_joint_requires_two_sided_whitelist() {
         format!("{err}").contains("can_lead"),
         "rejection should name the missing leader endorsement, got: {err}",
     );
+}
+
+#[test]
+fn parse_mcap_flatbuffer_smoke_config() {
+    let toml_text = include_str!("../../config/mcap-flatbuffer-smoke.toml");
+    let config = ProjectConfig::from_str(toml_text)
+        .expect("mcap-flatbuffer-smoke.toml should parse");
+    assert_eq!(config.project_name, "mcap-flatbuffer-smoke");
+    assert_eq!(config.episode.format, EpisodeFormat::Mcap);
+    assert_eq!(config.devices.len(), 4);
+    assert_eq!(config.pairings.len(), 1);
+    assert_eq!(config.mode, CollectionMode::Teleop);
 }

@@ -1,0 +1,156 @@
+# =============================================================================
+# MCAP + FlatBuffers episode smoke config
+#
+# Uses pseudo devices (no hardware required). The controller spawns
+# `rollio-episode-mcap` as the assembler, which writes .mcap files with
+# FlatBuffer-encoded messages (CompressedVideo, JointStates, etc.).
+#
+# Run:
+#   cargo run -p rollio -- collect --config config/mcap-flatbuffer-smoke.toml
+# =============================================================================
+
+project_name = "mcap-flatbuffer-smoke"
+mode = "teleop"
+
+[episode]
+format = "mcap"
+fps = 30
+chunk_size = 1000
+
+[controller]
+shutdown_timeout_ms = 3000
+child_poll_interval_ms = 100
+
+[visualizer]
+port = 19090
+
+# --- Camera: top (H.264 source) ---
+[[devices]]
+name = "camera_top"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "camera_top"
+[devices.extra]
+transport = "simulated"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+preview_enabled = true
+profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
+[devices.channels.record]
+video_codec = "h264"
+backend = "auto"
+queue_size = 32
+[devices.channels.preview_config]
+output_mode = "encoded"
+color_codec = "h264"
+width = 320
+height = 240
+fps = 15
+
+# --- Camera: side (YUYV source, encoded to H.264) ---
+[[devices]]
+name = "camera_side"
+driver = "pseudo"
+id = "pseudo_camera_1"
+bus_root = "camera_side"
+[devices.extra]
+transport = "simulated"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+preview_enabled = true
+profile = { width = 640, height = 480, fps = 30, pixel_format = "yuyv" }
+[devices.channels.record]
+video_codec = "h264"
+backend = "auto"
+queue_size = 32
+[devices.channels.preview_config]
+output_mode = "encoded"
+color_codec = "h264"
+width = 320
+height = 240
+fps = 15
+
+# --- Leader arm (6-DoF, free-drive) ---
+[[devices]]
+name = "leader_arm"
+driver = "pseudo"
+id = "pseudo_robot_0_dof_6"
+bus_root = "leader_arm"
+[devices.extra]
+transport = "simulated"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "free-drive"
+dof = 6
+publish_states = ["joint_position", "joint_velocity", "joint_effort"]
+recorded_states = ["joint_position", "joint_velocity", "joint_effort"]
+control_frequency_hz = 60.0
+[devices.channels.command_defaults]
+joint_mit_kp = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+joint_mit_kd = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+# --- Follower arm (6-DoF, command-following) ---
+[[devices]]
+name = "follower_arm"
+driver = "pseudo"
+id = "pseudo_robot_1_dof_6"
+bus_root = "follower_arm"
+[devices.extra]
+transport = "simulated"
+
+[[devices.channels]]
+channel_type = "arm"
+kind = "robot"
+enabled = true
+mode = "command-following"
+dof = 6
+publish_states = ["joint_position", "joint_velocity", "joint_effort"]
+recorded_states = ["joint_position", "joint_velocity", "joint_effort"]
+control_frequency_hz = 60.0
+[devices.channels.command_defaults]
+joint_mit_kp = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+joint_mit_kd = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+# --- Pairing: leader -> follower ---
+[[pairings]]
+leader_device = "leader_arm"
+leader_channel_type = "arm"
+follower_device = "follower_arm"
+follower_channel_type = "arm"
+mapping = "direct-joint"
+leader_state = "joint_position"
+follower_command = "joint_position"
+joint_index_map = [0, 1, 2, 3, 4, 5]
+joint_scales = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+# --- Assembler ---
+[assembler]
+missing_eos_timeout_ms = 5000
+staging_dir = "/dev/shm/rollio"
+staging_slots = 4
+
+# --- Storage ---
+[storage]
+backend = "local"
+output_path = "./output/mcap-flatbuffer-smoke"
+queue_size = 32
+
+# --- Monitor ---
+[monitor]
+metrics_frequency_hz = 1.0
+
+# --- UI ---
+[ui]
+start_key = "s"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"

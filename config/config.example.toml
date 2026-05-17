@@ -334,6 +334,16 @@ missing_eos_timeout_ms = 30000
 # (default on linux: "/dev/shm/rollio")
 staging_dir = "/dev/shm/rollio"
 
+# Maximum number of episodes that may sit in the staging directory at
+# once. The assembler reserves a slot when it dispatches an episode to
+# the stage worker and releases it when storage publishes `EpisodeStored`
+# for that index. When the pool is exhausted, newly ready episodes are
+# dropped (their staging artifacts cleaned up, `EpisodeDropped` and
+# `BackpressureEvent` published) so the ramdisk never grows unbounded.
+# Must be in 1..=64.
+# (default: 4)
+staging_slots = 4
+
 # -----------------------------------------------------------------------------
 # Storage — where the assembler-staged episodes are persisted.
 # -----------------------------------------------------------------------------

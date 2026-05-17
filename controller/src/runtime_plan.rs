@@ -89,6 +89,7 @@ pub(crate) fn build_collect_specs(
     let storage_config = config.storage_runtime_config();
     specs.push(build_storage_spec(
         &storage_config,
+        config.episode.format,
         workspace_root,
         child_working_dir,
         current_exe_dir,
@@ -386,6 +387,7 @@ pub(crate) fn assembler_binary_for(
 
 pub(crate) fn build_storage_spec(
     config: &StorageRuntimeConfig,
+    format: rollio_types::config::EpisodeFormat,
     _workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
@@ -398,14 +400,12 @@ pub(crate) fn build_storage_spec(
             invocation_cwd,
         ));
     }
+    let binary = storage_binary_for(format, config.backend)?;
     let inline_config = toml::to_string(&config)?;
     Ok(ChildSpec {
         id: "storage".into(),
         command: ResolvedCommand {
-            program: resolve_program(
-                current_exe_dir.join("rollio-storage-local"),
-                "rollio-storage-local",
-            ),
+            program: resolve_program(current_exe_dir.join(binary), binary),
             args: vec![
                 OsString::from("run"),
                 OsString::from("--config-inline"),
@@ -415,6 +415,26 @@ pub(crate) fn build_storage_spec(
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
     })
+}
+
+/// Pick the storage binary for the project's `(format, backend)` pair.
+/// User-facing TOML only carries `backend`; the binary distinction
+/// between the LeRobot data/tb5z035i/workspaceset-merger and the generic per-episode mover is
+/// an internal concern of the controller.
+pub(crate) fn storage_binary_for(
+    format: rollio_types::config::EpisodeFormat,
+    backend: rollio_types::config::StorageBackend,
+) -> Result<&'static str, Box<dyn Error>> {
+    use rollio_types::config::{EpisodeFormat, StorageBackend};
+    match (format, backend) {
+        (EpisodeFormat::LeRobotV2_1 | EpisodeFormat::LeRobotV3_0, StorageBackend::Local) => {
+            Ok("rollio-storage-local-lerobot")
+        }
+        (EpisodeFormat::Mcap, StorageBackend::Local) => Ok("rollio-storage-local"),
+        (_, StorageBackend::Http) => {
+            Err("storage.backend = http is not implemented yet".into())
+        }
+    }
 }
 
 pub(crate) fn ui_browser_url(host: &str, port: u16) -> String {
@@ -428,7 +448,7 @@ pub(crate) fn ui_browser_url(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rollio_types::config::{StorageBackend, StorageRuntimeConfig};
+    use rollio_types::config::{EpisodeFormat, StorageBackend, StorageRuntimeConfig};
 
     #[test]
     fn resolve_invocation_relative_path_keeps_absolute_paths() {
@@ -452,7 +472,7 @@ mod tests {
     #[test]
     fn build_storage_spec_resolves_relative_output_path_against_invocation_cwd() {
         let storage_config = StorageRuntimeConfig {
-            process_id: "storage-local".into(),
+            process_id: "storage-local-lerobot".into(),
             backend: StorageBackend::Local,
             output_path: Some("./output".into()),
             endpoint: None,
@@ -461,6 +481,7 @@ mod tests {
         let invocation_cwd = Path::new("/home/operator/session-2026-04-21");
         let spec = build_storage_spec(
             &storage_config,
+            EpisodeFormat::LeRobotV2_1,
             Path::new("."),
             Path::new("/var/lib/rollio/state"),
             Path::new("."),
@@ -482,7 +503,7 @@ mod tests {
     #[test]
     fn build_storage_spec_preserves_absolute_output_path() {
         let storage_config = StorageRuntimeConfig {
-            process_id: "storage-local".into(),
+            process_id: "storage-local-lerobot".into(),
             backend: StorageBackend::Local,
             output_path: Some("/data/rollio/output".into()),
             endpoint: None,
@@ -490,6 +511,7 @@ mod tests {
         };
         let spec = build_storage_spec(
             &storage_config,
+            EpisodeFormat::LeRobotV2_1,
             Path::new("."),
             Path::new("/var/lib/rollio/state"),
             Path::new("."),
@@ -502,5 +524,80 @@ mod tests {
             inline.contains("output_path = \"/data/rollio/output\""),
             "absolute output_path should be preserved, got: {inline}"
         );
+    }
+
+    #[test]
+    fn build_storage_spec_picks_lerobot_binary_for_lerobot_format() {
+        let storage_config = StorageRuntimeConfig {
+            process_id: "storage-local-lerobot".into(),
+            backend: StorageBackend::Local,
+            output_path: Some("/tmp/out".into()),
+            endpoint: None,
+            queue_size: 4,
+        };
+        let spec = build_storage_spec(
+            &storage_config,
+            EpisodeFormat::LeRobotV2_1,
+            Path::new("."),
+            Path::new("/var/lib/rollio/state"),
+            Path::new("."),
+            Path::new("/home/operator"),
+        )
+        .expect("storage spec should build");
+        let program = spec.command.program.to_string_lossy();
+        assert!(
+            program.contains("rollio-storage-local-lerobot"),
+            "expected lerobot-specific binary, got: {program}"
+        );
+    }
+
+    #[test]
+    fn build_storage_spec_picks_generic_binary_for_mcap_format() {
+        let storage_config = StorageRuntimeConfig {
+            process_id: "storage-local".into(),
+            backend: StorageBackend::Local,
+            output_path: Some("/tmp/out".into()),
+            endpoint: None,
+            queue_size: 4,
+        };
+        let spec = build_storage_spec(
+            &storage_config,
+            EpisodeFormat::Mcap,
+            Path::new("."),
+            Path::new("/var/lib/rollio/state"),
+            Path::new("."),
+            Path::new("/home/operator"),
+        )
+        .expect("storage spec should build");
+        let program = spec.command.program.to_string_lossy();
+        assert!(
+            program.ends_with("rollio-storage-local"),
+            "expected generic mover binary, got: {program}",
+        );
+        assert!(
+            !program.contains("rollio-storage-local-lerobot"),
+            "MCAP must not spawn the lerobot-specific binary, got: {program}"
+        );
+    }
+
+    #[test]
+    fn build_storage_spec_rejects_http_backend() {
+        let storage_config = StorageRuntimeConfig {
+            process_id: "storage-http".into(),
+            backend: StorageBackend::Http,
+            output_path: None,
+            endpoint: Some("https://example.com/upload".into()),
+            queue_size: 4,
+        };
+        let err = build_storage_spec(
+            &storage_config,
+            EpisodeFormat::Mcap,
+            Path::new("."),
+            Path::new("/var/lib/rollio/state"),
+            Path::new("."),
+            Path::new("/home/operator"),
+        )
+        .expect_err("http backend should be rejected with a clear message");
+        assert!(format!("{err}").contains("http"));
     }
 }

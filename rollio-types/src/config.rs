@@ -188,10 +188,23 @@ pub struct AssemblerConfig {
     pub missing_eos_timeout_ms: u64,
     #[serde(default = "default_staging_dir")]
     pub staging_dir: String,
+    /// Upper bound on episodes simultaneously sitting in the staging
+    /// directory. The assembler reserves a slot when it dispatches an
+    /// episode to the stage worker and releases it on `EpisodeStored`
+    /// from storage. When the slot pool is exhausted, newly ready
+    /// episodes are dropped (artifacts cleaned up, `EpisodeDropped` and
+    /// `BackpressureEvent` published) rather than blocking the
+    /// assembler main loop.
+    #[serde(default = "default_staging_slots")]
+    pub staging_slots: u32,
 }
 
 fn default_missing_eos_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_staging_slots() -> u32 {
+    4
 }
 
 fn default_staging_dir() -> String {
@@ -212,6 +225,7 @@ impl Default for AssemblerConfig {
         Self {
             missing_eos_timeout_ms: default_missing_eos_timeout_ms(),
             staging_dir: default_staging_dir(),
+            staging_slots: default_staging_slots(),
         }
     }
 }
@@ -226,6 +240,16 @@ impl AssemblerConfig {
         if self.staging_dir.trim().is_empty() {
             return Err(ConfigError::Validation(
                 "assembler: staging_dir must not be empty".into(),
+            ));
+        }
+        if self.staging_slots == 0 {
+            return Err(ConfigError::Validation(
+                "assembler: staging_slots must be > 0".into(),
+            ));
+        }
+        if self.staging_slots > 64 {
+            return Err(ConfigError::Validation(
+                "assembler: staging_slots must be <= 64".into(),
             ));
         }
         Ok(())
@@ -2956,6 +2980,9 @@ pub struct AssemblerRuntimeConfigV2 {
     #[serde(alias = "missing_video_timeout_ms")]
     pub missing_eos_timeout_ms: u64,
     pub staging_dir: String,
+    /// See `AssemblerConfig::staging_slots`.
+    #[serde(default = "default_staging_slots")]
+    pub staging_slots: u32,
     #[serde(default)]
     pub cameras: Vec<AssemblerCameraRuntimeConfigV2>,
     #[serde(default)]
@@ -2985,6 +3012,11 @@ impl AssemblerRuntimeConfigV2 {
         if self.missing_eos_timeout_ms == 0 {
             return Err(ConfigError::Validation(
                 "assembler runtime v2: missing_eos_timeout_ms must be > 0".into(),
+            ));
+        }
+        if self.staging_slots == 0 || self.staging_slots > 64 {
+            return Err(ConfigError::Validation(
+                "assembler runtime v2: staging_slots must be in 1..=64".into(),
             ));
         }
         if self.cameras.is_empty() {
@@ -3673,6 +3705,7 @@ impl ProjectConfig {
             chunk_size: self.episode.chunk_size,
             missing_eos_timeout_ms: self.assembler.missing_eos_timeout_ms,
             staging_dir: episode_staging_root_v2(&self.assembler.staging_dir),
+            staging_slots: self.assembler.staging_slots,
             cameras,
             observations,
             actions,
@@ -3756,12 +3789,25 @@ impl ProjectConfig {
 
     pub fn storage_runtime_config(&self) -> StorageRuntimeConfig {
         StorageRuntimeConfig {
-            process_id: "storage-local".into(),
+            process_id: storage_process_id_for(self.episode.format, self.storage.backend).into(),
             backend: self.storage.backend,
             output_path: self.storage.output_path.clone(),
             endpoint: self.storage.endpoint.clone(),
             queue_size: self.storage.queue_size,
         }
+    }
+}
+
+/// Stable identifier — matches the binary name spawned by the controller —
+/// for the storage child chosen by `(format, backend)`. Used as
+/// `process_id` in `StorageRuntimeConfig`, `BackpressureEvent`, log lines.
+pub fn storage_process_id_for(format: EpisodeFormat, backend: StorageBackend) -> &'static str {
+    match (format, backend) {
+        (EpisodeFormat::LeRobotV2_1 | EpisodeFormat::LeRobotV3_0, StorageBackend::Local) => {
+            "storage-local-lerobot"
+        }
+        (EpisodeFormat::Mcap, StorageBackend::Local) => "storage-local",
+        (_, StorageBackend::Http) => "storage-http",
     }
 }
 

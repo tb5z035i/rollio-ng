@@ -10,12 +10,13 @@ use crate::runtime_paths::{
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE,
-    EPISODE_STORED_SERVICE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE,
+    EPISODE_DROPPED_SERVICE, EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
 use rollio_types::messages::{
-    BackpressureEvent, ControlEvent, EpisodeCommand, EpisodeState, EpisodeStatus, EpisodeStored,
+    BackpressureEvent, ControlEvent, EpisodeCommand, EpisodeDropped, EpisodeState, EpisodeStatus,
+    EpisodeStored,
 };
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::error::Error;
@@ -192,6 +193,9 @@ fn run_collect_loop(
         let mut status_changed =
             apply_episode_stored_events(lifecycle, &mut start_blocked, &stored_events);
 
+        let dropped_events = controller_ipc.drain_episode_dropped()?;
+        status_changed |= apply_episode_dropped_events(&mut start_blocked, &dropped_events);
+
         let commands = controller_ipc.drain_episode_commands()?;
         let now = Instant::now();
         let (control_events, command_changed) =
@@ -244,6 +248,20 @@ fn apply_episode_stored_events(
     changed
 }
 
+fn apply_episode_dropped_events(start_blocked: &mut bool, events: &[EpisodeDropped]) -> bool {
+    let mut changed = false;
+    for event in events {
+        eprintln!(
+            "rollio: assembler dropped episode {} (reason={}); unblocking new recordings",
+            event.episode_index,
+            event.reason.as_str()
+        );
+        *start_blocked = false;
+        changed = true;
+    }
+    changed
+}
+
 fn collect_control_events(
     lifecycle: &mut EpisodeLifecycle,
     commands: Vec<EpisodeCommand>,
@@ -281,6 +299,8 @@ struct ControllerIpc {
         iceoryx2::port::subscriber::Subscriber<ipc::Service, BackpressureEvent, ()>,
     episode_stored_subscriber:
         iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStored, ()>,
+    episode_dropped_subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeDropped, ()>,
 }
 
 impl ControllerIpc {
@@ -345,6 +365,15 @@ impl ControllerIpc {
             .max_nodes(16)
             .open_or_create()?;
 
+        let dropped_service_name: ServiceName = EPISODE_DROPPED_SERVICE.try_into()?;
+        let dropped_service = node
+            .service_builder(&dropped_service_name)
+            .publish_subscribe::<EpisodeDropped>()
+            .max_publishers(8)
+            .max_subscribers(8)
+            .max_nodes(16)
+            .open_or_create()?;
+
         Ok(Self {
             _node: node,
             control_publisher: control_service.publisher_builder().create()?,
@@ -352,6 +381,7 @@ impl ControllerIpc {
             episode_status_publisher: status_service.publisher_builder().create()?,
             backpressure_subscriber: backpressure_service.subscriber_builder().create()?,
             episode_stored_subscriber: stored_service.subscriber_builder().create()?,
+            episode_dropped_subscriber: dropped_service.subscriber_builder().create()?,
         })
     }
 
@@ -389,6 +419,16 @@ impl ControllerIpc {
         let mut events = Vec::new();
         loop {
             let Some(sample) = self.episode_stored_subscriber.receive()? else {
+                return Ok(events);
+            };
+            events.push(*sample.payload());
+        }
+    }
+
+    fn drain_episode_dropped(&self) -> Result<Vec<EpisodeDropped>, Box<dyn Error>> {
+        let mut events = Vec::new();
+        loop {
+            let Some(sample) = self.episode_dropped_subscriber.receive()? else {
                 return Ok(events);
             };
             events.push(*sample.payload());
@@ -548,7 +588,8 @@ mod tests {
             .find(|spec| spec.id == "storage")
             .expect("storage spec should exist");
         let storage_inline = storage_spec.command.args[2].to_string_lossy();
-        assert!(storage_inline.contains("process_id = \"storage-local\""));
+        // This test fixture is lerobot-format → the lerobot-specific storage binary.
+        assert!(storage_inline.contains("process_id = \"storage-local-lerobot\""));
 
         let ui_spec = specs
             .iter()

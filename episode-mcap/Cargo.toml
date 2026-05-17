@@ -7,6 +7,9 @@ edition = "2021"
 name = "rollio-episode-mcap"
 path = "src/main.rs"
 
+[lib]
+doctest = false
+
 [dependencies]
 rollio-types = { path = "../rollio-types" }
 rollio-bus = { path = "../rollio-bus" }
@@ -16,3 +19,8 @@ serde = { version = "1", features = ["derive"] }
 toml = { version = "0.8", features = ["parse", "display"] }
 log = "0.4"
 env_logger = "0.11"
+flatbuffers = "25.12.19"
+mcap = "0.24"
+
+[dev-dependencies]
+tempfile = "3"

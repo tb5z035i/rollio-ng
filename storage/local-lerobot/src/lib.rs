@@ -1,13 +1,10 @@
-pub mod encode;
-pub mod fb;
-pub mod mcap_writer;
 pub mod runtime;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "rollio-episode-mcap")]
-#[command(about = "MCAP+FlatBuffers episode assembler (stub — coming soon)")]
+#[command(name = "rollio-storage-local-lerobot")]
+#[command(about = "Persist staged LeRobot episodes by merging them into a shared data/tb5z035i/workspaceset root")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

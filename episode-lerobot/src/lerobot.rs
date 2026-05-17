@@ -634,6 +634,7 @@ mod tests {
             chunk_size: 1000,
             missing_eos_timeout_ms: 5000,
             staging_dir: "/tmp/rollio-lerobot-test".into(),
+            staging_slots: 4,
             cameras: Vec::new(),
             observations: vec![AssemblerObservationRuntimeConfigV2 {
                 channel_id: "robot_a/arm".into(),

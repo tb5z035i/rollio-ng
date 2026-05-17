@@ -1,12 +1,8 @@
 use clap::Args;
 use iceoryx2::prelude::*;
-use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE,
-};
+use rollio_bus::{CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE};
 use rollio_types::config::{StorageBackend, StorageRuntimeConfig};
-use rollio_types::messages::{
-    BackpressureEvent, ControlEvent, EpisodeReady, EpisodeStored, FixedString256, FixedString64,
-};
+use rollio_types::messages::{ControlEvent, EpisodeReady, EpisodeStored, FixedString256};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -96,16 +92,16 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
     match (&args.config, &args.config_inline) {
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
-        (None, None) => Err("rollio-storage-local requires --config or --config-inline".into()),
+        (None, None) => Err("rollio-storage-local-lerobot requires --config or --config-inline".into()),
         (Some(_), Some(_)) => {
-            Err("rollio-storage-local config flags are mutually exclusive".into())
+            Err("rollio-storage-local-lerobot config flags are mutually exclusive".into())
         }
     }
 }
 
 pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error>> {
     if config.backend != StorageBackend::Local {
-        return Err("rollio-storage-local currently supports backend=local only".into());
+        return Err("rollio-storage-local-lerobot currently supports backend=local only".into());
     }
 
     let node = NodeBuilder::new()
@@ -115,19 +111,18 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
     let control_subscriber = create_control_subscriber(&node)?;
     let episode_ready_subscriber = create_episode_ready_subscriber(&node)?;
     let stored_publisher = create_episode_stored_publisher(&node)?;
-    let backpressure_publisher = create_backpressure_publisher(&node)?;
 
-    let (command_tx, command_rx) = mpsc::sync_channel(config.queue_size as usize);
-    let (event_tx, event_rx) = mpsc::channel();
+    let (command_tx, command_rx) = mpsc::channel::<WorkerCommand>();
+    let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
     let worker_config = config.clone();
     let worker = thread::Builder::new()
-        .name("rollio-storage-local-worker".into())
+        .name("rollio-storage-local-lerobot-worker".into())
         .spawn(move || {
             let _ = worker_main(worker_config, command_rx, event_tx);
         })
         .map_err(|error| {
             io::Error::other(format!(
-                "failed to spawn rollio-storage-local worker: {error}"
+                "failed to spawn rollio-storage-local-lerobot worker: {error}"
             ))
         })?;
 
@@ -166,12 +161,7 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
                 episode_index: sample.payload().episode_index,
                 staging_dir: PathBuf::from(sample.payload().staging_dir.as_str()),
             };
-            if !try_enqueue_request(&command_tx, request)? {
-                backpressure_publisher.send_copy(BackpressureEvent {
-                    process_id: FixedString64::new(&config.process_id),
-                    queue_name: FixedString64::new("episode_queue"),
-                })?;
-            }
+            command_tx.send(WorkerCommand::Store(request))?;
         }
 
         thread::sleep(Duration::from_millis(2));
@@ -179,7 +169,7 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
 
     worker
         .join()
-        .map_err(|_| io::Error::other("rollio-storage-local worker panicked"))?;
+        .map_err(|_| io::Error::other("rollio-storage-local-lerobot worker panicked"))?;
     Ok(())
 }
 
@@ -218,33 +208,6 @@ fn create_episode_stored_publisher(
     Ok(service.publisher_builder().create()?)
 }
 
-fn create_backpressure_publisher(
-    node: &Node<ipc::Service>,
-) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>, Box<dyn Error>>
-{
-    let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
-    let service = node
-        .service_builder(&service_name)
-        .publish_subscribe::<BackpressureEvent>()
-        .open_or_create()?;
-    Ok(service.publisher_builder().create()?)
-}
-
-fn try_enqueue_request(
-    sender: &mpsc::SyncSender<WorkerCommand>,
-    request: EpisodeReadyRequest,
-) -> Result<bool, Box<dyn Error>> {
-    match sender.try_send(WorkerCommand::Store(request)) {
-        Ok(()) => Ok(true),
-        Err(mpsc::TrySendError::Full(_)) => Ok(false),
-        Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "rollio-storage-local worker disconnected",
-        )
-        .into()),
-    }
-}
-
 fn worker_main(
     config: StorageRuntimeConfig,
     receiver: mpsc::Receiver<WorkerCommand>,
@@ -279,7 +242,7 @@ fn store_episode(
     match config.backend {
         StorageBackend::Local => store_episode_local(config, request),
         StorageBackend::Http => {
-            Err("rollio-storage-local: backend=http is reserved for future work".into())
+            Err("rollio-storage-local-lerobot: backend=http is reserved for future work".into())
         }
     }
 }
@@ -669,28 +632,9 @@ mod tests {
         assert_eq!(info.total_frames, 30);
     }
 
-    #[test]
-    fn try_enqueue_request_reports_backpressure_when_queue_is_full() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let first = EpisodeReadyRequest {
-            episode_index: 0,
-            staging_dir: PathBuf::from("/tmp/episode_000000"),
-        };
-        let second = EpisodeReadyRequest {
-            episode_index: 1,
-            staging_dir: PathBuf::from("/tmp/episode_000001"),
-        };
-
-        assert!(try_enqueue_request(&sender, first).expect("first request should queue"));
-        assert!(
-            !try_enqueue_request(&sender, second).expect("second request should hit backpressure")
-        );
-        drop(receiver);
-    }
-
     fn test_config(output_path: PathBuf) -> StorageRuntimeConfig {
         StorageRuntimeConfig {
-            process_id: "storage-local".into(),
+            process_id: "storage-local-lerobot".into(),
             backend: StorageBackend::Local,
             output_path: Some(output_path.to_string_lossy().into_owned()),
             endpoint: None,

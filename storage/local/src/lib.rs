@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "rollio-storage-local")]
-#[command(about = "Persist staged episodes to the configured local storage backend")]
+#[command(about = "Move staged episodes from the staging dir into a per-episode subdir")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
