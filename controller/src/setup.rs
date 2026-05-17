@@ -16,10 +16,10 @@ use rollio_bus::{
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChromaSubsampling,
-    CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
-    EncoderColorSpace, EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig,
-    RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
+    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChannelPreviewConfig,
+    ChannelRecordConfig, ChromaSubsampling, CollectionMode, DeviceChannelConfigV2, DeviceType,
+    EncoderBackend, EncoderCodec, EncoderColorSpace, EncoderConfig, EpisodeFormat,
+    MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -470,13 +470,14 @@ impl SetupSession {
         } else {
             config.pairings.clone()
         };
+        let encoder = seed_encoder_from_config(&config);
         Self {
             current_step: if resume_mode {
                 SetupStep::Preview
             } else {
                 SetupStep::Devices
             },
-            encoder: EncoderConfig::default(),
+            encoder,
             config,
             available_devices,
             teleop_pairing_cache,
@@ -2249,6 +2250,7 @@ impl SetupSession {
                 self.cycle_encoder_color_space(delta)?,
             )),
             "setup_save" => {
+                apply_wizard_encoder_to_channels(&mut self.config, &self.encoder);
                 save_project_config(&self.config, &self.output_path)?;
                 self.mark_saved();
                 Ok(SessionMutation::state_only(true))
@@ -4179,6 +4181,75 @@ fn save_project_config(project: &ProjectConfig, output_path: &Path) -> Result<()
     }
     fs::write(output_path, toml::to_string_pretty(project)?)?;
     Ok(())
+}
+
+/// Seed the wizard's working `EncoderConfig` from the first camera channel that
+/// already carries a `record`/`preview_config` block — so reopening an existing
+/// project shows the user the settings actually in effect rather than
+/// hard-coded defaults. Falls back to `EncoderConfig::default()` if no camera
+/// channel has either block.
+fn seed_encoder_from_config(config: &ProjectConfig) -> EncoderConfig {
+    let mut encoder = EncoderConfig::default();
+    for device in &config.devices {
+        for channel in &device.channels {
+            if channel.kind != DeviceType::Camera {
+                continue;
+            }
+            if let Some(record) = channel.record.as_ref() {
+                encoder = record.resolve();
+                if let Some(preview) = channel.preview_settings.as_ref() {
+                    encoder.preview = preview.resolve();
+                }
+                return encoder;
+            }
+        }
+    }
+    encoder
+}
+
+/// Push the wizard's working `EncoderConfig` down into each camera channel's
+/// `record` / `preview_config` block. Without this the wizard's CRF / preset /
+/// codec / chroma / bit-depth / color-space / preview-fps / jpeg-quality
+/// choices live only in `SetupSession.encoder` and are dropped when
+/// `save_project_config` serializes `ProjectConfig`.
+fn apply_wizard_encoder_to_channels(config: &mut ProjectConfig, encoder: &EncoderConfig) {
+    for device in &mut config.devices {
+        for channel in &mut device.channels {
+            if channel.kind != DeviceType::Camera {
+                continue;
+            }
+            if channel.record_enabled {
+                channel.record = Some(ChannelRecordConfig {
+                    video_codec: Some(encoder.video_codec),
+                    depth_codec: Some(encoder.depth_codec),
+                    backend: Some(encoder.backend),
+                    video_backend: Some(encoder.video_backend),
+                    depth_backend: Some(encoder.depth_backend),
+                    chroma_subsampling: Some(encoder.chroma_subsampling),
+                    crf: encoder.crf,
+                    preset: encoder.preset.clone(),
+                    tune: encoder.tune.clone(),
+                    bit_depth: Some(encoder.bit_depth),
+                    color_space: Some(encoder.color_space),
+                    queue_size: Some(encoder.queue_size),
+                });
+            }
+            if channel.preview_enabled {
+                channel.preview_settings = Some(ChannelPreviewConfig {
+                    output_mode: Some(encoder.preview.output_mode),
+                    color_codec: Some(encoder.preview.color_codec),
+                    depth_codec: Some(encoder.preview.depth_codec),
+                    backend: Some(encoder.preview.backend),
+                    width: Some(encoder.preview.width),
+                    height: Some(encoder.preview.height),
+                    fps: Some(encoder.preview.fps),
+                    gop_seconds: Some(encoder.preview.gop_seconds),
+                    crf: encoder.preview.crf,
+                    jpeg_quality: Some(encoder.preview.jpeg_quality),
+                });
+            }
+        }
+    }
 }
 
 fn parse_camera_capabilities(capabilities: &Value) -> Vec<CameraProfile> {
@@ -6904,5 +6975,91 @@ port = 19090
 "#;
         rollio_types::config::ProjectConfig::from_str(toml_text)
             .expect("template should parse before mutation")
+    }
+
+    /// Regression: the wizard's CRF / preset / codec / chroma / bit-depth /
+    /// color-space / preview-fps / jpeg-quality cyclers used to write only to
+    /// `SetupSession::encoder`, leaving `ProjectConfig.devices[*].channels[*]
+    /// .record` (and `.preview_config`) untouched. `setup_save` then
+    /// serialized `ProjectConfig` and the operator's choices vanished. With
+    /// `apply_wizard_encoder_to_channels` running just before save, the saved
+    /// TOML carries the same per-channel blocks `config/config.example.toml`
+    /// uses.
+    #[test]
+    fn apply_wizard_encoder_to_channels_writes_per_channel_record_and_preview_blocks() {
+        let mut config = build_discovery_config(&[camera_discovery("cam0")])
+            .expect("config should build");
+        // Verify the starting point: no record/preview blocks on the channel.
+        let channel = &config.devices[0].channels[0];
+        assert!(channel.record.is_none());
+        assert!(channel.preview_settings.is_none());
+
+        // Operator's wizard choices: non-default CRF, preset, codec, chroma,
+        // bit depth, color space, plus preview tweaks.
+        let mut encoder = EncoderConfig::default();
+        encoder.crf = Some(18);
+        encoder.preset = Some("slow".into());
+        encoder.video_codec = EncoderCodec::H265;
+        encoder.video_backend = EncoderBackend::Nvidia;
+        encoder.chroma_subsampling = ChromaSubsampling::S420;
+        encoder.bit_depth = 10;
+        encoder.color_space = EncoderColorSpace::Bt709Limited;
+        encoder.preview.jpeg_quality = 70;
+        encoder.preview.fps = 10;
+
+        apply_wizard_encoder_to_channels(&mut config, &encoder);
+
+        let channel = &config.devices[0].channels[0];
+        let record = channel.record.as_ref().expect("record block must be set");
+        assert_eq!(record.crf, Some(18));
+        assert_eq!(record.preset.as_deref(), Some("slow"));
+        assert_eq!(record.video_codec, Some(EncoderCodec::H265));
+        assert_eq!(record.video_backend, Some(EncoderBackend::Nvidia));
+        assert_eq!(record.chroma_subsampling, Some(ChromaSubsampling::S420));
+        assert_eq!(record.bit_depth, Some(10));
+        assert_eq!(record.color_space, Some(EncoderColorSpace::Bt709Limited));
+
+        let preview = channel
+            .preview_settings
+            .as_ref()
+            .expect("preview block must be set");
+        assert_eq!(preview.jpeg_quality, Some(70));
+        assert_eq!(preview.fps, Some(10));
+
+        // Round-trip through TOML to confirm the saved config still parses
+        // and the channel blocks survive serialization.
+        let toml_text = toml::to_string_pretty(&config).expect("serialize");
+        assert!(toml_text.contains("[devices.channels.record]"));
+        assert!(toml_text.contains("[devices.channels.preview_config]"));
+        let _reparsed: ProjectConfig =
+            toml_text.parse().expect("saved TOML must reparse cleanly");
+    }
+
+    /// Regression: `SetupSession::new` previously hard-coded `self.encoder =
+    /// EncoderConfig::default()` — when an existing project with per-channel
+    /// `record` blocks was reopened, the wizard displayed wrong "current"
+    /// values and risked overwriting the operator's choices on next save.
+    /// Seed from the first camera channel that already carries a record block.
+    #[test]
+    fn setup_session_new_seeds_encoder_from_existing_record_block() {
+        let mut config = build_discovery_config(&[camera_discovery("cam0")])
+            .expect("config should build");
+        config.devices[0].channels[0].record = Some(ChannelRecordConfig {
+            video_codec: Some(EncoderCodec::H265),
+            crf: Some(20),
+            preset: Some("veryslow".into()),
+            ..ChannelRecordConfig::default()
+        });
+
+        let session = SetupSession::new(
+            config,
+            Vec::new(),
+            std::path::PathBuf::from("config.toml"),
+            false,
+            Vec::new(),
+        );
+        assert_eq!(session.encoder.video_codec, EncoderCodec::H265);
+        assert_eq!(session.encoder.crf, Some(20));
+        assert_eq!(session.encoder.preset.as_deref(), Some("veryslow"));
     }
 }

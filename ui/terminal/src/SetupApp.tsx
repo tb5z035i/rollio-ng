@@ -1010,13 +1010,13 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       : (setupState.config.storage.endpoint ?? "");
 
   const episodeFps = setupState.config.episode.fps ?? 30;
-  const crf = setupState.config.encoder.crf;
-  const encPreset = setupState.config.encoder.preset;
-  const bitDepth = setupState.config.encoder.bit_depth ?? 8;
-  const colorSpace = setupState.config.encoder.color_space ?? "auto";
-  const chroma = setupState.config.encoder.chroma_subsampling;
-  const jpegQ = setupState.config.encoder.preview?.jpeg_quality ?? 30;
-  const previewFps = setupState.config.encoder.preview?.fps ?? 15;
+  const crf = setupState.encoder.crf;
+  const encPreset = setupState.encoder.preset;
+  const bitDepth = setupState.encoder.bit_depth ?? 8;
+  const colorSpace = setupState.encoder.color_space ?? "auto";
+  const chroma = setupState.encoder.chroma_subsampling;
+  const jpegQ = setupState.encoder.preview?.jpeg_quality ?? 30;
+  const previewFps = setupState.encoder.preview?.fps ?? 15;
 
   return [
     {
@@ -1054,8 +1054,8 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       groupSubtitle: "RGB & depth encoders",
       label: "RGB codec",
       value: formatCodecBackend(
-        setupState.config.encoder.video_codec,
-        setupState.config.encoder.video_backend ?? setupState.config.encoder.backend,
+        setupState.encoder.video_codec,
+        setupState.encoder.video_backend ?? setupState.encoder.backend,
       ),
       kind: "cycle",
       action: "setup_cycle_video_codec",
@@ -1064,8 +1064,8 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       id: "depth_codec",
       label: "Depth codec",
       value: formatCodecBackend(
-        setupState.config.encoder.depth_codec,
-        setupState.config.encoder.depth_backend ?? setupState.config.encoder.backend,
+        setupState.encoder.depth_codec,
+        setupState.encoder.depth_backend ?? setupState.encoder.backend,
       ),
       kind: "cycle",
       action: "setup_cycle_depth_codec",
@@ -1804,7 +1804,7 @@ function buildDetailLines(
         buildDetailLine("preview-format", [
           textSegment("Format: ", { color: "cyan", bold: true }),
           textSegment(
-            `${setupState.config.episode.format} | RGB: ${setupState.config.encoder.video_codec} | Depth: ${setupState.config.encoder.depth_codec}`,
+            `${setupState.config.episode.format} | RGB: ${setupState.encoder.video_codec} | Depth: ${setupState.encoder.depth_codec}`,
           ),
         ]),
         buildDetailLine("preview-storage", [

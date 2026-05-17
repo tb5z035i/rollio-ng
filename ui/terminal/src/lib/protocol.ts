@@ -207,34 +207,6 @@ export interface SetupConfigSnapshot {
   /** Native project layout: one binary per row with nested channels. */
   devices: SetupBinaryDeviceConfig[];
   pairings: SetupChannelPairing[];
-  encoder: {
-    video_codec: EncoderCodec;
-    depth_codec: EncoderCodec;
-    /** Present on current controllers; preview production knobs moved
-     *  here from `[visualizer]`. */
-    preview?: {
-      output_mode?: "jpeg" | "encoded";
-      width?: number;
-      height?: number;
-      fps?: number;
-      jpeg_quality?: number;
-    };
-    /** Legacy global backend hint (kept for backwards compatibility). The
-     *  wizard now drives the per-codec backend via `video_backend` and
-     *  `depth_backend`; this field is the shared default the controller
-     *  falls back to when those are unset. */
-    backend?: EncoderBackend;
-    /** Backend used to encode color/IR streams (paired with `video_codec`). */
-    video_backend?: EncoderBackend;
-    /** Backend used to encode depth streams (paired with `depth_codec`). */
-    depth_backend?: EncoderBackend;
-    crf?: number | null;
-    preset?: string | null;
-    /** Chroma (4:2:2 vs 4:2:0). Wire format matches `ChromaSubsampling` JSON. */
-    chroma_subsampling?: string;
-    bit_depth: number;
-    color_space: EncoderColorSpaceId;
-  };
   storage: {
     backend: "local" | "http";
     output_path: string;
@@ -261,7 +233,42 @@ export interface SetupStateMessage {
   identify_device?: string | null;
   warnings: string[];
   config: SetupConfigSnapshot;
+  /** Working encoder snapshot the controller maintains alongside `config`
+   *  so the wizard can cycle codec/backend/CRF/preset selections without
+   *  mutating the persisted ProjectConfig. Wire format places it as a
+   *  sibling of `config`, not nested inside it (see
+   *  `controller/src/setup.rs::SetupStateEnvelope`). */
+  encoder: SetupEncoderSnapshot;
   available_devices: SetupAvailableDevice[];
+}
+
+export interface SetupEncoderSnapshot {
+  video_codec: EncoderCodec;
+  depth_codec: EncoderCodec;
+  /** Present on current controllers; preview production knobs moved
+   *  here from `[visualizer]`. */
+  preview?: {
+    output_mode?: "jpeg" | "encoded";
+    width?: number;
+    height?: number;
+    fps?: number;
+    jpeg_quality?: number;
+  };
+  /** Legacy global backend hint (kept for backwards compatibility). The
+   *  wizard now drives the per-codec backend via `video_backend` and
+   *  `depth_backend`; this field is the shared default the controller
+   *  falls back to when those are unset. */
+  backend?: EncoderBackend;
+  /** Backend used to encode color/IR streams (paired with `video_codec`). */
+  video_backend?: EncoderBackend;
+  /** Backend used to encode depth streams (paired with `depth_codec`). */
+  depth_backend?: EncoderBackend;
+  crf?: number | null;
+  preset?: string | null;
+  /** Chroma (4:2:2 vs 4:2:0). Wire format matches `ChromaSubsampling` JSON. */
+  chroma_subsampling?: string;
+  bit_depth: number;
+  color_space: EncoderColorSpaceId;
 }
 
 export type CommandAction =

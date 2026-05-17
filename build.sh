@@ -50,7 +50,9 @@ CORE_BINS=(
     rollio-web-gateway
     rollio-teleop-router
     rollio-episode-lerobot
+    rollio-episode-mcap
     rollio-storage-local
+    rollio-storage-local-lerobot
     rollio-monitor
     rollio-device-pseudo
     rollio-device-airbot-play

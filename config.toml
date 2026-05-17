@@ -3,7 +3,7 @@ mode = "teleop"
 pairings = []
 
 [episode]
-format = "lerobot-v2.1"
+format = "mcap"
 fps = 30
 chunk_size = 1000
 
@@ -23,6 +23,7 @@ channel_label = "V4L2 Camera"
 publish_states = []
 recorded_states = []
 preview_enabled = true
+record_enabled = true
 
 [devices.channels.profile]
 width = 1920
@@ -31,26 +32,18 @@ fps = 30
 pixel_format = "mjpeg"
 native_pixel_format = "MJPG"
 
-[devices.channels.command_defaults]
-joint_mit_kp = []
-joint_mit_kd = []
-parallel_mit_kp = []
-parallel_mit_kd = []
-
-[encoder]
+[devices.channels.record]
 video_codec = "h264"
 depth_codec = "rvl"
 backend = "auto"
 video_backend = "auto"
 depth_backend = "auto"
-chroma_subsampling = "422"
-crf = 15
-preset = "slow"
+chroma_subsampling = "s422"
 bit_depth = 8
 color_space = "auto"
 queue_size = 32
 
-[encoder.preview]
+[devices.channels.preview_config]
 output_mode = "encoded"
 color_codec = "h264"
 depth_codec = "rvl"
@@ -59,12 +52,19 @@ width = 320
 height = 240
 fps = 15
 gop_seconds = 1
-crf = 32
-jpeg_quality = 30
+crf = 26
+jpeg_quality = 50
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
 
 [assembler]
 missing_eos_timeout_ms = 30000
 staging_dir = "/dev/shm/rollio"
+staging_slots = 4
 
 [storage]
 backend = "local"

@@ -5,6 +5,7 @@ pub const SETUP_COMMAND_SERVICE: &str = "setup/command";
 pub const SETUP_STATE_SERVICE: &str = "setup/state";
 pub const EPISODE_READY_SERVICE: &str = "assembler/episode-ready";
 pub const EPISODE_STORED_SERVICE: &str = "storage/episode-stored";
+pub const EPISODE_DROPPED_SERVICE: &str = "assembler/episode-dropped";
 pub const BACKPRESSURE_SERVICE: &str = "encoder/backpressure";
 
 /// Default ring buffer depth for every state and command publish_subscribe

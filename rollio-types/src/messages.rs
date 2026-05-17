@@ -932,6 +932,22 @@ pub struct EpisodeStored {
 }
 
 // ---------------------------------------------------------------------------
+// EpisodeDropped
+// ---------------------------------------------------------------------------
+
+/// Published by the Episode Assembler when an episode cannot be staged and is
+/// abandoned (e.g. the staging-slot semaphore is full). Lets the controller's
+/// lifecycle bookkeeping clear the in-flight entry for `episode_index` even
+/// though no `EpisodeStored` will follow.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("EpisodeDropped")]
+#[repr(C)]
+pub struct EpisodeDropped {
+    pub episode_index: u32,
+    pub reason: FixedString64,
+}
+
+// ---------------------------------------------------------------------------
 // BackpressureEvent
 // ---------------------------------------------------------------------------
 

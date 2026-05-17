@@ -22,23 +22,25 @@ use clap::Args;
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, STATE_BUFFER, STATE_MAX_NODES,
-    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE, EPISODE_READY_SERVICE,
+    EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
     EpisodeFormat, RobotCommandKind, RobotStateKind,
 };
 use rollio_types::messages::{
-    ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeReady, FixedString256,
-    JointMitCommand15, JointVector15, ParallelMitCommand2, ParallelVector2, Pose7,
+    BackpressureEvent, ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeDropped,
+    EpisodeReady, EpisodeStored, FixedString256, FixedString64, JointMitCommand15, JointVector15,
+    ParallelMitCommand2, ParallelVector2, Pose7,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -158,6 +160,14 @@ struct EpisodeManager {
     active_episode_index: Option<u32>,
     episodes: BTreeMap<u32, PendingEpisode>,
     camera_channel_ids: Vec<String>,
+    /// Episodes the assembler has handed to the stage worker but not yet
+    /// observed `EpisodeStored` for. Each entry holds the dispatch
+    /// timestamp so a stalled storage process (or lost `EpisodeStored`)
+    /// can be detected by `sweep_stale_slots` instead of leaking the
+    /// slot forever.
+    in_flight: BTreeMap<u32, Instant>,
+    staging_slots: usize,
+    stale_after: Duration,
 }
 
 impl EpisodeManager {
@@ -167,12 +177,35 @@ impl EpisodeManager {
             .iter()
             .map(|c| c.channel_id.clone())
             .collect();
+        let staging_slots = config.staging_slots as usize;
+        let stale_after =
+            Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
         Self {
             config,
             active_episode_index: None,
             episodes: BTreeMap::new(),
             camera_channel_ids,
+            in_flight: BTreeMap::new(),
+            staging_slots,
+            stale_after,
         }
+    }
+
+    fn release_slot(&mut self, episode_index: u32) -> bool {
+        self.in_flight.remove(&episode_index).is_some()
+    }
+
+    fn sweep_stale_slots(&mut self, now: Instant) -> Vec<u32> {
+        let stale: Vec<u32> = self
+            .in_flight
+            .iter()
+            .filter(|(_, started)| now.duration_since(**started) > self.stale_after)
+            .map(|(idx, _)| *idx)
+            .collect();
+        for idx in &stale {
+            self.in_flight.remove(idx);
+        }
+        stale
     }
 
     fn on_control_event(&mut self, event: ControlEvent) -> bool {
@@ -322,11 +355,11 @@ impl EpisodeManager {
     fn dispatch_ready_episodes(
         &mut self,
         worker: &mpsc::Sender<WorkerCommand>,
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<DispatchOutcome, Box<dyn Error>> {
         let now_us = unix_timestamp_us();
         let (ready_indices, failed_indices, timed_out_indices) =
             self.ready_failed_and_timed_out(now_us);
-        let mut changed = false;
+        let mut outcome = DispatchOutcome::default();
 
         for episode_index in failed_indices {
             if let Some(episode) = self.episodes.remove(&episode_index) {
@@ -335,7 +368,12 @@ impl EpisodeManager {
                     episode.failed_cameras
                 );
                 remove_episode_artifacts(&self.config.staging_dir, episode_index);
-                changed = true;
+                outcome.dropped.push(DropNotice {
+                    episode_index,
+                    reason: "packet_stream_failure",
+                    backpressure: false,
+                });
+                outcome.changed = true;
             }
         }
 
@@ -346,7 +384,12 @@ impl EpisodeManager {
                     self.config.missing_eos_timeout_ms
                 );
                 remove_episode_artifacts(&self.config.staging_dir, episode_index);
-                changed = true;
+                outcome.dropped.push(DropNotice {
+                    episode_index,
+                    reason: "missing_end_of_stream",
+                    backpressure: false,
+                });
+                outcome.changed = true;
             }
         }
 
@@ -354,16 +397,49 @@ impl EpisodeManager {
             let Some(episode) = self.episodes.remove(&episode_index) else {
                 continue;
             };
+            if self.in_flight.len() >= self.staging_slots {
+                eprintln!(
+                    "rollio-episode-lerobot: dropping ready episode {episode_index}: staging_slots exhausted ({} in flight)",
+                    self.in_flight.len()
+                );
+                remove_episode_artifacts(&self.config.staging_dir, episode_index);
+                outcome.dropped.push(DropNotice {
+                    episode_index,
+                    reason: "staging_slots_full",
+                    backpressure: true,
+                });
+                outcome.changed = true;
+                continue;
+            }
             worker
                 .send(WorkerCommand::Stage(episode.as_assembly_input()))
                 .map_err(|error| -> Box<dyn Error> {
                     format!("staging worker disconnected: {error}").into()
                 })?;
-            changed = true;
+            self.in_flight.insert(episode_index, Instant::now());
+            outcome.changed = true;
         }
 
-        Ok(changed)
+        Ok(outcome)
     }
+}
+
+#[derive(Default)]
+struct DispatchOutcome {
+    changed: bool,
+    dropped: Vec<DropNotice>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DropNotice {
+    episode_index: u32,
+    /// Short, machine-grep-able reason. Surfaces in `EpisodeDropped.reason`
+    /// and (for `backpressure: true`) in the `BackpressureEvent.queue_name`.
+    reason: &'static str,
+    /// True when the drop is caused by the assembler running out of
+    /// staging slots and should also block new `RecordingStart` commands
+    /// at the controller via `BackpressureEvent`.
+    backpressure: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -455,9 +531,13 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let control_subscriber = create_control_subscriber(&node)?;
     let camera_subscribers = create_camera_subscribers(&node, &config)?;
     let episode_ready_publisher = create_episode_ready_publisher(&node)?;
+    let backpressure_publisher = create_backpressure_publisher(&node)?;
+    let episode_dropped_publisher = create_episode_dropped_publisher(&node)?;
+    let episode_stored_subscriber = create_episode_stored_subscriber(&node)?;
     let observation_subscribers = create_observation_subscribers(&node, &config)?;
     let action_subscribers = create_action_subscribers(&node, &config)?;
 
+    let process_id = config.process_id.clone();
     let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone())?;
     let mut manager = EpisodeManager::new(config);
 
@@ -470,7 +550,41 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         made_progress |= drain_camera_packets(&camera_subscribers, &mut manager)?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
-        made_progress |= manager.dispatch_ready_episodes(&worker_tx)?;
+
+        let outcome = manager.dispatch_ready_episodes(&worker_tx)?;
+        made_progress |= outcome.changed;
+        for notice in outcome.dropped {
+            publish_drop(
+                &backpressure_publisher,
+                &episode_dropped_publisher,
+                &process_id,
+                notice,
+            )?;
+        }
+
+        while let Some(sample) = episode_stored_subscriber.receive()? {
+            if manager.release_slot(sample.payload().episode_index) {
+                made_progress = true;
+            }
+        }
+
+        for leaked in manager.sweep_stale_slots(Instant::now()) {
+            eprintln!(
+                "rollio-episode-lerobot: staging slot for episode {leaked} appears leaked after {}ms; releasing",
+                manager.stale_after.as_millis()
+            );
+            publish_drop(
+                &backpressure_publisher,
+                &episode_dropped_publisher,
+                &process_id,
+                DropNotice {
+                    episode_index: leaked,
+                    reason: "staging_slot_leak",
+                    backpressure: true,
+                },
+            )?;
+            made_progress = true;
+        }
 
         while let Ok(event) = worker_rx.try_recv() {
             match event {
@@ -488,7 +602,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
             }
         }
 
-        if shutdown_requested && manager.episodes.is_empty() {
+        if shutdown_requested && manager.episodes.is_empty() && manager.in_flight.is_empty() {
             let _ = worker_tx.send(WorkerCommand::Shutdown);
             shutdown_requested = false;
         }
@@ -504,6 +618,33 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
 
     drop(worker_tx);
     let _ = worker_handle.join();
+    Ok(())
+}
+
+fn publish_drop(
+    backpressure_publisher: &iceoryx2::port::publisher::Publisher<
+        ipc::Service,
+        BackpressureEvent,
+        (),
+    >,
+    episode_dropped_publisher: &iceoryx2::port::publisher::Publisher<
+        ipc::Service,
+        EpisodeDropped,
+        (),
+    >,
+    process_id: &str,
+    notice: DropNotice,
+) -> Result<(), Box<dyn Error>> {
+    if notice.backpressure {
+        backpressure_publisher.send_copy(BackpressureEvent {
+            process_id: FixedString64::new(process_id),
+            queue_name: FixedString64::new(notice.reason),
+        })?;
+    }
+    episode_dropped_publisher.send_copy(EpisodeDropped {
+        episode_index: notice.episode_index,
+        reason: FixedString64::new(notice.reason),
+    })?;
     Ok(())
 }
 
@@ -532,6 +673,44 @@ fn create_episode_ready_publisher(
         .publish_subscribe::<EpisodeReady>()
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
+}
+
+fn create_backpressure_publisher(
+    node: &Node<ipc::Service>,
+) -> Result<
+    iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>,
+    Box<dyn Error>,
+> {
+    let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<BackpressureEvent>()
+        .open_or_create()?;
+    Ok(service.publisher_builder().create()?)
+}
+
+fn create_episode_dropped_publisher(
+    node: &Node<ipc::Service>,
+) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, EpisodeDropped, ()>, Box<dyn Error>>
+{
+    let service_name: ServiceName = EPISODE_DROPPED_SERVICE.try_into()?;
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<EpisodeDropped>()
+        .open_or_create()?;
+    Ok(service.publisher_builder().create()?)
+}
+
+fn create_episode_stored_subscriber(
+    node: &Node<ipc::Service>,
+) -> Result<iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeStored, ()>, Box<dyn Error>>
+{
+    let service_name: ServiceName = EPISODE_STORED_SERVICE.try_into()?;
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<EpisodeStored>()
+        .open_or_create()?;
+    Ok(service.subscriber_builder().create()?)
 }
 
 fn create_camera_subscribers(
@@ -897,4 +1076,100 @@ fn unix_timestamp_us() -> u64 {
 #[allow(dead_code)]
 fn _unused_hashmap() -> HashMap<u32, ()> {
     HashMap::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rollio_types::config::EpisodeFormat;
+
+    fn manager_with_slots(staging_slots: u32) -> EpisodeManager {
+        let config = AssemblerRuntimeConfigV2 {
+            process_id: "episode-lerobot-test".into(),
+            format: EpisodeFormat::LeRobotV2_1,
+            fps: 30,
+            chunk_size: 1000,
+            missing_eos_timeout_ms: 5000,
+            staging_dir: std::env::temp_dir()
+                .join("rollio-slot-test")
+                .to_string_lossy()
+                .into_owned(),
+            staging_slots,
+            cameras: Vec::new(),
+            observations: Vec::new(),
+            actions: Vec::new(),
+            embedded_config_toml: "stub".into(),
+        };
+        EpisodeManager::new(config)
+    }
+
+    fn push_ready_episode(manager: &mut EpisodeManager, episode_index: u32) {
+        let mut episode = PendingEpisode::new(episode_index, 1_000_000 + episode_index as u64, &[]);
+        episode.stop_time_us = Some(episode.start_time_us + 1_000_000);
+        episode.keep_requested = true;
+        manager.episodes.insert(episode_index, episode);
+    }
+
+    #[test]
+    fn dispatch_drops_episode_when_staging_slots_exhausted() {
+        let mut manager = manager_with_slots(1);
+        push_ready_episode(&mut manager, 0);
+        push_ready_episode(&mut manager, 1);
+
+        let (worker_tx, worker_rx) = mpsc::channel::<WorkerCommand>();
+        let outcome = manager
+            .dispatch_ready_episodes(&worker_tx)
+            .expect("dispatch should succeed");
+
+        let staged: Vec<_> = worker_rx.try_iter().collect();
+        assert_eq!(
+            staged.len(),
+            1,
+            "exactly one episode should be staged when staging_slots = 1",
+        );
+        assert!(matches!(staged[0], WorkerCommand::Stage(_)));
+
+        assert_eq!(outcome.dropped.len(), 1, "the second episode must be dropped");
+        let drop = outcome.dropped[0];
+        assert_eq!(drop.episode_index, 1);
+        assert_eq!(drop.reason, "staging_slots_full");
+        assert!(drop.backpressure, "slot-full drop must also raise backpressure");
+
+        assert_eq!(manager.in_flight.len(), 1);
+        assert!(manager.in_flight.contains_key(&0));
+        assert!(
+            manager.episodes.is_empty(),
+            "both ready episodes (staged + dropped) leave the manager",
+        );
+    }
+
+    #[test]
+    fn release_slot_frees_in_flight_entry() {
+        let mut manager = manager_with_slots(2);
+        push_ready_episode(&mut manager, 7);
+        let (worker_tx, _worker_rx) = mpsc::channel::<WorkerCommand>();
+        manager
+            .dispatch_ready_episodes(&worker_tx)
+            .expect("dispatch should succeed");
+        assert_eq!(manager.in_flight.len(), 1);
+        assert!(manager.release_slot(7));
+        assert!(!manager.release_slot(7), "second release is a no-op");
+        assert!(manager.in_flight.is_empty());
+    }
+
+    #[test]
+    fn sweep_stale_slots_releases_entries_older_than_threshold() {
+        let mut manager = manager_with_slots(2);
+        manager.stale_after = Duration::from_millis(0);
+        push_ready_episode(&mut manager, 3);
+        let (worker_tx, _worker_rx) = mpsc::channel::<WorkerCommand>();
+        manager
+            .dispatch_ready_episodes(&worker_tx)
+            .expect("dispatch should succeed");
+        // Force the sample to look older than `stale_after`.
+        std::thread::sleep(Duration::from_millis(2));
+        let leaked = manager.sweep_stale_slots(Instant::now());
+        assert_eq!(leaked, vec![3]);
+        assert!(manager.in_flight.is_empty());
+    }
 }
