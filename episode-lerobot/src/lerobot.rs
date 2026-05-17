@@ -25,7 +25,7 @@ use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
-    AssemblerSensorObservationRuntimeConfigV2, RobotStateKind, SensorStateKind,
+    AssemblerSensorObservationRuntimeConfigV2, RobotStateKind,
 };
 use rollio_types::messages::PixelFormat;
 use serde::{Deserialize, Serialize};

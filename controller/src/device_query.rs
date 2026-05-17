@@ -12,8 +12,9 @@
 use crate::discovery::run_driver_json;
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
-    BinaryDeviceConfig, DeviceType, DirectJointCompatibility, DirectJointCompatibilityPeer,
-    ProjectConfig, RobotCommandKind, RobotStateKind, SensorStateKind, StateValueLimitsEntry,
+    BinaryDeviceConfig, ChannelKindInfo, DeviceType, DirectJointCompatibility,
+    DirectJointCompatibilityPeer, ProjectConfig, RobotChannelInfo, RobotCommandKind,
+    RobotStateKind, SensorChannelInfo, SensorStateKind, StateValueLimitsEntry,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -26,19 +27,10 @@ const DEVICE_QUERY_TIMEOUT: Duration = Duration::from_millis(2_000);
 
 /// Per-channel runtime metadata pulled from a fresh `query --json`
 /// invocation. Indexed by `(device_name, channel_type)` so callers can
-/// match it back to entries in the project config.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ChannelRuntimeMeta {
-    pub(crate) value_limits: Vec<StateValueLimitsEntry>,
-    pub(crate) supported_states: Vec<RobotStateKind>,
-    pub(crate) supported_commands: Vec<RobotCommandKind>,
-    pub(crate) direct_joint_compatibility: DirectJointCompatibility,
-    pub(crate) supported_sensor_kinds: Vec<SensorStateKind>,
-    pub(crate) sensor_shape_hints: BTreeMap<SensorStateKind, Vec<u32>>,
-    pub(crate) default_sample_rate_hz: Option<f64>,
-}
-
-pub(crate) type DeviceRuntimeMetaMap = BTreeMap<(String, String), ChannelRuntimeMeta>;
+/// match it back to entries in the project config. Wraps the wire-level
+/// `ChannelKindInfo` so each consumer site has to acknowledge which
+/// channel kind it's reading.
+pub(crate) type DeviceRuntimeMetaMap = BTreeMap<(String, String), ChannelKindInfo>;
 
 /// Re-runs `<executable> query --json <id>` for every device in `config`
 /// that exposes a robot channel and overwrites each robot channel's
@@ -60,11 +52,15 @@ pub(crate) fn refresh_value_limits_from_devices(
 ) -> Result<DeviceRuntimeMetaMap, Box<dyn Error>> {
     let mut runtime_meta = DeviceRuntimeMetaMap::new();
     for device in config.devices.iter_mut() {
-        if !device
-            .channels
-            .iter()
-            .any(|channel| channel.kind == DeviceType::Robot && channel.enabled)
-        {
+        // Camera-only devices have no refresh-relevant fields; skip the
+        // driver round-trip. Robot AND sensor channels both need a fresh
+        // query (robot copies `value_limits` etc., sensor copies
+        // `sensor_shape_hints` + optional `sample_rate_hz`).
+        let needs_refresh = device.channels.iter().any(|channel| {
+            channel.enabled
+                && matches!(channel.kind, DeviceType::Robot | DeviceType::Sensor)
+        });
+        if !needs_refresh {
             continue;
         }
         let meta_by_channel = refresh_device_value_limits(
@@ -85,7 +81,7 @@ fn refresh_device_value_limits(
     workspace_root: &Path,
     process_working_dir: &Path,
     current_exe_dir: &Path,
-) -> Result<BTreeMap<String, ChannelRuntimeMeta>, Box<dyn Error>> {
+) -> Result<BTreeMap<String, ChannelKindInfo>, Box<dyn Error>> {
     let executable_name = device
         .executable
         .clone()
@@ -129,37 +125,41 @@ fn refresh_device_value_limits(
     let meta_by_channel = parse_channel_runtime_meta(query_device);
 
     for channel in device.channels.iter_mut() {
-        match channel.kind {
-            DeviceType::Robot => {
-                if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
-                    channel.value_limits = meta.value_limits.clone();
-                    channel.supported_commands = meta.supported_commands.clone();
-                    channel.direct_joint_compatibility = meta.direct_joint_compatibility.clone();
+        let Some(info) = meta_by_channel.get(&channel.channel_type) else {
+            continue;
+        };
+        match (channel.kind, info) {
+            (DeviceType::Robot, ChannelKindInfo::Robot(robot)) => {
+                channel.value_limits = robot.value_limits.clone();
+                channel.supported_commands = robot.supported_commands.clone();
+                channel.direct_joint_compatibility = robot.direct_joint_compatibility.clone();
+            }
+            (DeviceType::Sensor, ChannelKindInfo::Sensor(sensor)) => {
+                channel.sensor_shape_hints = sensor.sensor_shape_hints.clone();
+                if channel.sample_rate_hz.is_none() {
+                    channel.sample_rate_hz = sensor.default_sample_rate_hz;
                 }
             }
-            DeviceType::Sensor => {
-                if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
-                    channel.sensor_shape_hints = meta.sensor_shape_hints.clone();
-                    if channel.sample_rate_hz.is_none() {
-                        channel.sample_rate_hz = meta.default_sample_rate_hz;
-                    }
-                }
-            }
-            DeviceType::Camera => {}
+            // Camera channels carry no refresh-relevant fields, and any
+            // mismatch between persisted `channel.kind` and the driver's
+            // fresh re-query is left to the wizard / validate path to
+            // surface — silently skip here so the refresher keeps making
+            // progress on the rest of the device.
+            _ => {}
         }
     }
 
     Ok(meta_by_channel)
 }
 
-fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntimeMeta> {
-    device
-        .get("channels")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|channel| {
-            let channel_type = value_as_string(channel.get("channel_type"))?;
+/// Parse one channel's query-JSON blob into a `ChannelKindInfo`.
+/// Returns `None` if the JSON is missing required fields (e.g. no `kind`
+/// tag) — the caller treats that as "ignore this channel."
+fn parse_channel_kind_info(channel: &Value) -> Option<ChannelKindInfo> {
+    let kind = value_as_string(channel.get("kind"))?;
+    match kind.as_str() {
+        "camera" => Some(ChannelKindInfo::Camera(Default::default())),
+        "robot" => {
             let value_limits = parse_query_value_limits(channel.get("value_limits"));
             let mut supported_states =
                 parse_query_supported_states(channel.get("supported_states"));
@@ -170,6 +170,18 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
                 parse_query_supported_commands(channel.get("supported_commands"));
             let direct_joint_compatibility =
                 parse_query_direct_joint_compatibility(channel.get("direct_joint_compatibility"));
+            Some(ChannelKindInfo::Robot(RobotChannelInfo {
+                supported_states,
+                supported_commands,
+                direct_joint_compatibility,
+                value_limits,
+                // Refresh path only needs the fields the controller copies
+                // back onto `DeviceChannelConfigV2`; the rest stay at their
+                // `Default` to avoid duplicating wire-only parsing here.
+                ..RobotChannelInfo::default()
+            }))
+        }
+        "sensor" => {
             let supported_sensor_kinds =
                 parse_query_supported_sensor_kinds(channel.get("supported_sensor_kinds"));
             let sensor_shape_hints =
@@ -178,18 +190,27 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
                 .get("default_sample_rate_hz")
                 .and_then(Value::as_f64)
                 .filter(|v| v.is_finite() && *v > 0.0);
-            Some((
-                channel_type,
-                ChannelRuntimeMeta {
-                    value_limits,
-                    supported_states,
-                    supported_commands,
-                    direct_joint_compatibility,
-                    supported_sensor_kinds,
-                    sensor_shape_hints,
-                    default_sample_rate_hz,
-                },
-            ))
+            Some(ChannelKindInfo::Sensor(SensorChannelInfo {
+                supported_sensor_kinds,
+                sensor_shape_hints,
+                default_sample_rate_hz,
+                ..SensorChannelInfo::default()
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelKindInfo> {
+    device
+        .get("channels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|channel| {
+            let channel_type = value_as_string(channel.get("channel_type"))?;
+            let info = parse_channel_kind_info(channel)?;
+            Some((channel_type, info))
         })
         .collect()
 }

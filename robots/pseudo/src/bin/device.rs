@@ -8,10 +8,10 @@ use rollio_bus::{
     STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, DeviceQueryChannel,
-    DeviceQueryDevice, DeviceQueryResponse, DeviceType, DirectJointCompatibility,
-    DirectJointCompatibilityPeer, RobotCommandKind, RobotMode, RobotStateKind, SensorStateKind,
-    StateValueLimitsEntry,
+    BinaryDeviceConfig, CameraChannelInfo, CameraChannelProfile, ChannelCommandDefaults,
+    ChannelKindInfo, DeviceQueryChannel, DeviceQueryDevice, DeviceQueryResponse, DeviceType,
+    DirectJointCompatibility, DirectJointCompatibilityPeer, RobotChannelInfo, RobotCommandKind,
+    RobotMode, RobotStateKind, SensorChannelInfo, SensorStateKind, StateValueLimitsEntry,
 };
 use rollio_types::messages::{
     CameraFrameHeader, ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15,
@@ -1362,43 +1362,32 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "color".into(),
-                kind: DeviceType::Camera,
                 available: true,
                 channel_label: Some("Pseudo Camera".into()),
                 default_name: Some("pseudo_camera".into()),
-                modes: vec!["enabled".into(), "disabled".into()],
-                profiles: ALL_PIXEL_FORMATS
-                    .iter()
-                    .flat_map(|&pf| {
-                        [(640, 480), (1280, 720)]
-                            .iter()
-                            .map(move |&(w, h)| CameraChannelProfile {
-                                width: w,
-                                height: h,
-                                fps: 30,
-                                pixel_format: pf,
-                                native_pixel_format: None,
-                                mjpeg_quality: None,
-                                h264_bitrate_bps: None,
-                                h264_gop: None,
-                                h264_preset: None,
-                                h264_tune: None,
-                                h264_profile: None,
-                            })
-                    })
-                    .collect(),
-                supported_states: Vec::new(),
-                supported_commands: Vec::new(),
-                supports_fk: false,
-                supports_ik: false,
-                dof: None,
-                default_control_frequency_hz: None,
-                direct_joint_compatibility: DirectJointCompatibility::default(),
-                defaults: ChannelCommandDefaults::default(),
-                value_limits: Vec::new(),
-                supported_sensor_kinds: Vec::new(),
-                sensor_shape_hints: Default::default(),
-                default_sample_rate_hz: None,
+                info: ChannelKindInfo::Camera(CameraChannelInfo {
+                    modes: vec!["enabled".into(), "disabled".into()],
+                    profiles: ALL_PIXEL_FORMATS
+                        .iter()
+                        .flat_map(|&pf| {
+                            [(640, 480), (1280, 720)]
+                                .iter()
+                                .map(move |&(w, h)| CameraChannelProfile {
+                                    width: w,
+                                    height: h,
+                                    fps: 30,
+                                    pixel_format: pf,
+                                    native_pixel_format: None,
+                                    mjpeg_quality: None,
+                                    h264_bitrate_bps: None,
+                                    h264_gop: None,
+                                    h264_preset: None,
+                                    h264_tune: None,
+                                    h264_profile: None,
+                                })
+                        })
+                        .collect(),
+                }),
                 optional_info: Default::default(),
             }],
         })
@@ -1419,7 +1408,6 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "arm".into(),
-                kind: DeviceType::Robot,
                 available: true,
                 channel_label: Some(if dof == 1 {
                     "Pseudo End Effector".into()
@@ -1431,47 +1419,45 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
                 } else {
                     "pseudo_arm".into()
                 }),
-                modes: vec![
-                    "free-drive".into(),
-                    "command-following".into(),
-                    "identifying".into(),
-                    "disabled".into(),
-                ],
-                profiles: Vec::new(),
-                supported_states: vec![
-                    RobotStateKind::JointPosition,
-                    RobotStateKind::JointVelocity,
-                    RobotStateKind::JointEffort,
-                    RobotStateKind::EndEffectorPose,
-                ],
-                supported_commands: vec![
-                    RobotCommandKind::JointPosition,
-                    RobotCommandKind::JointMit,
-                ],
-                supports_fk: true,
-                supports_ik: false,
-                dof: Some(dof),
-                default_control_frequency_hz: Some(60.0),
-                direct_joint_compatibility: DirectJointCompatibility {
-                    can_lead: vec![DirectJointCompatibilityPeer {
-                        driver: DRIVER_NAME.into(),
-                        channel_type: "arm".into(),
-                    }],
-                    can_follow: vec![DirectJointCompatibilityPeer {
-                        driver: DRIVER_NAME.into(),
-                        channel_type: "arm".into(),
-                    }],
-                },
-                defaults: ChannelCommandDefaults {
-                    joint_mit_kp: vec![1.0; dof as usize],
-                    joint_mit_kd: vec![0.1; dof as usize],
-                    parallel_mit_kp: Vec::new(),
-                    parallel_mit_kd: Vec::new(),
-                },
-                value_limits: pseudo_robot_value_limits(dof),
-                supported_sensor_kinds: Vec::new(),
-                sensor_shape_hints: Default::default(),
-                default_sample_rate_hz: None,
+                info: ChannelKindInfo::Robot(RobotChannelInfo {
+                    modes: vec![
+                        "free-drive".into(),
+                        "command-following".into(),
+                        "identifying".into(),
+                        "disabled".into(),
+                    ],
+                    supported_states: vec![
+                        RobotStateKind::JointPosition,
+                        RobotStateKind::JointVelocity,
+                        RobotStateKind::JointEffort,
+                        RobotStateKind::EndEffectorPose,
+                    ],
+                    supported_commands: vec![
+                        RobotCommandKind::JointPosition,
+                        RobotCommandKind::JointMit,
+                    ],
+                    supports_fk: true,
+                    supports_ik: false,
+                    dof: Some(dof),
+                    default_control_frequency_hz: Some(60.0),
+                    direct_joint_compatibility: DirectJointCompatibility {
+                        can_lead: vec![DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "arm".into(),
+                        }],
+                        can_follow: vec![DirectJointCompatibilityPeer {
+                            driver: DRIVER_NAME.into(),
+                            channel_type: "arm".into(),
+                        }],
+                    },
+                    defaults: ChannelCommandDefaults {
+                        joint_mit_kp: vec![1.0; dof as usize],
+                        joint_mit_kd: vec![0.1; dof as usize],
+                        parallel_mit_kp: Vec::new(),
+                        parallel_mit_kd: Vec::new(),
+                    },
+                    value_limits: pseudo_robot_value_limits(dof),
+                }),
                 optional_info: Default::default(),
             }],
         })
@@ -1486,24 +1472,15 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "imu".into(),
-                kind: DeviceType::Sensor,
                 available: true,
                 channel_label: Some("Pseudo IMU".into()),
                 default_name: Some("pseudo_imu".into()),
-                modes: vec!["enabled".into(), "disabled".into()],
-                profiles: Vec::new(),
-                supported_states: Vec::new(),
-                supported_commands: Vec::new(),
-                supports_fk: false,
-                supports_ik: false,
-                dof: None,
-                default_control_frequency_hz: None,
-                direct_joint_compatibility: DirectJointCompatibility::default(),
-                defaults: ChannelCommandDefaults::default(),
-                value_limits: Vec::new(),
-                supported_sensor_kinds: vec![SensorStateKind::ImuAccelGyro],
-                sensor_shape_hints: shape_hints,
-                default_sample_rate_hz: Some(200.0),
+                info: ChannelKindInfo::Sensor(SensorChannelInfo {
+                    modes: vec!["enabled".into(), "disabled".into()],
+                    supported_sensor_kinds: vec![SensorStateKind::ImuAccelGyro],
+                    sensor_shape_hints: shape_hints,
+                    default_sample_rate_hz: Some(200.0),
+                }),
                 optional_info: Default::default(),
             }],
         })
@@ -1521,24 +1498,15 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "tactile".into(),
-                kind: DeviceType::Sensor,
                 available: true,
                 channel_label: Some("Pseudo Tactile".into()),
                 default_name: Some("pseudo_tactile".into()),
-                modes: vec!["enabled".into(), "disabled".into()],
-                profiles: Vec::new(),
-                supported_states: Vec::new(),
-                supported_commands: Vec::new(),
-                supports_fk: false,
-                supports_ik: false,
-                dof: None,
-                default_control_frequency_hz: None,
-                direct_joint_compatibility: DirectJointCompatibility::default(),
-                defaults: ChannelCommandDefaults::default(),
-                value_limits: Vec::new(),
-                supported_sensor_kinds: vec![SensorStateKind::TactilePointCloud2],
-                sensor_shape_hints: shape_hints,
-                default_sample_rate_hz: Some(60.0),
+                info: ChannelKindInfo::Sensor(SensorChannelInfo {
+                    modes: vec!["enabled".into(), "disabled".into()],
+                    supported_sensor_kinds: vec![SensorStateKind::TactilePointCloud2],
+                    sensor_shape_hints: shape_hints,
+                    default_sample_rate_hz: Some(60.0),
+                }),
                 optional_info: Default::default(),
             }],
         })
@@ -1575,7 +1543,7 @@ fn print_query_human(response: &DeviceQueryResponse) {
     for device in &response.devices {
         println!("{} ({})", device.device_label, device.id);
         for channel in &device.channels {
-            println!("  - {} [{}]", channel.channel_type, kind_name(channel.kind));
+            println!("  - {} [{}]", channel.channel_type, kind_name(channel.kind()));
         }
     }
 }
@@ -1584,6 +1552,7 @@ fn kind_name(kind: DeviceType) -> &'static str {
     match kind {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
+        DeviceType::Sensor => "sensor",
     }
 }
 
