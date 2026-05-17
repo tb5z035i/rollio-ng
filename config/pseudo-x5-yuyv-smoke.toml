@@ -1,0 +1,79 @@
+# Smoke config: pseudo camera (YUYV) encoded via the Horizon X5 VPU backend.
+#
+# Requires running on an X5 SoC board with libmultimedia.so.1 present.
+# On non-X5 hosts the encoder will fail at session open (use the regular
+# pseudo-h264-yuyv-smoke.toml instead).
+
+project_name = "pseudo-x5-yuyv-smoke"
+mode = "intervention"
+pairings = []
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+chunk_size = 1000
+
+[[devices]]
+name = "camera_yuyv"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "camera_yuyv"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+preview_enabled = true
+
+[devices.channels.profile]
+width = 640
+height = 480
+fps = 30
+pixel_format = "yuyv"
+
+[devices.channels.record]
+video_codec = "h264"
+depth_codec = "rvl"
+video_backend = "horizon-x5"
+depth_backend = "cpu"
+chroma_subsampling = "420"
+queue_size = 32
+
+[devices.channels.preview_config]
+output_mode = "encoded"
+color_codec = "h264"
+depth_codec = "rvl"
+backend = "horizon-x5"
+width = 320
+height = 240
+fps = 15
+gop_seconds = 1
+crf = 32
+jpeg_quality = 30
+
+[assembler]
+missing_eos_timeout_ms = 5000
+staging_dir = "/dev/shm/rollio"
+
+[storage]
+backend = "local"
+output_path = "./output/pseudo-x5-yuyv-smoke"
+queue_size = 32
+
+[monitor]
+metrics_frequency_hz = 1.0
+
+[controller]
+shutdown_timeout_ms = 3000
+child_poll_interval_ms = 100
+
+[visualizer]
+port = 19090
+
+[ui]
+http_host = "0.0.0.0"
+http_port = 3000
+start_key = "s"
+stop_key = "e"
+keep_key = "k"
+discard_key = "x"

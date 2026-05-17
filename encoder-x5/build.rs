@@ -24,25 +24,37 @@ fn build_stub_so(vendor_dir: &Path, out_dir: &Path) {
     let stubs_c = vendor_dir.join("stubs.c");
     let obj = out_dir.join("stubs.o");
     let so = out_dir.join("libmultimedia.so");
-    let target = env::var("TARGET").unwrap_or_default();
-    let cc = cc_for_target(&target);
-    let s = Command::new(&cc).args(["-c", "-fPIC", "-o"])
-        .arg(&obj).arg(&stubs_c)
-        .arg(format!("-I{}", vendor_dir.display()))
-        .status().unwrap_or_else(|e| panic!("stub compile: {cc}: {e}"));
+
+    // Use the cc crate's compiler resolution — it handles all the
+    // CC_<target> env-var variants (hyphenated, underscored, etc.)
+    // and picks the correct cross-compiler automatically.
+    let compiler = cc::Build::new()
+        .file(&stubs_c)
+        .get_compiler();
+    let cc_path = compiler.path();
+
+    // Compile stubs.o — forward cc-crate's args (includes --target, etc.)
+    let mut compile = Command::new(cc_path);
+    compile.args(["-c", "-fPIC", "-o"]).arg(&obj).arg(&stubs_c)
+        .arg(format!("-I{}", vendor_dir.display()));
+    for arg in compiler.args() {
+        compile.arg(arg);
+    }
+    let s = compile.status().unwrap_or_else(|e| {
+        panic!("stub compile: {}: {e}", cc_path.display())
+    });
     assert!(s.success(), "stub compile failed");
-    let mut link = Command::new(&cc);
+
+    // Link into shared library.
+    let mut link = Command::new(cc_path);
     link.arg("-shared").arg("-o").arg(&so).arg(&obj)
         .arg("-Wl,-soname,libmultimedia.so.1");
-    if target.contains("aarch64") {
-        link.arg("--target=aarch64-linux-gnu");
+    for arg in compiler.args() {
+        link.arg(arg);
     }
-    let s = link.status().unwrap_or_else(|e| panic!("stub link: {cc}: {e}"));
+    link.arg("-nodefaultlibs");
+    let s = link.status().unwrap_or_else(|e| {
+        panic!("stub link: {}: {e}", cc_path.display())
+    });
     assert!(s.success(), "stub link failed");
-}
-fn cc_for_target(target: &str) -> String {
-    let env_key = format!("CC_{}", target.replace('-', "_"));
-    if let Ok(v) = env::var(&env_key) { return v; }
-    if let Ok(v) = env::var("CC") { return v; }
-    "clang".to_string()
 }

@@ -326,6 +326,7 @@ pub(crate) fn build_encoder_spec(
     current_exe_dir: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
     let inline_config = toml::to_string(config)?;
+    let binary = encoder_binary_for(config, current_exe_dir);
     Ok(ChildSpec {
         id: format!(
             "encoder-{}-{}",
@@ -333,7 +334,7 @@ pub(crate) fn build_encoder_spec(
             config.channel_id.replace('/', "-")
         ),
         command: ResolvedCommand {
-            program: resolve_program(current_exe_dir.join("rollio-encoder"), "rollio-encoder"),
+            program: resolve_program(current_exe_dir.join(binary), binary),
             args: vec![
                 OsString::from("run"),
                 OsString::from("--config-inline"),
@@ -343,6 +344,36 @@ pub(crate) fn build_encoder_spec(
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
     })
+}
+
+/// Select the encoder binary based on the configured backend.
+/// `HorizonX5` routes to the dedicated `rollio-encoder-x5` binary;
+/// `Auto` checks whether the X5 binary is installed (it has higher
+/// priority than the software backends); all other backends use the
+/// default `rollio-encoder`.
+fn encoder_binary_for(config: &EncoderRuntimeConfigV2, exe_dir: &Path) -> &'static str {
+    use rollio_types::config::EncoderBackend;
+    let backend = config
+        .recording
+        .as_ref()
+        .map(|r| r.backend)
+        .or_else(|| config.preview.as_ref().map(|p| p.backend))
+        .unwrap_or_default();
+    match backend {
+        EncoderBackend::HorizonX5 => "rollio-encoder-x5",
+        EncoderBackend::Auto => {
+            // Under Auto, prefer the X5 binary if it exists on disk.
+            // The binary's own registry will probe hardware availability
+            // at runtime and fail gracefully if the VPU is absent.
+            let x5_path = exe_dir.join("rollio-encoder-x5");
+            if x5_path.exists() {
+                "rollio-encoder-x5"
+            } else {
+                "rollio-encoder"
+            }
+        }
+        _ => "rollio-encoder",
+    }
 }
 
 pub(crate) fn build_assembler_spec(

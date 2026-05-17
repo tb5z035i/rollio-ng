@@ -31,7 +31,7 @@ use rollio_types::messages::{
     ENCODED_PACKET_FLAG_KEYFRAME,
 };
 
-use rollio_encoder::backend::color::ColorCodec;
+use rollio_encoder::backend::color::{ColorBackendId, ColorCodec, ColorEncoderBackend};
 use rollio_encoder::codec::{encoded_codec_id, CodecSession, CodecSessionParams, EncodedPacketSink, OwnedFrame};
 use rollio_encoder::error::{EncoderError, Result};
 use rollio_encoder::media::EncodeMetrics;
@@ -282,6 +282,32 @@ impl HorizonX5Backend {
         first_frame: &OwnedFrame,
     ) -> Result<Box<dyn CodecSession>> {
         HorizonX5Session::new(params, first_frame)
+    }
+}
+
+impl ColorEncoderBackend for HorizonX5Backend {
+    fn id(&self) -> ColorBackendId {
+        ColorBackendId::HorizonX5
+    }
+
+    fn priority(&self) -> u32 {
+        self.priority()
+    }
+
+    fn available(&self) -> bool {
+        self.available()
+    }
+
+    fn supports(&self, codec: ColorCodec, input: PixelFormat) -> bool {
+        self.supports(codec, input)
+    }
+
+    fn open_session(
+        &self,
+        params: &CodecSessionParams<'_>,
+        first_frame: &OwnedFrame,
+    ) -> Result<Box<dyn CodecSession>> {
+        self.open_session(params, first_frame)
     }
 }
 

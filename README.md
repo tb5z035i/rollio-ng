@@ -1,242 +1,250 @@
 # Rollio
 
-CLI framework for hardware discovery, setup, and data collection in robotic
-teleoperation workflows.  Records camera streams and robot joint data into
-structured LeRobot v2.1/v3.0 episode datasets.
+Rollio is a local CLI framework for robotic teleoperation data collection. The
+`rollio` controller starts and supervises device drivers, encoders, routing,
+preview, UI, episode assembly, storage, and monitoring processes. Processes
+communicate through iceoryx2 shared-memory IPC.
 
-See `design/` for architecture docs and sprint plans.
+The primary runtime flow is:
 
-## Prerequisites
+1. Create or edit a project config.
+2. Run `rollio collect --config <config.toml>`.
+3. Use the terminal/web UI to start, stop, keep, and discard episodes.
+4. Write collected episodes to the configured storage backend.
 
-### Build dependencies
+## Modules
 
-| Tool       | Minimum version | Purpose              |
-|------------|-----------------|----------------------|
-| Rust       | 1.88+           | Cargo workspace      |
-| CMake      | 3.22+           | C++ modules          |
-| g++ / clang| C++17 support   | C++ modules          |
-| NASM       | recent          | `libjpeg-turbo` SIMD build used by `turbojpeg` |
-| pkg-config | recent          | native `libav*` discovery for `rollio-encoder` |
-| Node.js    | 18+             | UI (TypeScript/Ink)  |
-| npm        | 9+              | UI dependency mgmt   |
+### Rust Workspace
 
-### Optional (development)
+The root `Cargo.toml` workspace contains the main CLI, service binaries, device
+drivers, storage/episode writers, and test tools:
 
-| Tool          | Purpose                          |
-|---------------|----------------------------------|
-| clang-format  | C++ auto-formatting              |
-| clang-tidy    | C++ static analysis              |
-| ruff          | Python linting & formatting      |
-| pre-commit    | Git hook runner                  |
+| Path | Module |
+| --- | --- |
+| `controller/` | `rollio`, the orchestration CLI. Supports `setup` and `collect`. |
+| `rollio-types/` | Shared config schema, message types, and runtime config builders. |
+| `rollio-bus/` | Shared iceoryx2 topic and service naming helpers. |
+| `visualizer/` | `rollio-visualizer`, preview stream bridge. |
+| `web-gateway/` | `rollio-web-gateway`, HTTP/WebSocket gateway for the web UI. |
+| `control-server/` | `rollio-control-server`, UI command/state bridge. |
+| `teleop-router/` | `rollio-teleop-router`, leader/follower command routing. |
+| `encoder/` | `rollio-encoder`, per-camera record/preview encoding. |
+| `encoder-x5/` | `rollio-encoder-x5`, target-specific encoder package. |
+| `episode-lerobot/` | `rollio-episode-lerobot`, LeRobot episode assembly. |
+| `episode-mcap/` | `rollio-episode-mcap`, MCAP episode assembly. |
+| `storage-local/` | `rollio-storage-local`, local filesystem storage worker. |
+| `monitor/` | `rollio-monitor`, metrics and threshold monitoring. |
+| `robots/pseudo/` | `rollio-device-pseudo`, no-hardware simulated camera/robot driver. |
+| `robots/airbot_play_rust/` | `rollio-device-airbot-play`, AIRBOT Play driver. |
+| `cameras/v4l2/` | `rollio-device-v4l2`, Linux V4L2 camera driver. |
+| `test/test-publisher/` | `rollio-test-publisher`, synthetic IPC publisher. |
+| `test/bus-tap/` | `rollio-bus-tap`, IPC inspection/debug tool. |
 
-## Getting started
+### Native, UI, And Packaging Modules
+
+| Path | Module |
+| --- | --- |
+| `cameras/` | C++ camera drivers built with CMake. Currently ships `rollio-device-realsense`. |
+| `cpp/common/` | Shared C++ interop headers. |
+| `ui/terminal/` | React Ink terminal UI and native ASCII preview addon. |
+| `ui/web/` | Web UI bundle served by the gateway. |
+| `robots/nero/` | Python Nero driver package, built as a wheel during packaging. |
+| `config/` | Example project configs. |
+| `debian/` and `build.sh` | Debian package staging and packaging. |
+| `third_party/` | Git submodules used by the build, including iceoryx2, ascii-video-renderer, librealsense, FFmpeg, and AIRBOT dependencies. |
+
+## Build
+
+Initialize submodules before building from a fresh checkout:
 
 ```bash
-# Clone with submodules
-git clone --recursive <repo-url>
-cd rollio-ng
-
-# Debian/Ubuntu build tools
-# `clang`/`libclang-dev`/`llvm-dev` are required for bindgen-based builds
-# such as `iceoryx2` 0.8.1+ and the AIRBOT driver stack.
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential \
-  cmake \
-  nasm \
-  pkg-config \
-  clang \
-  libclang-dev \
-  llvm-dev \
-  libavcodec-dev \
-  libavformat-dev \
-  libavutil-dev \
-  libavfilter-dev \
-  libavdevice-dev \
-  libswscale-dev
-
-# Rust (debug). For release binaries, use `cargo build --workspace --release`
-# or `make build BUILD_TYPE=release`.
-cargo build --workspace
-cargo test --workspace
-# Camera drivers (C++)
-cmake -B cameras/build -S cameras -DCMAKE_CXX_COMPILER=g++
-cmake --build cameras/build
-ctest --test-dir cameras/build --output-on-failure
-
-# UI
-cd ui/terminal && npm install && npm run build && cd ../..
-
-# AIRBOT wrapper + transport validation
-cargo test -p rollio-device-airbot-play
-cargo test --offline --manifest-path third_party/airbot-play-rust/Cargo.toml transport::iceoryx2::tests --lib
-cargo run --manifest-path third_party/airbot-play-rust/Cargo.toml --bin airbot-play-iceoryx2 -- --interface can0
-
-# AIRBOT hardware smoke (requires a configured CAN-connected arm)
-# Generate `config.toml` once via `cargo run -p rollio -- setup`, then:
-cargo run -p rollio -- collect --config config.toml
+git submodule update --init --recursive
 ```
 
-If `cargo build --workspace`, `make build`, or `make` fails while compiling `turbojpeg-sys`
-with `No CMAKE_ASM_NASM_COMPILER could be found`, install `nasm` and retry.
-
-If an `iceoryx2` or `airbot-play-rust` build fails during bindgen with errors
-like `fatal error: 'stddef.h' file not found`, install:
+Install host build dependencies once:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y clang libclang-dev llvm-dev
+make deps
 ```
 
-If `rollio-encoder` fails to compile with missing `libav*` pkg-config metadata, install the
-development libraries instead of the full `ffmpeg` package:
+Rust 1.88 or newer is required. Rust and Node.js are expected to come from your
+normal toolchain manager (`rustup`, `nvm`, system packages, etc.); `make deps`
+installs the apt-side native dependencies.
+
+Build the full stack for the host architecture:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y pkg-config libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev
+make build
+make build BUILD_TYPE=release
 ```
 
-## Pre-commit hooks (optional)
+Useful targeted builds:
 
 ```bash
-pip install pre-commit
-pre-commit install
+make rust-build
+make cpp-build
+make ui-build
 ```
 
-This enables automatic checks before each commit:
-Rust formatting/linting, C++ formatting, Python linting/formatting,
-and general file hygiene (trailing whitespace, TOML/YAML syntax, etc.).
+Build parameters:
 
-## Sprint 2 Validation
+| Variable | Values | Meaning |
+| --- | --- | --- |
+| `BUILD_TYPE` | `debug` or `release` | Selects Cargo profile, CMake build type, and output subdirectory. Defaults to `debug`. |
+| `TARGET_ARCH` | `amd64` or `arm64` | Selects native or cross target. Defaults to the host architecture. |
 
-```bash
-# Full validation loop
-make test
+## Cross-Build For Arm64
 
-# Controller-managed pseudo-device smoke
-cargo run -p rollio -- collect --config config/config.example.toml
-```
+### Ubuntu 22.04 Arm64 Package
 
-The smoke run launches the Sprint 2 stack through `rollio collect` using
-`config/config.example.toml`. The expected checkpoint is that the pseudo
-camera previews and robot status appear in the TUI, and the stack shuts
-down cleanly when you press `Ctrl+C`.
+Use the Docker builder when the target package must run on Ubuntu 22.04 arm64.
+This is the supported path for that target because the package is built against
+Jammy userspace inside `Dockerfile.cross-jammy`.
 
-## Packaging (Ubuntu 24.04)
-
-Rust and Node on `PATH` (rustup, nvm), `dpkg-dev` for `dpkg-deb` + `dpkg-shlibdeps`, and `uv` (e.g. `pipx install uv`) for the wheel. Optional convenience: `make deps` for the apt side.
+Build the image:
 
 ```bash
-make build BUILD_TYPE=release             # rust + C++ + UI (optimized)
-make package BUILD_TYPE=release           # pack -> deb + wheel (no recompile)
-```
-
-### Cross-compile to linux/arm64
-
-The Docker path is the most reproducible way to build an arm64 package from an
-amd64 host. Rebuild the image after changing `Dockerfile.cross-jammy`.
-
-```bash
-# Build the cross toolchain image.
 docker build -f Dockerfile.cross-jammy -t rollio-cross-jammy .
+```
 
-# Register arm64 QEMU/binfmt on the Docker host once.
-# Required by target-arch build probes such as ffmpeg-sys-next's `check.c`;
-# without it, cross builds can fail with "Exec format error".
+Register arm64 QEMU/binfmt on the Docker host once. This is required by
+target-architecture build probes that execute arm64 binaries during the build.
+
+```bash
 docker run --privileged --rm tonistiigi/binfmt --install arm64
+```
 
-# Build + package from the checked-out repo.
-# The image CMD runs:
-#   make build BUILD_TYPE=release TARGET_ARCH=arm64
-#   make package BUILD_TYPE=release TARGET_ARCH=arm64
-docker run --rm -it \
+Build and package from the checked-out repo:
+
+```bash
+docker run --rm -it --user "$(id -u):$(id -g)" \
   -v "$PWD":/workspace \
   -w /workspace \
   rollio-cross-jammy
-
-# Equivalent explicit form, useful when overriding commands/env.
-docker run --rm -it \
-  -v "$PWD":/workspace \
-  -w /workspace \
-  rollio-cross-jammy \
-  bash -lc 'make build BUILD_TYPE=release TARGET_ARCH=arm64 && make package BUILD_TYPE=release TARGET_ARCH=arm64'
 ```
 
-Without Docker, install the cross dependencies on the host once, then build and
-package with the same `BUILD_TYPE` and `TARGET_ARCH`.
+The image defaults to `BUILD_TYPE=release` and `TARGET_ARCH=arm64`. It runs
+`make build` followed by `make package`, producing
+`dist/rollio_<version>_arm64.deb` and the Nero wheel.
+
+### Host Cross-Build
+
+For host-managed arm64 cross-builds, install arm64 build dependencies once on an
+amd64 Ubuntu host:
 
 ```bash
 make deps TARGET_ARCH=arm64
+rustup target add aarch64-unknown-linux-gnu
+```
+
+Build and package for Linux arm64:
+
+```bash
 make build BUILD_TYPE=release TARGET_ARCH=arm64
 make package BUILD_TYPE=release TARGET_ARCH=arm64
 ```
 
-The arm64 package is written to `dist/rollio_*_arm64.deb`. Run it on an arm64
-device by installing the deb there:
+`make test TARGET_ARCH=arm64` is compile-only for Rust/C++ and skips UI/Python
+runtime tests when the host cannot execute arm64 binaries.
+
+## Package Products
+
+`make package` is a pure packaging step. Run `make build` first with the same
+`BUILD_TYPE` and `TARGET_ARCH`.
 
 ```bash
-scp dist/rollio_*_arm64.deb <arm64-host>:/tmp/
-ssh <arm64-host>
-sudo apt install /tmp/rollio_*_arm64.deb
+make build BUILD_TYPE=release
+make package BUILD_TYPE=release
+```
+
+The Nero wheel packaging step requires either `uv` or Python's `build` module.
+
+Package outputs are written under `dist/`:
+
+| Product | Contents |
+| --- | --- |
+| `rollio_<version>_<arch>.deb` | Runtime package with Rollio binaries, C++ camera drivers, UI bundles, and Debian metadata. |
+| `rollio_device_nero-<version>-py3-none-any.whl` | Python wheel for the Nero hardware driver. |
+
+Build outputs used before packaging include:
+
+| Output | Contents |
+| --- | --- |
+| `target/<profile>/` | Host Rust binaries for debug or release builds. |
+| `target/aarch64-unknown-linux-gnu/<profile>/` | Cross-built arm64 Rust binaries. |
+| `cameras/build-<arch>-<build_type>/` | C++ camera driver build tree. |
+| `ui/terminal/dist/` | Built terminal UI. |
+| `ui/web/dist/` | Built web UI. |
+
+## Run
+
+For in-tree development, export the build environment after `make build`:
+
+```bash
+eval "$(make set-env)"
+rollio setup --sim-pseudo 4 --output config.toml
+rollio collect --config config.toml
+```
+
+For a release in-tree run, use matching build parameters:
+
+```bash
+make build BUILD_TYPE=release
+eval "$(make set-env BUILD_TYPE=release)"
+rollio collect --config config/config.example.toml
+```
+
+After installing the Debian package, the binaries are on `PATH`:
+
+```bash
+sudo apt install ./dist/rollio_*_amd64.deb
 rollio collect --config /path/to/config.toml
 ```
 
-Produces in `dist/`:
-
-- `rollio_*.deb` — all Rust binaries (including `rollio-encoder`) + UI bundles
-- `rollio_device_nero-*.whl` — Nero hardware driver wheel (operators install into a venv)
-
-See [`packaging/README.md`](packaging/README.md) for the operator install snippet, env vars, and `./build.sh` subcommands.
-
-## Sprint 4 Encoder Validation
-
-`rollio-encoder` now supports:
-
-- human-friendly `probe`, with structured output available from `probe --json`
-- CPU-backed `h264`, `h265`, and `av1` video encoding/decoding through native `libav`
-- `rvl` as the one-channel lossless `depth16` backend via `third_party/rvl-rust`
-- bounded queue backpressure reporting on iceoryx2
-
-Focused validation commands:
+On an arm64 target, install the arm64 package produced by the cross-build:
 
 ```bash
-# Human-friendly capability summary
-cargo run -p rollio-encoder -- probe
-
-# Machine-readable capability report
-cargo run -p rollio-encoder -- probe --json
-
-# Encoder tests, including report-only throughput/resource output
-cargo test -p rollio-encoder -- --nocapture
-
-# Optional hardware-specific round-trip tests
-cargo test -p rollio-encoder nvidia_video_codecs_round_trip_when_available -- --ignored --nocapture
-cargo test -p rollio-encoder vaapi_video_codecs_round_trip_when_available -- --ignored --nocapture
+sudo apt install ./dist/rollio_*_arm64.deb
+rollio collect --config /path/to/config.toml
 ```
 
-The encoder test suite reports benchmark-style metrics such as elapsed time,
-compression ratio, and resident memory. GPU/video-engine metrics remain
-best-effort and host-dependent; the CPU path is always validated, while the
-NVIDIA and VAAPI round-trip tests are capability-gated and ignored by default.
+## Config Example
 
-## Project layout
+[`config/config.example.toml`](config/config.example.toml) is the canonical
+annotated config example. It is loaded by tests and is intended to run on any
+host because it uses the in-repo `pseudo` driver instead of physical hardware.
 
+Use it for a smoke run:
+
+```bash
+make build
+eval "$(make set-env)"
+rollio collect --config config/config.example.toml
 ```
-rollio-bus/           Shared iceoryx2 topic/service naming helpers (Rust lib)
-rollio-types/         Shared iceoryx2 message types + controller config surface
-controller/           CLI entry point and process orchestrator (Rust)
-visualizer/           iceoryx2 <-> WebSocket bridge (Rust)
-teleop-router/        Leader-follower command forwarding (Rust)
-encoder/              Video encoding per camera stream (Rust)
-episode-lerobot/      LeRobot-format episode staging from video + state (`rollio-episode-lerobot`, Rust)
-storage-local/        Local filesystem episode persistence (`rollio-storage-local`, Rust)
-monitor/              Health/performance metrics evaluator (Rust)
-test/test-publisher/    Synthetic iceoryx2 data publisher (Rust)
-cameras/              In-repo camera drivers + camera-driver extension docs
-robots/               In-repo robot drivers + robot-driver extension docs
-cpp/                  Shared C++ interop headers and legacy wrapper entrypoint
-ui/terminal/          Terminal UI built with React/Ink (TypeScript)
-config/               Example configuration files
-design/               Architecture docs and sprint plans
-third_party/          Submodules: iceoryx2, ascii-video-renderer
+
+The example shows the supported top-level config areas:
+
+| Section | Purpose |
+| --- | --- |
+| `project_name`, `mode` | Project identity and collection mode. |
+| `[episode]` | Dataset format, nominal FPS, and chunking. |
+| `[controller]` | Child process shutdown and polling behavior. |
+| `[visualizer]` | Preview bridge port. |
+| `[[devices]]` and `[[devices.channels]]` | Camera and robot devices, channel profiles, record encoders, and preview encoders. |
+| `[[pairings]]` | Leader/follower teleoperation mapping. |
+| `[ui]` | Operator keybindings and optional web host/port overrides. |
+| `[assembler]` | Episode staging and end-of-stream timeout. |
+| `[storage]` | Local or HTTP storage destination. |
+| `[monitor]` | Metrics polling and threshold warnings. |
+
+Generate a new config interactively with:
+
+```bash
+rollio setup --output config.toml
+```
+
+For hardware-free setup testing, inject simulated pseudo devices:
+
+```bash
+rollio setup --sim-pseudo 4 --output config.toml
 ```

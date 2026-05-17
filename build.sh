@@ -75,6 +75,12 @@ CAMERA_BINS=(
     "realsense/rollio-device-realsense"
 )
 
+# On arm64, include the Horizon X5 VPU encoder binary.
+if [[ "$DEB_ARCH" == "arm64" ]]; then
+    CORE_BINS+=( rollio-encoder-x5 )
+    SHLIBDEPS_EXCLUDE_BINS+=( rollio-encoder-x5 )
+fi
+
 CORE_STAGING="$STAGING/rollio"
 
 # debian/ is the static deb root template. It carries DEBIAN/ metadata and
