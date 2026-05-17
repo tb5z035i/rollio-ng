@@ -14,10 +14,20 @@ const FPS_EMA_ALPHA: f64 = 0.2;
 pub struct StreamInfoRegistry {
     camera_order: Vec<String>,
     robot_order: Vec<String>,
+    sensor_order: Vec<String>,
+    sensors: HashMap<String, SensorRuntimeInfo>,
     output_mode: &'static str,
     active_preview_width: u32,
     active_preview_height: u32,
     cameras: HashMap<String, CameraRuntimeInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct SensorRuntimeInfo {
+    channel_type: String,
+    sample_rate_hz: f64,
+    recorded_states: Vec<String>,
+    online: bool,
 }
 
 #[derive(Debug, Default)]
@@ -57,6 +67,17 @@ pub struct StreamInfoSnapshot {
     pub active_preview_height: u32,
     pub cameras: Vec<CameraInfoSnapshot>,
     pub robots: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sensors: Vec<SensorInfoSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SensorInfoSnapshot {
+    pub name: String,
+    pub channel_type: String,
+    pub sample_rate_hz: f64,
+    pub recorded_states: Vec<String>,
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,10 +124,43 @@ impl StreamInfoRegistry {
         Self {
             camera_order,
             robot_order: robot_names.to_vec(),
+            sensor_order: Vec::new(),
+            sensors: HashMap::new(),
             output_mode,
             active_preview_width,
             active_preview_height,
             cameras,
+        }
+    }
+
+    /// Register a sensor channel for inclusion in `stream_info.sensors`.
+    /// Idempotent; calling twice with the same `name` overwrites the
+    /// previous entry and keeps the order stable.
+    pub fn register_sensor(
+        &mut self,
+        name: impl Into<String>,
+        channel_type: impl Into<String>,
+        sample_rate_hz: f64,
+        recorded_states: Vec<String>,
+    ) {
+        let name = name.into();
+        if !self.sensor_order.iter().any(|n| n == &name) {
+            self.sensor_order.push(name.clone());
+        }
+        self.sensors.insert(
+            name,
+            SensorRuntimeInfo {
+                channel_type: channel_type.into(),
+                sample_rate_hz,
+                recorded_states,
+                online: false,
+            },
+        );
+    }
+
+    pub fn observe_sensor_sample(&mut self, name: &str) {
+        if let Some(sensor) = self.sensors.get_mut(name) {
+            sensor.online = true;
         }
     }
 
@@ -193,6 +247,20 @@ impl StreamInfoRegistry {
                 scaling_locked: camera.map(|c| c.scaling_locked).unwrap_or(false),
             });
         }
+        let sensors = self
+            .sensor_order
+            .iter()
+            .filter_map(|name| {
+                let entry = self.sensors.get(name)?;
+                Some(SensorInfoSnapshot {
+                    name: name.clone(),
+                    channel_type: entry.channel_type.clone(),
+                    sample_rate_hz: entry.sample_rate_hz,
+                    recorded_states: entry.recorded_states.clone(),
+                    online: entry.online,
+                })
+            })
+            .collect();
         StreamInfoSnapshot {
             msg_type: "stream_info",
             server_timestamp_ms: now_ms,
@@ -201,6 +269,7 @@ impl StreamInfoRegistry {
             active_preview_height: self.active_preview_height,
             cameras,
             robots: self.robot_order.clone(),
+            sensors,
         }
     }
 

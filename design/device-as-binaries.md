@@ -8,8 +8,11 @@ common executable interface.
 ## Core Model
 
 - A physical device can expose multiple channels.
-- Each channel has a `kind`, such as `camera` or `robot`. `imu` can be added in
-  the future.
+- Each channel has a `kind`: `camera`, `robot`, or `sensor`. Sensor channels
+  publish self-describing samples on `{bus_root}/{channel_type}/samples/{kind}`
+  topics (see `design/sensor-channel-kind.md` for the full plan). The initial
+  sensor variants are `imu_accel_gyro` (6-float accel+gyro) and
+  `tactile_point_cloud2` (N x 6 float point cloud with per-point force).
 - Channels use a fixed `channel_type` vocabulary defined by the driver family,
   not a user-defined runtime name.
   - AIRBOT family examples: `arm`, `g2`, `e2`

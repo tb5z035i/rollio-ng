@@ -221,6 +221,7 @@ mod tests {
                 state_topic: "robot_a/arm/states/joint_position".into(),
                 value_len: 6,
             }],
+            sensor_observations: Vec::new(),
             actions: Vec::new(),
             embedded_config_toml: String::new(),
         }
@@ -255,6 +256,7 @@ mod tests {
             start_time_us: 1_000_000,
             stop_time_us: 1_010_000,
             observation_samples,
+            sensor_samples: BTreeMap::new(),
             action_samples: BTreeMap::new(),
             camera_streams: BTreeMap::new(),
         };

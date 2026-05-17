@@ -124,6 +124,34 @@ pub fn channel_command_service_name(
     format!("{bus_root}/{channel_type}/commands/{command_kind}")
 }
 
+/// Per-sensor sample topic. Dynamic-payload `publish_subscribe::<[u8]>()`
+/// service carrying a `SensorFrameHeader` user header. The path is
+/// deliberately `samples/{kind}` (not `states/{kind}`) so the service
+/// definition does not collide with the fixed-size robot state
+/// services on the same `{bus_root}/{channel_type}` prefix.
+pub fn channel_sample_service_name(
+    bus_root: &str,
+    channel_type: &str,
+    sensor_kind: &str,
+) -> String {
+    format!("{bus_root}/{channel_type}/samples/{sensor_kind}")
+}
+
+/// Subscriber buffer for sensor sample topics. Independent from the
+/// robot-state `STATE_BUFFER` so high-rate sensors (e.g. 1 kHz IMU)
+/// can be tuned without rippling into the robot path.
+pub const SAMPLE_BUFFER: usize = 256;
+
+/// Default `max_publishers` cap for sensor sample services.
+pub const SAMPLE_MAX_PUBLISHERS: usize = 4;
+
+/// Default `max_subscribers` cap for sensor sample services. Headroom
+/// for assembler + visualizer + diagnostics tap.
+pub const SAMPLE_MAX_SUBSCRIBERS: usize = 4;
+
+/// Default `max_nodes` cap for sensor sample services.
+pub const SAMPLE_MAX_NODES: usize = 8;
+
 // ---------------------------------------------------------------------------
 // Encoded packet topics
 // ---------------------------------------------------------------------------

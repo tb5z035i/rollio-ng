@@ -12,7 +12,7 @@ use crate::muxer;
 use crate::packets::RecordingStreamBuffer;
 use crate::raw;
 use rollio_types::config::{
-    container_for, AssemblerRuntimeConfigV2, RobotCommandKind, RobotStateKind,
+    container_for, AssemblerRuntimeConfigV2, RobotCommandKind, RobotStateKind, SensorStateKind,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -23,6 +23,12 @@ use std::path::{Path, PathBuf};
 pub(crate) struct ObservationSample {
     pub timestamp_us: u64,
     pub values: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SensorSample {
+    pub timestamp_us: u64,
+    pub values: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +43,7 @@ pub(crate) struct EpisodeAssemblyInput {
     pub start_time_us: u64,
     pub stop_time_us: u64,
     pub observation_samples: BTreeMap<String, Vec<ObservationSample>>,
+    pub sensor_samples: BTreeMap<String, Vec<SensorSample>>,
     pub action_samples: BTreeMap<String, Vec<ActionSample>>,
     /// Per-channel packet stream gathered by the assembler runtime.
     /// Each buffer must have its `Config` set, all packets in
@@ -110,6 +117,10 @@ pub(crate) fn stage_episode(
 
 pub(crate) fn observation_key(channel_id: &str, state_kind: RobotStateKind) -> String {
     format!("{channel_id}/{}", state_kind.topic_suffix())
+}
+
+pub(crate) fn sensor_observation_key(channel_id: &str, sensor_kind: SensorStateKind) -> String {
+    format!("sensor/{channel_id}/{}", sensor_kind.topic_suffix())
 }
 
 pub(crate) fn action_key(channel_id: &str, command_kind: RobotCommandKind) -> String {
