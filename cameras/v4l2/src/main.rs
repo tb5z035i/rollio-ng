@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{channel_frames_service_name, CONTROL_EVENTS_SERVICE};
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, DeviceQueryChannel, DeviceQueryDevice,
-    DeviceQueryResponse, DeviceType,
+    BinaryDeviceConfig, CameraChannelInfo, CameraChannelProfile, ChannelKindInfo,
+    DeviceQueryChannel, DeviceQueryDevice, DeviceQueryResponse, DeviceType,
 };
 use rollio_types::messages::{CameraFrameHeader, ControlEvent, PixelFormat};
 use serde::Serialize;
@@ -532,21 +532,13 @@ fn query_device(path: &str) -> Result<DeviceQueryResponse, DynError> {
             optional_info: Default::default(),
             channels: vec![DeviceQueryChannel {
                 channel_type: "color".into(),
-                kind: DeviceType::Camera,
                 available: true,
                 channel_label: Some("V4L2 Camera".into()),
                 default_name: Some("camera".into()),
-                modes: vec!["enabled".into(), "disabled".into()],
-                profiles,
-                supported_states: Vec::new(),
-                supported_commands: Vec::new(),
-                supports_fk: false,
-                supports_ik: false,
-                dof: None,
-                default_control_frequency_hz: None,
-                direct_joint_compatibility: Default::default(),
-                defaults: Default::default(),
-                value_limits: Vec::new(),
+                info: ChannelKindInfo::Camera(CameraChannelInfo {
+                    modes: vec!["enabled".into(), "disabled".into()],
+                    profiles,
+                }),
                 optional_info: Default::default(),
             }],
         }],

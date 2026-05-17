@@ -13,9 +13,10 @@ use rollio_bus::{
     STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, ChannelCommandDefaults, DeviceQueryChannel, DeviceQueryDevice,
-    DeviceQueryResponse, DeviceType, DirectJointCompatibility, DirectJointCompatibilityPeer,
-    RobotCommandKind, RobotMode, RobotStateKind, StateValueLimitsEntry,
+    BinaryDeviceConfig, ChannelCommandDefaults, ChannelKindInfo, DeviceQueryChannel,
+    DeviceQueryDevice, DeviceQueryResponse, DeviceType, DirectJointCompatibility,
+    DirectJointCompatibilityPeer, RobotChannelInfo, RobotCommandKind, RobotMode, RobotStateKind,
+    StateValueLimitsEntry,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15, ParallelMitCommand2,
@@ -339,44 +340,44 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
         };
         let mut channels = vec![DeviceQueryChannel {
             channel_type: "arm".into(),
-            kind: DeviceType::Robot,
             available: true,
             channel_label: Some("AIRBOT Play".into()),
             default_name: Some("airbot_play_arm".into()),
-            modes: vec![
-                "free-drive".into(),
-                "command-following".into(),
-                "identifying".into(),
-                "disabled".into(),
-            ],
-            profiles: Vec::new(),
-            supported_states: vec![
-                RobotStateKind::JointPosition,
-                RobotStateKind::JointVelocity,
-                RobotStateKind::JointEffort,
-                RobotStateKind::EndEffectorPose,
-            ],
-            supported_commands: vec![
-                RobotCommandKind::JointPosition,
-                RobotCommandKind::JointMit,
-                RobotCommandKind::EndPose,
-            ],
-            supports_fk: true,
-            supports_ik: true,
-            dof: Some(ARM_DOF as u32),
-            default_control_frequency_hz: Some(250.0),
-            direct_joint_compatibility: DirectJointCompatibility {
-                can_lead: vec![DirectJointCompatibilityPeer {
-                    driver: DRIVER_NAME.into(),
-                    channel_type: "arm".into(),
-                }],
-                can_follow: vec![DirectJointCompatibilityPeer {
-                    driver: DRIVER_NAME.into(),
-                    channel_type: "arm".into(),
-                }],
-            },
-            defaults: ChannelCommandDefaults::default(),
-            value_limits: arm_value_limits(),
+            info: ChannelKindInfo::Robot(RobotChannelInfo {
+                modes: vec![
+                    "free-drive".into(),
+                    "command-following".into(),
+                    "identifying".into(),
+                    "disabled".into(),
+                ],
+                supported_states: vec![
+                    RobotStateKind::JointPosition,
+                    RobotStateKind::JointVelocity,
+                    RobotStateKind::JointEffort,
+                    RobotStateKind::EndEffectorPose,
+                ],
+                supported_commands: vec![
+                    RobotCommandKind::JointPosition,
+                    RobotCommandKind::JointMit,
+                    RobotCommandKind::EndPose,
+                ],
+                supports_fk: true,
+                supports_ik: true,
+                dof: Some(ARM_DOF as u32),
+                default_control_frequency_hz: Some(250.0),
+                direct_joint_compatibility: DirectJointCompatibility {
+                    can_lead: vec![DirectJointCompatibilityPeer {
+                        driver: DRIVER_NAME.into(),
+                        channel_type: "arm".into(),
+                    }],
+                    can_follow: vec![DirectJointCompatibilityPeer {
+                        driver: DRIVER_NAME.into(),
+                        channel_type: "arm".into(),
+                    }],
+                },
+                defaults: ChannelCommandDefaults::default(),
+                value_limits: arm_value_limits(),
+            }),
             optional_info: Default::default(),
         }];
         let mounted = instance
@@ -444,28 +445,28 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
             };
             channels.push(DeviceQueryChannel {
                 channel_type: eef_channel_type,
-                kind: DeviceType::Robot,
                 available: true,
                 channel_label: Some(channel_label),
                 default_name: Some(default_name),
-                modes,
-                profiles: Vec::new(),
-                supported_states: vec![
-                    RobotStateKind::ParallelPosition,
-                    RobotStateKind::ParallelVelocity,
-                    RobotStateKind::ParallelEffort,
-                ],
-                supported_commands: vec![
-                    RobotCommandKind::ParallelPosition,
-                    RobotCommandKind::ParallelMit,
-                ],
-                supports_fk: false,
-                supports_ik: false,
-                dof: Some(1),
-                default_control_frequency_hz: Some(250.0),
-                direct_joint_compatibility,
-                defaults,
-                value_limits: eef_value_limits(),
+                info: ChannelKindInfo::Robot(RobotChannelInfo {
+                    modes,
+                    supported_states: vec![
+                        RobotStateKind::ParallelPosition,
+                        RobotStateKind::ParallelVelocity,
+                        RobotStateKind::ParallelEffort,
+                    ],
+                    supported_commands: vec![
+                        RobotCommandKind::ParallelPosition,
+                        RobotCommandKind::ParallelMit,
+                    ],
+                    supports_fk: false,
+                    supports_ik: false,
+                    dof: Some(1),
+                    default_control_frequency_hz: Some(250.0),
+                    direct_joint_compatibility,
+                    defaults,
+                    value_limits: eef_value_limits(),
+                }),
                 optional_info: Default::default(),
             });
         }

@@ -136,6 +136,8 @@ impl StreamInfoRegistry {
     /// Register a sensor channel for inclusion in `stream_info.sensors`.
     /// Idempotent; calling twice with the same `name` overwrites the
     /// previous entry and keeps the order stable.
+    // TODO: wire from the binary-frame 0x04 sensor-sample receive path.
+    #[allow(dead_code)]
     pub fn register_sensor(
         &mut self,
         name: impl Into<String>,
@@ -158,6 +160,7 @@ impl StreamInfoRegistry {
         );
     }
 
+    #[allow(dead_code)]
     pub fn observe_sensor_sample(&mut self, name: &str) {
         if let Some(sensor) = self.sensors.get_mut(name) {
             sensor.online = true;

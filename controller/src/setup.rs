@@ -16,11 +16,11 @@ use rollio_bus::{
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChannelPreviewConfig,
-    ChannelRecordConfig, ChannelStateKind, ChromaSubsampling, CollectionMode,
-    DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec, EncoderColorSpace,
-    EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode,
-    RobotStateKind, SensorStateKind, StorageBackend,
+    BinaryDeviceConfig, CameraChannelProfile, ChannelKindInfo, ChannelPairingConfig,
+    ChannelPreviewConfig, ChannelRecordConfig, ChannelStateKind, ChromaSubsampling,
+    CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
+    EncoderColorSpace, EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig,
+    RobotCommandKind, RobotMode, RobotStateKind, SensorStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -196,7 +196,7 @@ impl DiscoveredDevice {
         if self
             .channel_meta_by_channel
             .values()
-            .any(|meta| meta.kind == DeviceType::Robot)
+            .any(|meta| meta.kind() == DeviceType::Robot)
         {
             DeviceType::Robot
         } else {
@@ -210,82 +210,132 @@ impl DiscoveredDevice {
     fn all_camera_profiles(&self) -> Vec<CameraProfile> {
         self.channel_meta_by_channel
             .values()
-            .filter(|meta| meta.kind == DeviceType::Camera)
-            .flat_map(|meta| meta.profiles.iter().cloned())
+            .filter_map(DiscoveredChannelMeta::as_camera)
+            .flat_map(|info| info.profiles.iter().cloned())
             .collect()
     }
 }
 
+/// Controller-internal per-channel metadata mirrored from a driver's
+/// `query --json` response, with kind-specific data quarantined in a
+/// sum-type variant so each consumer site has to acknowledge which kind
+/// it is reading.
 #[derive(Debug, Clone, Serialize, Default)]
 struct DiscoveredChannelMeta {
-    /// `kind` per channel from `query --json`: camera, robot, etc.
-    /// Defaults to `Robot` to keep older fixtures working unchanged.
-    #[serde(default = "default_channel_kind")]
-    kind: DeviceType,
     channel_label: Option<String>,
     default_name: Option<String>,
-    /// Robot modes the driver accepts on this channel. For camera channels
-    /// this is conventionally `["enabled", "disabled"]`; the controller no
-    /// longer cares about exact strings here — it just maps known ones to
-    /// `RobotMode` enum variants.
-    #[serde(default)]
+    info: DiscoveredKindInfo,
+}
+
+impl DiscoveredChannelMeta {
+    fn kind(&self) -> DeviceType {
+        self.info.kind()
+    }
+
+    fn as_camera(&self) -> Option<&CameraDiscoveredInfo> {
+        if let DiscoveredKindInfo::Camera(info) = &self.info {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    fn as_robot(&self) -> Option<&RobotDiscoveredInfo> {
+        if let DiscoveredKindInfo::Robot(info) = &self.info {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    fn as_sensor(&self) -> Option<&SensorDiscoveredInfo> {
+        if let DiscoveredKindInfo::Sensor(info) = &self.info {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    fn as_robot_mut(&mut self) -> Option<&mut RobotDiscoveredInfo> {
+        if let DiscoveredKindInfo::Robot(info) = &mut self.info {
+            Some(info)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+enum DiscoveredKindInfo {
+    Camera(CameraDiscoveredInfo),
+    Robot(RobotDiscoveredInfo),
+    Sensor(SensorDiscoveredInfo),
+}
+
+impl Default for DiscoveredKindInfo {
+    fn default() -> Self {
+        DiscoveredKindInfo::Robot(RobotDiscoveredInfo::default())
+    }
+}
+
+impl DiscoveredKindInfo {
+    fn kind(&self) -> DeviceType {
+        match self {
+            DiscoveredKindInfo::Camera(_) => DeviceType::Camera,
+            DiscoveredKindInfo::Robot(_) => DeviceType::Robot,
+            DiscoveredKindInfo::Sensor(_) => DeviceType::Sensor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct CameraDiscoveredInfo {
+    /// Camera channels conventionally advertise `["enabled", "disabled"]`,
+    /// translated from the driver's wire `Vec<String>` to `RobotMode`.
     modes: Vec<RobotMode>,
-    /// `dof` reported per channel; only meaningful for robot kinds.
-    #[serde(default)]
-    dof: Option<u32>,
-    /// Camera profiles reported per channel. Empty for non-camera kinds.
-    #[serde(default)]
     profiles: Vec<CameraProfile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct RobotDiscoveredInfo {
+    modes: Vec<RobotMode>,
+    dof: Option<u32>,
     /// Driver-suggested default control frequency for this channel.
-    #[serde(default)]
     default_control_frequency_hz: Option<f64>,
     /// Default command parameters (`joint_mit_kp/kd`, `parallel_mit_kp/kd`).
-    /// Used to seed `DeviceChannelConfigV2.command_defaults` without any
-    /// vendor-specific lookup table.
-    #[serde(default)]
+    /// Used to seed `DeviceChannelConfigV2.command_defaults`.
     defaults: rollio_types::config::ChannelCommandDefaults,
-    /// Per-state value limits reported by the device driver (rad / rad·s⁻¹ /
-    /// Nm / m for parallel kinds). Captured from the channel's `query --json`
-    /// response so the visualizer can render limit-aware bars instead of
-    /// guessing the value envelope.
-    #[serde(default)]
+    /// Per-state value limits reported by the driver. Captured so the
+    /// visualizer can render limit-aware bars instead of guessing.
     value_limits: Vec<rollio_types::config::StateValueLimitsEntry>,
-    /// All `RobotStateKind` values this driver reports it can publish on
-    /// this channel. The setup wizard's "States" sub-step uses this list
-    /// to render the toggleable publish/recorded options. Falls back to
+    /// All `RobotStateKind` values this driver reports it can publish.
+    /// The setup wizard's "States" sub-step uses this list. Falls back to
     /// `value_limits` keys when the driver doesn't populate it explicitly.
-    #[serde(default)]
     supported_states: Vec<RobotStateKind>,
-    /// Robot command kinds the driver advertises it accepts on this channel.
-    /// Persisted on `DeviceChannelConfigV2.supported_commands` so downstream
-    /// teleop / pairing logic stays driver-agnostic.
-    #[serde(default)]
+    /// Robot command kinds the driver advertises it accepts. Persisted on
+    /// `DeviceChannelConfigV2.supported_commands` so downstream teleop /
+    /// pairing logic stays driver-agnostic.
     supported_commands: Vec<rollio_types::config::RobotCommandKind>,
     /// Direct-joint pairing peers as reported by the driver. Persisted on
     /// `DeviceChannelConfigV2.direct_joint_compatibility` so pairing
-    /// validation can consult the schema instead of any vendor table.
-    #[serde(default)]
+    /// validation consults the schema instead of any vendor table.
     direct_joint_compatibility: rollio_types::config::DirectJointCompatibility,
-    /// All `SensorStateKind` values this driver reports it can publish on a
-    /// sensor channel. Empty for non-sensor kinds. Used to seed
-    /// `publish_states` when a sensor channel enters the wizard.
-    #[serde(default)]
-    supported_sensor_kinds: Vec<rollio_types::config::SensorStateKind>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SensorDiscoveredInfo {
+    /// `SensorStateKind` values this driver reports it can publish on a
+    /// sensor channel. Used to seed `publish_states` when a sensor channel
+    /// enters the wizard.
+    supported_sensor_kinds: Vec<SensorStateKind>,
     /// Shape per published sensor kind reported by the driver. Persisted on
     /// `DeviceChannelConfigV2.sensor_shape_hints` so the assembler can
     /// declare correct LeRobot feature shapes for tactile point clouds and
     /// IMU samples.
-    #[serde(default)]
-    sensor_shape_hints: std::collections::BTreeMap<rollio_types::config::SensorStateKind, Vec<u32>>,
-    /// Default sample period for a sensor channel. Defaults to None; the
-    /// setup wizard requires the operator (or driver) to provide one before
-    /// validation will pass.
-    #[serde(default)]
+    sensor_shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
+    /// Default sample period for a sensor channel. None until set by driver
+    /// or operator; setup validation requires it to be Some.
     default_sample_rate_hz: Option<f64>,
-}
-
-fn default_channel_kind() -> DeviceType {
-    DeviceType::Robot
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3097,9 +3147,9 @@ fn build_channel_config_from_meta(
     preferred_mode: RobotMode,
     channel_name: Option<String>,
 ) -> DeviceChannelConfigV2 {
-    match meta.kind {
-        DeviceType::Camera => {
-            let profile = pick_default_camera_profile(&meta.profiles);
+    match &meta.info {
+        DiscoveredKindInfo::Camera(camera) => {
+            let profile = pick_default_camera_profile(&camera.profiles);
             DeviceChannelConfigV2 {
                 channel_type: channel_type.to_owned(),
                 kind: DeviceType::Camera,
@@ -3117,18 +3167,18 @@ fn build_channel_config_from_meta(
                 record_enabled: true,
                 record: None,
                 preview_settings: None,
-                command_defaults: meta.defaults.clone(),
-                value_limits: meta.value_limits.clone(),
-                direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
-                supported_commands: meta.supported_commands.clone(),
+                command_defaults: Default::default(),
+                value_limits: Vec::new(),
+                direct_joint_compatibility: Default::default(),
+                supported_commands: Vec::new(),
                 sensor_shape_hints: Default::default(),
                 extra: toml::Table::new(),
             }
         }
-        DeviceType::Robot => {
-            let mode = Some(select_supported_mode(&meta.modes, preferred_mode));
+        DiscoveredKindInfo::Robot(robot) => {
+            let mode = Some(select_supported_mode(&robot.modes, preferred_mode));
             let robot_publish: Vec<RobotStateKind> =
-                default_publish_states_for_meta(meta, &robot_publish_states_fallback(channel_type));
+                default_publish_states_for_robot(robot, &robot_publish_states_fallback(channel_type));
             let publish_states: Vec<ChannelStateKind> = robot_publish
                 .iter()
                 .copied()
@@ -3142,32 +3192,32 @@ fn build_channel_config_from_meta(
                 name: channel_name,
                 channel_label: meta.channel_label.clone(),
                 mode,
-                dof: meta.dof,
+                dof: robot.dof,
                 publish_states,
                 recorded_states,
-                control_frequency_hz: meta.default_control_frequency_hz,
+                control_frequency_hz: robot.default_control_frequency_hz,
                 sample_rate_hz: None,
                 profile: None,
                 preview_enabled: true,
                 record_enabled: true,
                 record: None,
                 preview_settings: None,
-                command_defaults: meta.defaults.clone(),
-                value_limits: meta.value_limits.clone(),
-                direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
-                supported_commands: meta.supported_commands.clone(),
+                command_defaults: robot.defaults.clone(),
+                value_limits: robot.value_limits.clone(),
+                direct_joint_compatibility: robot.direct_joint_compatibility.clone(),
+                supported_commands: robot.supported_commands.clone(),
                 sensor_shape_hints: Default::default(),
                 extra: toml::Table::new(),
             }
         }
-        DeviceType::Sensor => {
+        DiscoveredKindInfo::Sensor(sensor) => {
             // Sensor channels enter setup via driver `query --json` —
             // the wizard does not yet have a dedicated picker, so we
             // mirror the meta-reported sensor kinds into publish_states
             // and require a non-zero sample_rate_hz to be filled in by
             // a later wizard step (or operator hand-edit).
-            let sensor_kinds: Vec<SensorStateKind> = meta.supported_sensor_kinds.clone();
-            let publish_states: Vec<ChannelStateKind> = sensor_kinds
+            let publish_states: Vec<ChannelStateKind> = sensor
+                .supported_sensor_kinds
                 .iter()
                 .copied()
                 .map(ChannelStateKind::from)
@@ -3184,14 +3234,17 @@ fn build_channel_config_from_meta(
                 publish_states,
                 recorded_states,
                 control_frequency_hz: None,
-                sample_rate_hz: meta.default_sample_rate_hz,
+                sample_rate_hz: sensor.default_sample_rate_hz,
                 profile: None,
                 preview_enabled: true,
-                command_defaults: meta.defaults.clone(),
+                record_enabled: true,
+                record: None,
+                preview_settings: None,
+                command_defaults: Default::default(),
                 value_limits: Vec::new(),
                 direct_joint_compatibility: Default::default(),
                 supported_commands: Vec::new(),
-                sensor_shape_hints: meta.sensor_shape_hints.clone(),
+                sensor_shape_hints: sensor.sensor_shape_hints.clone(),
                 extra: toml::Table::new(),
             }
         }
@@ -3367,14 +3420,14 @@ fn default_mapping_strategy_for(
 /// without requiring a config edit. Falls back to a static template when
 /// the driver query returned nothing usable, so older drivers and tests
 /// keep working unchanged.
-fn default_publish_states_for_meta(
-    meta: &DiscoveredChannelMeta,
+fn default_publish_states_for_robot(
+    robot: &RobotDiscoveredInfo,
     fallback: &[RobotStateKind],
 ) -> Vec<RobotStateKind> {
-    if !meta.supported_states.is_empty() {
-        return dedup_in_order(&meta.supported_states);
+    if !robot.supported_states.is_empty() {
+        return dedup_in_order(&robot.supported_states);
     }
-    let from_limits: Vec<RobotStateKind> = meta
+    let from_limits: Vec<RobotStateKind> = robot
         .value_limits
         .iter()
         .map(|entry| entry.state_kind)
@@ -3776,10 +3829,12 @@ fn available_devices_from_project(
                     Vec::new()
                 };
                 let supported_modes = supported_modes_from_project_channel(device, channel);
+                let robot_meta = runtime_meta
+                    .get(&(device.name.clone(), channel.channel_type.clone()))
+                    .and_then(ChannelKindInfo::as_robot);
                 let supported_states = if device_type == DeviceType::Robot {
-                    runtime_meta
-                        .get(&(device.name.clone(), channel.channel_type.clone()))
-                        .map(|meta| meta.supported_states.clone())
+                    robot_meta
+                        .map(|robot| robot.supported_states.clone())
                         .unwrap_or_else(|| {
                             // Older drivers may not advertise supported_states;
                             // fall back to whatever value_limits the latest
@@ -3793,13 +3848,11 @@ fn available_devices_from_project(
                 } else {
                     Vec::new()
                 };
-                let runtime_meta_for_channel =
-                    runtime_meta.get(&(device.name.clone(), channel.channel_type.clone()));
-                let supported_commands = runtime_meta_for_channel
-                    .map(|meta| meta.supported_commands.clone())
+                let supported_commands = robot_meta
+                    .map(|robot| robot.supported_commands.clone())
                     .unwrap_or_default();
-                let direct_joint_compatibility = runtime_meta_for_channel
-                    .map(|meta| meta.direct_joint_compatibility.clone())
+                let direct_joint_compatibility = robot_meta
+                    .map(|robot| robot.direct_joint_compatibility.clone())
                     .unwrap_or_default();
                 Some(AvailableDevice {
                     name: available_device_key_from_binary(&current),
@@ -3856,33 +3909,21 @@ fn available_rows_from_discovery(
         .filter_map(|channel| {
             let row_current = row_current_from_binary_channel(current, channel)?;
             let device_type = channel.kind;
-            let camera_profiles = if device_type == DeviceType::Camera {
-                discovery
-                    .channel_meta_by_channel
-                    .get(&channel.channel_type)
-                    .map(|meta| meta.profiles.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
             let meta = discovery.channel_meta_by_channel.get(&channel.channel_type);
-            let supported_states = if device_type == DeviceType::Robot {
-                meta.map(|m| m.supported_states.clone()).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let supported_commands = if device_type == DeviceType::Robot {
-                meta.map(|m| m.supported_commands.clone())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let direct_joint_compatibility = if device_type == DeviceType::Robot {
-                meta.map(|m| m.direct_joint_compatibility.clone())
-                    .unwrap_or_default()
-            } else {
-                rollio_types::config::DirectJointCompatibility::default()
-            };
+            let camera_profiles = meta
+                .and_then(DiscoveredChannelMeta::as_camera)
+                .map(|info| info.profiles.clone())
+                .unwrap_or_default();
+            let robot_meta = meta.and_then(DiscoveredChannelMeta::as_robot);
+            let supported_states = robot_meta
+                .map(|robot| robot.supported_states.clone())
+                .unwrap_or_default();
+            let supported_commands = robot_meta
+                .map(|robot| robot.supported_commands.clone())
+                .unwrap_or_default();
+            let direct_joint_compatibility = robot_meta
+                .map(|robot| robot.direct_joint_compatibility.clone())
+                .unwrap_or_default();
             Some(AvailableDevice {
                 name: available_device_key_from_binary(&row_current),
                 display_name: display_name_for_binary_channel(current, channel),
@@ -3932,7 +3973,8 @@ fn supported_modes_from_discovery(
     discovery
         .channel_meta_by_channel
         .get(&channel.channel_type)
-        .map(|meta| meta.modes.clone())
+        .and_then(DiscoveredChannelMeta::as_robot)
+        .map(|robot| robot.modes.clone())
         .unwrap_or_else(|| channel.mode.into_iter().collect())
 }
 
@@ -4195,25 +4237,23 @@ fn build_discovery_config(
         // based on whether a device was detected as an EEF (dof == 1) or
         // arm. We approximate that here by checking the first robot
         // channel's dof; cameras don't care about mode and take None.
-        let preferred_mode = if discovery
+        let robot_dofs: Vec<Option<u32>> = discovery
             .channel_meta_by_channel
             .values()
-            .any(|meta| meta.kind == DeviceType::Robot && meta.dof != Some(1))
-        {
+            .filter_map(DiscoveredChannelMeta::as_robot)
+            .map(|robot| robot.dof)
+            .collect();
+        let preferred_mode = if robot_dofs.iter().any(|dof| *dof != Some(1)) {
             let mode = group_default_mode(arm_index);
             arm_index += 1;
             mode
-        } else if discovery
-            .channel_meta_by_channel
-            .values()
-            .any(|meta| meta.kind == DeviceType::Robot)
-        {
+        } else if !robot_dofs.is_empty() {
             let mode = group_default_mode(eef_index);
             eef_index += 1;
             mode
         } else {
-            // Pure camera devices don't use the mode field but the unified
-            // builder still needs a placeholder value.
+            // Pure camera (or sensor-only) devices don't use the mode
+            // field but the unified builder still needs a placeholder.
             RobotMode::FreeDrive
         };
         let name_base = discovery
@@ -4396,6 +4436,11 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
         .flatten()
         .filter_map(|channel| {
             let channel_type = value_as_string(channel.get("channel_type"))?;
+            let channel_label = value_as_string(channel.get("channel_label"));
+            let default_name = value_as_string(channel.get("default_name"));
+            // Older drivers omit `kind` entirely; default to Robot to keep
+            // their query output parseable. Going forward, every in-tree
+            // driver emits an explicit kind tag.
             let kind = value_as_string(channel.get("kind"))
                 .and_then(|s| match s.as_str() {
                     "camera" => Some(DeviceType::Camera),
@@ -4404,58 +4449,61 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                     _ => None,
                 })
                 .unwrap_or(DeviceType::Robot);
-            let channel_label = value_as_string(channel.get("channel_label"));
-            let default_name = value_as_string(channel.get("default_name"));
-            let modes = parse_query_robot_modes(channel);
-            let dof = value_as_u32(channel.get("dof"));
-            let default_control_frequency_hz =
-                value_as_f64(channel.get("default_control_frequency_hz"))
-                    .or_else(|| value_as_f64(channel.get("control_frequency_hz")));
-            let defaults = parse_query_command_defaults(channel.get("defaults"));
-            let profiles = parse_channel_camera_profiles(channel);
-            let value_limits =
-                crate::device_query::parse_query_value_limits(channel.get("value_limits"));
-            let mut supported_states =
-                crate::device_query::parse_query_supported_states(channel.get("supported_states"));
-            // Fall back to the kinds enumerated by value_limits so older
-            // drivers that only populate value_limits still expose a
-            // supported-state list to the wizard.
-            if supported_states.is_empty() {
-                supported_states = value_limits.iter().map(|entry| entry.state_kind).collect();
-            }
-            let supported_commands = crate::device_query::parse_query_supported_commands(
-                channel.get("supported_commands"),
-            );
-            let direct_joint_compatibility =
-                crate::device_query::parse_query_direct_joint_compatibility(
-                    channel.get("direct_joint_compatibility"),
-                );
-            let supported_sensor_kinds = crate::device_query::parse_query_supported_sensor_kinds(
-                channel.get("supported_sensor_kinds"),
-            );
-            let sensor_shape_hints = crate::device_query::parse_query_sensor_shape_hints(
-                channel.get("sensor_shape_hints"),
-            );
-            let default_sample_rate_hz = value_as_f64(channel.get("default_sample_rate_hz"))
-                .filter(|v| v.is_finite() && *v > 0.0);
+            let info = match kind {
+                DeviceType::Camera => DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: parse_query_robot_modes(channel),
+                    profiles: parse_channel_camera_profiles(channel),
+                }),
+                DeviceType::Robot => {
+                    let value_limits =
+                        crate::device_query::parse_query_value_limits(channel.get("value_limits"));
+                    let mut supported_states = crate::device_query::parse_query_supported_states(
+                        channel.get("supported_states"),
+                    );
+                    // Fall back to the kinds enumerated by value_limits so
+                    // older drivers that only populate value_limits still
+                    // expose a supported-state list to the wizard.
+                    if supported_states.is_empty() {
+                        supported_states =
+                            value_limits.iter().map(|entry| entry.state_kind).collect();
+                    }
+                    DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                        modes: parse_query_robot_modes(channel),
+                        dof: value_as_u32(channel.get("dof")),
+                        default_control_frequency_hz: value_as_f64(
+                            channel.get("default_control_frequency_hz"),
+                        )
+                        .or_else(|| value_as_f64(channel.get("control_frequency_hz"))),
+                        defaults: parse_query_command_defaults(channel.get("defaults")),
+                        value_limits,
+                        supported_states,
+                        supported_commands: crate::device_query::parse_query_supported_commands(
+                            channel.get("supported_commands"),
+                        ),
+                        direct_joint_compatibility:
+                            crate::device_query::parse_query_direct_joint_compatibility(
+                                channel.get("direct_joint_compatibility"),
+                            ),
+                    })
+                }
+                DeviceType::Sensor => DiscoveredKindInfo::Sensor(SensorDiscoveredInfo {
+                    supported_sensor_kinds:
+                        crate::device_query::parse_query_supported_sensor_kinds(
+                            channel.get("supported_sensor_kinds"),
+                        ),
+                    sensor_shape_hints: crate::device_query::parse_query_sensor_shape_hints(
+                        channel.get("sensor_shape_hints"),
+                    ),
+                    default_sample_rate_hz: value_as_f64(channel.get("default_sample_rate_hz"))
+                        .filter(|v| v.is_finite() && *v > 0.0),
+                }),
+            };
             Some((
                 channel_type,
                 DiscoveredChannelMeta {
-                    kind,
                     channel_label,
                     default_name,
-                    modes,
-                    dof,
-                    profiles,
-                    default_control_frequency_hz,
-                    defaults,
-                    value_limits,
-                    supported_states,
-                    supported_commands,
-                    direct_joint_compatibility,
-                    supported_sensor_kinds,
-                    sensor_shape_hints,
-                    default_sample_rate_hz,
+                    info,
                 },
             ))
         })
@@ -4527,16 +4575,20 @@ fn enrich_current_device_from_discovery(
     // saved before the driver started reporting limits picks them up on the
     // next setup pass without manual editing.
     for channel in current.channels.iter_mut() {
-        if let Some(meta) = discovery.channel_meta_by_channel.get(&channel.channel_type) {
-            if !meta.value_limits.is_empty() {
-                channel.value_limits = meta.value_limits.clone();
+        if let Some(robot) = discovery
+            .channel_meta_by_channel
+            .get(&channel.channel_type)
+            .and_then(DiscoveredChannelMeta::as_robot)
+        {
+            if !robot.value_limits.is_empty() {
+                channel.value_limits = robot.value_limits.clone();
             }
         }
     }
     if !discovery
         .channel_meta_by_channel
         .values()
-        .any(|meta| meta.kind == DeviceType::Camera)
+        .any(|meta| meta.kind() == DeviceType::Camera)
     {
         return;
     }
@@ -4746,6 +4798,7 @@ fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> String {
     let kind = match ch.kind {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
+        DeviceType::Sensor => "sensor",
     };
     format!(
         "{kind}|{}|{}|{}|-",
@@ -4834,20 +4887,20 @@ mod tests {
         channel_meta_by_channel.insert(
             "color".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Pseudo Camera".into()),
                 default_name: None,
-                modes: Vec::new(),
-                profiles: vec![CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                }],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    }],
+                }),
             },
         );
         DiscoveredDevice {
@@ -4884,23 +4937,24 @@ mod tests {
         channel_meta_by_channel.insert(
             "arm".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Robot,
                 channel_label: None,
                 default_name: Some(default_name.to_owned()),
-                modes: make_robot_modes(),
-                dof: Some(dof),
-                default_control_frequency_hz: Some(60.0),
-                direct_joint_compatibility,
-                // The fixture mirrors what an arm driver advertises: it
-                // can lead via `joint_position` state and accept
-                // `joint_position` / `joint_mit` commands. (Tests that
-                // need parallel-grip behaviour use `parallel_gripper_discovery`
-                // below.)
-                supported_commands: vec![
-                    RobotCommandKind::JointPosition,
-                    RobotCommandKind::JointMit,
-                ],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                    modes: make_robot_modes(),
+                    dof: Some(dof),
+                    default_control_frequency_hz: Some(60.0),
+                    direct_joint_compatibility,
+                    // The fixture mirrors what an arm driver advertises:
+                    // it can lead via `joint_position` state and accept
+                    // `joint_position` / `joint_mit` commands. (Tests
+                    // that need parallel-grip behaviour use
+                    // `parallel_gripper_discovery` below.)
+                    supported_commands: vec![
+                        RobotCommandKind::JointPosition,
+                        RobotCommandKind::JointMit,
+                    ],
+                    ..RobotDiscoveredInfo::default()
+                }),
             },
         );
         DiscoveredDevice {
@@ -4921,9 +4975,12 @@ mod tests {
     /// whitelist rejection for DirectJoint pairs.
     fn robot_discovery_no_whitelist(id: &str, dof: u32) -> DiscoveredDevice {
         let mut device = robot_discovery(id, dof);
-        if let Some(meta) = device.channel_meta_by_channel.get_mut("arm") {
-            meta.direct_joint_compatibility =
-                rollio_types::config::DirectJointCompatibility::default();
+        if let Some(robot) = device
+            .channel_meta_by_channel
+            .get_mut("arm")
+            .and_then(DiscoveredChannelMeta::as_robot_mut)
+        {
+            robot.direct_joint_compatibility = Default::default();
         }
         device
     }
@@ -4937,22 +4994,23 @@ mod tests {
         channel_meta_by_channel.insert(
             "gripper".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Robot,
                 channel_label: Some("Pseudo Parallel Gripper".into()),
                 default_name: Some(default_name.to_owned()),
-                modes: make_robot_modes(),
-                dof: Some(1),
-                default_control_frequency_hz: Some(60.0),
-                supported_states: vec![
-                    RobotStateKind::ParallelPosition,
-                    RobotStateKind::ParallelVelocity,
-                    RobotStateKind::ParallelEffort,
-                ],
-                supported_commands: vec![
-                    RobotCommandKind::ParallelPosition,
-                    RobotCommandKind::ParallelMit,
-                ],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                    modes: make_robot_modes(),
+                    dof: Some(1),
+                    default_control_frequency_hz: Some(60.0),
+                    supported_states: vec![
+                        RobotStateKind::ParallelPosition,
+                        RobotStateKind::ParallelVelocity,
+                        RobotStateKind::ParallelEffort,
+                    ],
+                    supported_commands: vec![
+                        RobotCommandKind::ParallelPosition,
+                        RobotCommandKind::ParallelMit,
+                    ],
+                    ..RobotDiscoveredInfo::default()
+                }),
             },
         );
         DiscoveredDevice {
@@ -4973,23 +5031,24 @@ mod tests {
         channel_meta_by_channel.insert(
             "arm".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Robot,
                 channel_label: Some("AIRBOT Play".into()),
                 default_name: Some("airbot_play_arm".into()),
-                modes: make_robot_modes(),
-                dof: Some(6),
-                default_control_frequency_hz: Some(250.0),
-                direct_joint_compatibility: rollio_types::config::DirectJointCompatibility {
-                    can_lead: vec![rollio_types::config::DirectJointCompatibilityPeer {
-                        driver: "airbot-play".into(),
-                        channel_type: "arm".into(),
-                    }],
-                    can_follow: vec![rollio_types::config::DirectJointCompatibilityPeer {
-                        driver: "airbot-play".into(),
-                        channel_type: "arm".into(),
-                    }],
-                },
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                    modes: make_robot_modes(),
+                    dof: Some(6),
+                    default_control_frequency_hz: Some(250.0),
+                    direct_joint_compatibility: rollio_types::config::DirectJointCompatibility {
+                        can_lead: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                            driver: "airbot-play".into(),
+                            channel_type: "arm".into(),
+                        }],
+                        can_follow: vec![rollio_types::config::DirectJointCompatibilityPeer {
+                            driver: "airbot-play".into(),
+                            channel_type: "arm".into(),
+                        }],
+                    },
+                    ..RobotDiscoveredInfo::default()
+                }),
             },
         );
         if let Some(channel_type) = end_effector.map(|value| value.to_ascii_lowercase()) {
@@ -5023,14 +5082,15 @@ mod tests {
             channel_meta_by_channel.insert(
                 channel_type,
                 DiscoveredChannelMeta {
-                    kind: DeviceType::Robot,
                     channel_label: Some(label.into()),
                     default_name: Some(name.into()),
-                    modes: make_robot_modes(),
-                    dof: Some(1),
-                    default_control_frequency_hz: Some(250.0),
-                    defaults,
-                    ..DiscoveredChannelMeta::default()
+                    info: DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                        modes: make_robot_modes(),
+                        dof: Some(1),
+                        default_control_frequency_hz: Some(250.0),
+                        defaults,
+                        ..RobotDiscoveredInfo::default()
+                    }),
                 },
             );
         }
@@ -5241,25 +5301,27 @@ mod tests {
         let parent_compat = discovery
             .channel_meta_by_channel
             .get("arm")
-            .map(|m| m.direct_joint_compatibility.clone())
+            .and_then(DiscoveredChannelMeta::as_robot)
+            .map(|robot| robot.direct_joint_compatibility.clone())
             .unwrap_or_default();
         discovery.channel_meta_by_channel.insert(
             "arm".into(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Robot,
                 channel_label: Some("AIRBOT Play".into()),
                 default_name: Some("airbot_play_arm".into()),
-                modes: make_robot_modes(),
-                dof: Some(6),
-                default_control_frequency_hz: Some(250.0),
-                supported_states: supported,
-                supported_commands: vec![
-                    RobotCommandKind::JointPosition,
-                    RobotCommandKind::JointMit,
-                    RobotCommandKind::EndPose,
-                ],
-                direct_joint_compatibility: parent_compat,
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Robot(RobotDiscoveredInfo {
+                    modes: make_robot_modes(),
+                    dof: Some(6),
+                    default_control_frequency_hz: Some(250.0),
+                    supported_states: supported,
+                    supported_commands: vec![
+                        RobotCommandKind::JointPosition,
+                        RobotCommandKind::JointMit,
+                        RobotCommandKind::EndPose,
+                    ],
+                    direct_joint_compatibility: parent_compat,
+                    ..RobotDiscoveredInfo::default()
+                }),
             },
         );
         discovery
@@ -5665,19 +5727,20 @@ mod tests {
         channel_meta_by_channel.insert(
             "color".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("V4L2 Camera".into()),
                 default_name: Some("camera".into()),
-                profiles: vec![CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: Some("MJPG".into()),
-                    stream: Some("color".into()),
-                    channel: None,
-                }],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: Some("MJPG".into()),
+                        stream: Some("color".into()),
+                        channel: None,
+                    }],
+                }),
             },
         );
         DiscoveredDevice {
@@ -5698,55 +5761,58 @@ mod tests {
         channel_meta_by_channel.insert(
             "color".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Intel RealSense RGB".into()),
                 default_name: Some("realsense_rgb".into()),
-                profiles: vec![CameraProfile {
-                    width: 1920,
-                    height: 1080,
-                    fps: 30,
-                    pixel_format: PixelFormat::Rgb24,
-                    native_pixel_format: None,
-                    stream: Some("color".into()),
-                    channel: None,
-                }],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![CameraProfile {
+                        width: 1920,
+                        height: 1080,
+                        fps: 30,
+                        pixel_format: PixelFormat::Rgb24,
+                        native_pixel_format: None,
+                        stream: Some("color".into()),
+                        channel: None,
+                    }],
+                }),
             },
         );
         channel_meta_by_channel.insert(
             "depth".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Intel RealSense Depth".into()),
                 default_name: Some("realsense_depth".into()),
-                profiles: vec![CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Depth16,
-                    native_pixel_format: None,
-                    stream: Some("depth".into()),
-                    channel: None,
-                }],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Depth16,
+                        native_pixel_format: None,
+                        stream: Some("depth".into()),
+                        channel: None,
+                    }],
+                }),
             },
         );
         channel_meta_by_channel.insert(
             "infrared".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Intel RealSense Infrared".into()),
                 default_name: Some("realsense_ir".into()),
-                profiles: vec![CameraProfile {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    pixel_format: PixelFormat::Gray8,
-                    native_pixel_format: None,
-                    stream: Some("infrared".into()),
-                    channel: None,
-                }],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![CameraProfile {
+                        width: 640,
+                        height: 480,
+                        fps: 30,
+                        pixel_format: PixelFormat::Gray8,
+                        native_pixel_format: None,
+                        stream: Some("infrared".into()),
+                        channel: None,
+                    }],
+                }),
             },
         );
         DiscoveredDevice {
@@ -5861,77 +5927,79 @@ mod tests {
         channel_meta_by_channel.insert(
             "color".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Intel RealSense RGB".into()),
                 default_name: Some("realsense_rgb".into()),
-                profiles: vec![
-                    CameraProfile {
-                        width: 640,
-                        height: 480,
-                        fps: 30,
-                        pixel_format: PixelFormat::Rgb24,
-                        native_pixel_format: None,
-                        stream: Some("color".into()),
-                        channel: None,
-                    },
-                    CameraProfile {
-                        width: 1280,
-                        height: 720,
-                        fps: 60,
-                        pixel_format: PixelFormat::Rgb24,
-                        native_pixel_format: None,
-                        stream: Some("color".into()),
-                        channel: None,
-                    },
-                    CameraProfile {
-                        width: 1920,
-                        height: 1080,
-                        fps: 30,
-                        pixel_format: PixelFormat::Rgb24,
-                        native_pixel_format: None,
-                        stream: Some("color".into()),
-                        channel: None,
-                    },
-                    CameraProfile {
-                        width: 1920,
-                        height: 1080,
-                        fps: 60,
-                        pixel_format: PixelFormat::Rgb24,
-                        native_pixel_format: None,
-                        stream: Some("color".into()),
-                        channel: None,
-                    },
-                ],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![
+                        CameraProfile {
+                            width: 640,
+                            height: 480,
+                            fps: 30,
+                            pixel_format: PixelFormat::Rgb24,
+                            native_pixel_format: None,
+                            stream: Some("color".into()),
+                            channel: None,
+                        },
+                        CameraProfile {
+                            width: 1280,
+                            height: 720,
+                            fps: 60,
+                            pixel_format: PixelFormat::Rgb24,
+                            native_pixel_format: None,
+                            stream: Some("color".into()),
+                            channel: None,
+                        },
+                        CameraProfile {
+                            width: 1920,
+                            height: 1080,
+                            fps: 30,
+                            pixel_format: PixelFormat::Rgb24,
+                            native_pixel_format: None,
+                            stream: Some("color".into()),
+                            channel: None,
+                        },
+                        CameraProfile {
+                            width: 1920,
+                            height: 1080,
+                            fps: 60,
+                            pixel_format: PixelFormat::Rgb24,
+                            native_pixel_format: None,
+                            stream: Some("color".into()),
+                            channel: None,
+                        },
+                    ],
+                }),
             },
         );
         channel_meta_by_channel.insert(
             "depth".to_owned(),
             DiscoveredChannelMeta {
-                kind: DeviceType::Camera,
                 channel_label: Some("Intel RealSense Depth".into()),
                 default_name: Some("realsense_depth".into()),
-                profiles: vec![
-                    CameraProfile {
-                        width: 640,
-                        height: 480,
-                        fps: 30,
-                        pixel_format: PixelFormat::Depth16,
-                        native_pixel_format: None,
-                        stream: Some("depth".into()),
-                        channel: None,
-                    },
-                    CameraProfile {
-                        width: 640,
-                        height: 480,
-                        fps: 90,
-                        pixel_format: PixelFormat::Depth16,
-                        native_pixel_format: None,
-                        stream: Some("depth".into()),
-                        channel: None,
-                    },
-                ],
-                ..DiscoveredChannelMeta::default()
+                info: DiscoveredKindInfo::Camera(CameraDiscoveredInfo {
+                    modes: Vec::new(),
+                    profiles: vec![
+                        CameraProfile {
+                            width: 640,
+                            height: 480,
+                            fps: 30,
+                            pixel_format: PixelFormat::Depth16,
+                            native_pixel_format: None,
+                            stream: Some("depth".into()),
+                            channel: None,
+                        },
+                        CameraProfile {
+                            width: 640,
+                            height: 480,
+                            fps: 90,
+                            pixel_format: PixelFormat::Depth16,
+                            native_pixel_format: None,
+                            stream: Some("depth".into()),
+                            channel: None,
+                        },
+                    ],
+                }),
             },
         );
         let discovery = DiscoveredDevice {

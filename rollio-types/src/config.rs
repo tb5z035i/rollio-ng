@@ -3322,25 +3322,23 @@ pub struct DirectJointCompatibility {
     pub can_follow: Vec<DirectJointCompatibilityPeer>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeviceQueryChannel {
-    pub channel_type: String,
-    pub kind: DeviceType,
-    pub available: bool,
-    /// Display label for this channel (e.g., "AIRBOT E2", "V4L2 Camera").
-    /// Falls back to the parent device's `device_label` when None.
-    #[serde(default)]
-    pub channel_label: Option<String>,
-    /// Default user-facing name to use when this channel is first added to
-    /// a project (e.g., "airbot_play_arm", "airbot_e2", "camera"). The
-    /// controller stores this in `DeviceChannelConfigV2.name`. Falls back
-    /// to channel_type when None.
-    #[serde(default)]
-    pub default_name: Option<String>,
+/// Camera-channel half of `ChannelKindInfo`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CameraChannelInfo {
+    /// Operator-facing mode strings the driver accepts on this channel
+    /// (camera channels conventionally advertise `["enabled","disabled"]`).
     #[serde(default)]
     pub modes: Vec<String>,
+    /// Resolution / fps / pixel-format combinations the driver can capture.
     #[serde(default)]
     pub profiles: Vec<CameraChannelProfile>,
+}
+
+/// Robot-channel half of `ChannelKindInfo`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RobotChannelInfo {
+    #[serde(default)]
+    pub modes: Vec<String>,
     #[serde(default)]
     pub supported_states: Vec<RobotStateKind>,
     #[serde(default)]
@@ -3360,25 +3358,112 @@ pub struct DeviceQueryChannel {
     /// limit-aware bars and (later) the safety layer can clip targets.
     #[serde(default)]
     pub value_limits: Vec<StateValueLimitsEntry>,
-    /// Sensor sample kinds this channel can publish. Empty for camera /
-    /// robot channels. Drives `DeviceChannelConfigV2.publish_states` for
-    /// `kind = "sensor"` channels.
+}
+
+/// Sensor-channel half of `ChannelKindInfo`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SensorChannelInfo {
+    #[serde(default)]
+    pub modes: Vec<String>,
+    /// Sensor sample kinds this channel can publish.
+    /// Drives `DeviceChannelConfigV2.publish_states` for sensor channels.
     #[serde(default)]
     pub supported_sensor_kinds: Vec<SensorStateKind>,
     /// Shape per published sensor kind. Persisted on
     /// `DeviceChannelConfigV2.sensor_shape_hints` so the assembler can
     /// declare correct dataset feature shapes (e.g. `[256, 6]` for
-    /// tactile point clouds, `[6]` for IMU). Keyed by `SensorStateKind`
-    /// serde name.
+    /// tactile point clouds, `[6]` for IMU).
     #[serde(default)]
-    pub sensor_shape_hints:
-        std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
-    /// Driver-suggested sample period for a sensor channel. Operators can
-    /// override in TOML; the setup wizard uses this as the default.
-    #[serde(default)]
+    pub sensor_shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
+    /// Driver-suggested sample period. Operators can override in TOML;
+    /// the setup wizard uses this as the default.
     pub default_sample_rate_hz: Option<f64>,
+}
+
+/// Per-kind channel metadata reported by `driver query --json`.
+///
+/// Encodes the mutual-exclusion between Camera / Robot / Sensor in the
+/// type system so each driver only constructs the fields its channel
+/// actually has. Wire format is internally tagged on `kind` and flattened
+/// into the parent `DeviceQueryChannel` map, so JSON looks like:
+///
+/// ```json
+/// { "kind": "robot", "supported_states": [...], "dof": 6, ... }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChannelKindInfo {
+    Camera(CameraChannelInfo),
+    Robot(RobotChannelInfo),
+    Sensor(SensorChannelInfo),
+}
+
+impl Default for ChannelKindInfo {
+    fn default() -> Self {
+        ChannelKindInfo::Robot(RobotChannelInfo::default())
+    }
+}
+
+impl ChannelKindInfo {
+    pub fn kind(&self) -> DeviceType {
+        match self {
+            ChannelKindInfo::Camera(_) => DeviceType::Camera,
+            ChannelKindInfo::Robot(_) => DeviceType::Robot,
+            ChannelKindInfo::Sensor(_) => DeviceType::Sensor,
+        }
+    }
+
+    pub fn as_camera(&self) -> Option<&CameraChannelInfo> {
+        if let ChannelKindInfo::Camera(info) = self {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_robot(&self) -> Option<&RobotChannelInfo> {
+        if let ChannelKindInfo::Robot(info) = self {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_sensor(&self) -> Option<&SensorChannelInfo> {
+        if let ChannelKindInfo::Sensor(info) = self {
+            Some(info)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceQueryChannel {
+    pub channel_type: String,
+    pub available: bool,
+    /// Display label for this channel (e.g., "AIRBOT E2", "V4L2 Camera").
+    /// Falls back to the parent device's `device_label` when None.
+    #[serde(default)]
+    pub channel_label: Option<String>,
+    /// Default user-facing name to use when this channel is first added to
+    /// a project (e.g., "airbot_play_arm", "airbot_e2", "camera"). The
+    /// controller stores this in `DeviceChannelConfigV2.name`. Falls back
+    /// to channel_type when None.
+    #[serde(default)]
+    pub default_name: Option<String>,
+    /// Per-kind payload. The wire tag `kind` lives inside this enum and is
+    /// flattened to the same JSON level as the common fields above.
+    #[serde(flatten)]
+    pub info: ChannelKindInfo,
     #[serde(default)]
     pub optional_info: toml::Table,
+}
+
+impl DeviceQueryChannel {
+    pub fn kind(&self) -> DeviceType {
+        self.info.kind()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
