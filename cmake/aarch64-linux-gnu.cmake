@@ -90,8 +90,16 @@ set(RUST_TARGET_TRIPLET "aarch64-unknown-linux-gnu"
 
 set(CMAKE_FIND_ROOT_PATH /usr/lib/aarch64-linux-gnu /usr/aarch64-linux-gnu)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-# LIBRARY = ONLY: target-arch .so/.a files MUST come from the cross roots.
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+# LIBRARY = BOTH: find_library() re-roots HINTS/PATHS under the cross
+# prefixes first, then falls back to the path as-given. ONLY would skip
+# the as-given lookup, breaking find_library(NAMES x HINTS /usr/lib/aarch64-linux-gnu)
+# because /usr/lib/aarch64-linux-gnu/usr/lib/aarch64-linux-gnu doesn't exist.
+# That call site is exactly how pinocchio's vendored Findurdfdom.cmake
+# (third_party/airbot-play-rust/ffi/cmake/Findurdfdom.cmake) locates the
+# multiarch :arm64 .so files. The re-rooted lookup runs first, so the
+# fallback only kicks in when the cross-prefixed path is empty -- it does
+# not let a host x86_64 .so slip in ahead of an aarch64 one.
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
 # INCLUDE = BOTH: many Debian dev packages are Multi-Arch: foreign
 # (header-only, e.g. liburdfdom-headers-dev, libeigen3-dev) and ship
 # headers under /usr/include/ rather than /usr/include/aarch64-linux-gnu/.
