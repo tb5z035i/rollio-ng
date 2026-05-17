@@ -1,6 +1,14 @@
 const FRAME_TYPE_JPEG = 0x01;
 const FRAME_TYPE_ENCODED_CONFIG = 0x02;
 const FRAME_TYPE_ENCODED_PACKET = 0x03;
+/**
+ * Binary kind reserved for sensor sample passthrough. The visualizer
+ * forwards `SensorFrameHeader` + raw bytes from `samples/{kind}`
+ * topics. The web UI does not yet decode this kind — the placeholder
+ * exists so the wire protocol does not change when a future sprint
+ * adds sensor charts.
+ */
+const FRAME_TYPE_SENSOR_SAMPLE = 0x04;
 const textDecoder = new TextDecoder("utf-8");
 
 export const CODEC_NAMES: Record<number, string> = {
@@ -128,6 +136,20 @@ export interface StreamInfoCamera {
   scaling_locked?: boolean;
 }
 
+/**
+ * Sensor channel surfaced in the device sidebar. The UI only renders
+ * name + sample rate + recorded-state count + an online indicator;
+ * actual sample data is not visualised (the visualizer reserves
+ * `FRAME_TYPE_SENSOR_SAMPLE = 0x04` for a future passthrough).
+ */
+export interface StreamInfoSensor {
+  name: string;
+  channel_type: string;
+  sample_rate_hz: number;
+  recorded_states: string[];
+  online: boolean;
+}
+
 export interface StreamInfoMessage {
   type: "stream_info";
   server_timestamp_ms: number;
@@ -137,6 +159,7 @@ export interface StreamInfoMessage {
   active_preview_height: number;
   cameras: StreamInfoCamera[];
   robots: string[];
+  sensors?: StreamInfoSensor[];
 }
 
 export interface EpisodeStatusMessage {
@@ -232,6 +255,15 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
         sourceTimestampUs,
         payload,
       };
+    }
+    case FRAME_TYPE_SENSOR_SAMPLE: {
+      // Placeholder: the visualizer reserves kind 0x04 for sensor
+      // sample passthrough. The web UI does not yet decode the payload
+      // (no sensor charts). Return null so the message is dropped
+      // without breaking the binary stream.
+      // TODO(sensor-ui): parse SensorFrameHeader + payload and surface
+      // a SensorSampleMessage variant on `BinaryWsMessage`.
+      return null;
     }
     default:
       return null;

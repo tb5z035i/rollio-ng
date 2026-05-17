@@ -9,7 +9,7 @@ fn parse_example_project_config() {
     let config = ProjectConfig::from_str(toml_text).expect("config.example.toml should parse");
     assert_eq!(config.project_name, "default");
     assert_eq!(config.mode, CollectionMode::Teleop);
-    assert_eq!(config.devices.len(), 4);
+    assert_eq!(config.devices.len(), 6);
     assert_eq!(config.pairings.len(), 1);
     assert_eq!(config.episode.fps, 30);
     assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
@@ -778,8 +778,8 @@ fn parallel_pairing_requires_dof_one_and_parallel_position() {
     // publish_states: parallel mapping should reject because the leader
     // no longer publishes the kind it requires.
     config.devices[0].channels[0].dof = Some(1);
-    config.devices[0].channels[0].publish_states = vec![RobotStateKind::JointPosition];
-    config.devices[0].channels[0].recorded_states = vec![RobotStateKind::JointPosition];
+    config.devices[0].channels[0].publish_states = vec![RobotStateKind::JointPosition.into()];
+    config.devices[0].channels[0].recorded_states = vec![RobotStateKind::JointPosition.into()];
     let err = config
         .validate()
         .expect_err("missing parallel_position must be rejected");
@@ -936,4 +936,184 @@ fn parse_mcap_flatbuffer_smoke_config() {
     assert_eq!(config.devices.len(), 4);
     assert_eq!(config.pairings.len(), 1);
     assert_eq!(config.mode, CollectionMode::Teleop);
+}
+
+// ----------------------------------------------------------------------------
+// Sensor channel kind
+// ----------------------------------------------------------------------------
+
+fn sensor_config_template(extra_channel_toml: &str) -> String {
+    format!(
+        r#"
+project_name = "sensor-test"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "imu"
+driver = "pseudo"
+id = "pseudo_imu_0"
+bus_root = "imu_bus"
+
+{extra_channel_toml}
+
+[encoder]
+video_codec = "h264"
+depth_codec = "rvl"
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#
+    )
+}
+
+#[test]
+fn parses_sensor_channel_with_valid_state_kinds() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 200.0
+publish_states = ["imu_accel_gyro"]
+recorded_states = ["imu_accel_gyro"]
+"#,
+    );
+    let config = ProjectConfig::from_str(&toml_text).expect("sensor channel should parse");
+    let sensor = &config.devices[0].channels[0];
+    assert_eq!(sensor.kind, DeviceType::Sensor);
+    assert_eq!(sensor.sample_rate_hz, Some(200.0));
+    assert_eq!(sensor.publish_states.len(), 1);
+    assert_eq!(
+        sensor.publish_states[0].as_sensor(),
+        Some(SensorStateKind::ImuAccelGyro)
+    );
+
+    let resolved = config.resolved_sensor_channels();
+    assert_eq!(resolved.len(), 1);
+    let sensor = &resolved[0];
+    assert_eq!(sensor.channel_id, "imu/imu");
+    assert_eq!(sensor.sample_topics.len(), 1);
+    assert_eq!(sensor.sample_topics[0].0, SensorStateKind::ImuAccelGyro);
+    assert_eq!(sensor.sample_topics[0].1, "imu_bus/imu/samples/imu_accel_gyro");
+    assert!((sensor.sample_rate_hz - 200.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn parses_tactile_sensor_channel() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "tactile"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 60.0
+publish_states = ["tactile_point_cloud2"]
+recorded_states = ["tactile_point_cloud2"]
+"#,
+    );
+    let config = ProjectConfig::from_str(&toml_text).expect("tactile channel should parse");
+    let resolved = config.resolved_sensor_channels();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].sample_topics[0].0,
+        SensorStateKind::TactilePointCloud2
+    );
+    assert_eq!(
+        resolved[0].sample_topics[0].1,
+        "imu_bus/tactile/samples/tactile_point_cloud2"
+    );
+    assert!(SensorStateKind::TactilePointCloud2.is_variable_shape());
+}
+
+#[test]
+fn rejects_robot_kind_with_sensor_state() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "imu"
+kind = "robot"
+enabled = true
+mode = "free-drive"
+dof = 6
+publish_states = ["imu_accel_gyro"]
+"#,
+    );
+    let err = ProjectConfig::from_str(&toml_text)
+        .expect_err("robot channel should reject sensor state kind in publish_states");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("reject sensor state kind"),
+        "expected sensor-kind rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn rejects_sensor_kind_without_sample_rate_hz() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+publish_states = ["imu_accel_gyro"]
+"#,
+    );
+    let err = ProjectConfig::from_str(&toml_text)
+        .expect_err("sensor channel without sample_rate_hz should be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("sample_rate_hz"),
+        "expected sample_rate_hz error, got: {msg}"
+    );
+}
+
+#[test]
+fn rejects_sensor_kind_with_non_positive_sample_rate_hz() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 0.0
+publish_states = ["imu_accel_gyro"]
+"#,
+    );
+    let err = ProjectConfig::from_str(&toml_text)
+        .expect_err("sensor channel with zero sample_rate_hz should be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("sample_rate_hz"),
+        "expected sample_rate_hz error, got: {msg}"
+    );
+}
+
+#[test]
+fn rejects_sensor_kind_with_robot_state() {
+    let toml_text = sensor_config_template(
+        r#"
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 200.0
+publish_states = ["joint_position"]
+"#,
+    );
+    let err = ProjectConfig::from_str(&toml_text)
+        .expect_err("sensor channel should reject robot state kind in publish_states");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("reject robot state kind"),
+        "expected robot-kind rejection, got: {msg}"
+    );
 }

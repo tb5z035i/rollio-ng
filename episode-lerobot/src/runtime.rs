@@ -14,8 +14,8 @@
 //! crashes mid-recording.
 
 use crate::dataset::{
-    action_key, observation_key, remove_episode_artifacts, stage_episode, ActionSample,
-    EpisodeAssemblyInput, ObservationSample, StagedEpisode,
+    action_key, observation_key, remove_episode_artifacts, sensor_observation_key, stage_episode,
+    ActionSample, EpisodeAssemblyInput, ObservationSample, SensorSample, StagedEpisode,
 };
 use crate::packets::RecordingStreamBuffer;
 use clap::Args;
@@ -23,17 +23,19 @@ use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
     BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE, EPISODE_READY_SERVICE,
-    EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    EPISODE_STORED_SERVICE, SAMPLE_BUFFER, SAMPLE_MAX_NODES, SAMPLE_MAX_PUBLISHERS,
+    SAMPLE_MAX_SUBSCRIBERS, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
     STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
-    EpisodeFormat, RobotCommandKind, RobotStateKind,
+    AssemblerSensorObservationRuntimeConfigV2, EpisodeFormat, RobotCommandKind, RobotStateKind,
+    SensorStateKind,
 };
 use rollio_types::messages::{
     BackpressureEvent, ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeDropped,
     EpisodeReady, EpisodeStored, FixedString256, FixedString64, JointMitCommand15, JointVector15,
-    ParallelMitCommand2, ParallelVector2, Pose7,
+    ParallelMitCommand2, ParallelVector2, Pose7, SensorDType, SensorFrameHeader,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -73,6 +75,14 @@ struct ObservationSubscriber {
     subscriber: ObservationSubscriberKind,
 }
 
+/// Sensor sample subscriber. Dynamic payload + `SensorFrameHeader` user
+/// header; the runtime decodes payload bytes per `dtype` into `Vec<f32>`.
+struct SensorSubscriber {
+    config: AssemblerSensorObservationRuntimeConfigV2,
+    subscriber:
+        iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], SensorFrameHeader>,
+}
+
 enum ObservationSubscriberKind {
     JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
     ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
@@ -106,6 +116,7 @@ struct PendingEpisode {
     keep_requested: bool,
     ready_wait_started_us: Option<u64>,
     observation_samples: BTreeMap<String, Vec<ObservationSample>>,
+    sensor_samples: BTreeMap<String, Vec<SensorSample>>,
     action_samples: BTreeMap<String, Vec<ActionSample>>,
     /// Per-channel packet streams. Populated as packets arrive and
     /// finalized when each camera observes `EndOfStream`.
@@ -129,6 +140,7 @@ impl PendingEpisode {
             keep_requested: false,
             ready_wait_started_us: None,
             observation_samples: BTreeMap::new(),
+            sensor_samples: BTreeMap::new(),
             action_samples: BTreeMap::new(),
             camera_streams,
             failed_cameras: Vec::new(),
@@ -141,6 +153,7 @@ impl PendingEpisode {
             start_time_us: self.start_time_us,
             stop_time_us: self.stop_time_us.unwrap_or(self.start_time_us),
             observation_samples: self.observation_samples.clone(),
+            sensor_samples: self.sensor_samples.clone(),
             action_samples: self.action_samples.clone(),
             camera_streams: self.camera_streams.clone(),
         }
@@ -275,6 +288,29 @@ impl EpisodeManager {
             .entry(observation_key(channel_id, state_kind))
             .or_default()
             .push(ObservationSample {
+                timestamp_us,
+                values,
+            });
+    }
+
+    fn on_sensor_sample(
+        &mut self,
+        channel_id: &str,
+        sensor_kind: SensorStateKind,
+        timestamp_us: u64,
+        values: Vec<f32>,
+    ) {
+        let Some(episode_index) = self.active_episode_index else {
+            return;
+        };
+        let Some(episode) = self.episodes.get_mut(&episode_index) else {
+            return;
+        };
+        episode
+            .sensor_samples
+            .entry(sensor_observation_key(channel_id, sensor_kind))
+            .or_default()
+            .push(SensorSample {
                 timestamp_us,
                 values,
             });
@@ -535,6 +571,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let episode_dropped_publisher = create_episode_dropped_publisher(&node)?;
     let episode_stored_subscriber = create_episode_stored_subscriber(&node)?;
     let observation_subscribers = create_observation_subscribers(&node, &config)?;
+    let sensor_subscribers = create_sensor_subscribers(&node, &config)?;
     let action_subscribers = create_action_subscribers(&node, &config)?;
 
     let process_id = config.process_id.clone();
@@ -549,6 +586,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         }
         made_progress |= drain_camera_packets(&camera_subscribers, &mut manager)?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
+        made_progress |= drain_sensor_samples(&sensor_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
 
         let outcome = manager.dispatch_ready_episodes(&worker_tx)?;
@@ -813,6 +851,114 @@ fn create_observation_subscribers(
         .collect()
 }
 
+fn create_sensor_subscribers(
+    node: &Node<ipc::Service>,
+    config: &AssemblerRuntimeConfigV2,
+) -> Result<Vec<SensorSubscriber>, Box<dyn Error>> {
+    config
+        .sensor_observations
+        .iter()
+        .map(|sensor| {
+            let service_name: ServiceName = sensor.sample_topic.as_str().try_into()?;
+            let service = node
+                .service_builder(&service_name)
+                .publish_subscribe::<[u8]>()
+                .user_header::<SensorFrameHeader>()
+                .subscriber_max_buffer_size(SAMPLE_BUFFER)
+                .history_size(SAMPLE_BUFFER)
+                .max_publishers(SAMPLE_MAX_PUBLISHERS)
+                .max_subscribers(SAMPLE_MAX_SUBSCRIBERS)
+                .max_nodes(SAMPLE_MAX_NODES)
+                .open_or_create()?;
+            let subscriber = service.subscriber_builder().create()?;
+            Ok(SensorSubscriber {
+                config: sensor.clone(),
+                subscriber,
+            })
+        })
+        .collect()
+}
+
+fn decode_sensor_payload(header: &SensorFrameHeader, bytes: &[u8]) -> Vec<f32> {
+    let elements = header.element_count();
+    let mut out = Vec::with_capacity(elements);
+    let byte_size = header.dtype.byte_size();
+    if elements == 0 || byte_size == 0 || bytes.len() < elements * byte_size {
+        return out;
+    }
+    match header.dtype {
+        SensorDType::F32 => {
+            for i in 0..elements {
+                let off = i * 4;
+                let v = f32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                out.push(v);
+            }
+        }
+        SensorDType::F64 => {
+            for i in 0..elements {
+                let off = i * 8;
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&bytes[off..off + 8]);
+                out.push(f64::from_le_bytes(buf) as f32);
+            }
+        }
+        SensorDType::I32 => {
+            for i in 0..elements {
+                let off = i * 4;
+                let v = i32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]) as f32;
+                out.push(v);
+            }
+        }
+        SensorDType::U32 => {
+            for i in 0..elements {
+                let off = i * 4;
+                let v = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]) as f32;
+                out.push(v);
+            }
+        }
+        SensorDType::I16 => {
+            for i in 0..elements {
+                let off = i * 2;
+                let v = i16::from_le_bytes([bytes[off], bytes[off + 1]]) as f32;
+                out.push(v);
+            }
+        }
+        SensorDType::U16 => {
+            for i in 0..elements {
+                let off = i * 2;
+                let v = u16::from_le_bytes([bytes[off], bytes[off + 1]]) as f32;
+                out.push(v);
+            }
+        }
+        SensorDType::I8 => {
+            for &b in &bytes[..elements] {
+                out.push(i8::from_le_bytes([b]) as f32);
+            }
+        }
+        SensorDType::U8 => {
+            for &b in &bytes[..elements] {
+                out.push(b as f32);
+            }
+        }
+    }
+    out
+}
+
 fn create_action_subscribers(
     node: &Node<ipc::Service>,
     config: &AssemblerRuntimeConfigV2,
@@ -982,6 +1128,31 @@ fn drain_observations(
                 );
                 changed = true;
             },
+        }
+    }
+    Ok(changed)
+}
+
+fn drain_sensor_samples(
+    subscribers: &[SensorSubscriber],
+    manager: &mut EpisodeManager,
+) -> Result<bool, Box<dyn Error>> {
+    let mut changed = false;
+    for sensor in subscribers {
+        loop {
+            let Some(sample) = sensor.subscriber.receive()? else {
+                break;
+            };
+            let header = *sample.user_header();
+            let payload = sample.payload();
+            let values = decode_sensor_payload(&header, payload);
+            manager.on_sensor_sample(
+                &sensor.config.channel_id,
+                sensor.config.sensor_kind,
+                header.timestamp_us,
+                values,
+            );
+            changed = true;
         }
     }
     Ok(changed)

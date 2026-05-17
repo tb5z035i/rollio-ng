@@ -92,12 +92,13 @@ pub enum EpisodeFormat {
 
 // (Legacy `DeviceConfig` removed; use `BinaryDeviceConfig` instead.)
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
     Camera,
     #[default]
     Robot,
+    Sensor,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1684,11 +1685,16 @@ pub struct DeviceChannelConfigV2 {
     #[serde(default)]
     pub dof: Option<u32>,
     #[serde(default)]
-    pub publish_states: Vec<RobotStateKind>,
+    pub publish_states: Vec<ChannelStateKind>,
     #[serde(default)]
-    pub recorded_states: Vec<RobotStateKind>,
+    pub recorded_states: Vec<ChannelStateKind>,
     #[serde(default)]
     pub control_frequency_hz: Option<f64>,
+    /// Sample period for `kind = "sensor"` channels. Required (positive,
+    /// finite) when the channel is enabled. Forbidden on camera and robot
+    /// channels (use `control_frequency_hz` for robot control loops).
+    #[serde(default)]
+    pub sample_rate_hz: Option<f64>,
     #[serde(default)]
     pub profile: Option<CameraChannelProfile>,
     /// Per-camera opt-in for the always-on preview encoder. When `true`
@@ -1734,6 +1740,12 @@ pub struct DeviceChannelConfigV2 {
     /// `query --json`. Refreshed on every controller startup; not persisted.
     #[serde(skip)]
     pub supported_commands: Vec<RobotCommandKind>,
+    /// Shape per published `SensorStateKind`, reported by sensor drivers via
+    /// `query --json`. Skipped during (de)serialization for the same reason
+    /// as `value_limits` — drivers are the source of truth, operators do not
+    /// hand-edit shape metadata. Empty for non-sensor channels.
+    #[serde(skip)]
+    pub sensor_shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
     #[serde(flatten, default)]
     pub extra: toml::Table,
 }
@@ -1773,6 +1785,12 @@ impl DeviceChannelConfigV2 {
                 if self.control_frequency_hz.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "device \"{}\" channel \"{}\": camera channels do not accept control_frequency_hz",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.sample_rate_hz.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": camera channels do not accept sample_rate_hz",
                         device.name, self.channel_type
                     )));
                 }
@@ -1819,6 +1837,26 @@ impl DeviceChannelConfigV2 {
                         device.name, self.channel_type
                     )));
                 }
+                if let Some(bad) = self
+                    .publish_states
+                    .iter()
+                    .find(|state| state.as_robot().is_none())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": robot channels reject sensor state kind {:?} in publish_states",
+                        device.name, self.channel_type, bad
+                    )));
+                }
+                if let Some(bad) = self
+                    .recorded_states
+                    .iter()
+                    .find(|state| state.as_robot().is_none())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": robot channels reject sensor state kind {:?} in recorded_states",
+                        device.name, self.channel_type, bad
+                    )));
+                }
                 if self
                     .recorded_states
                     .iter()
@@ -1843,8 +1881,92 @@ impl DeviceChannelConfigV2 {
                         )));
                     }
                 }
+                if self.sample_rate_hz.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": robot channels do not accept sample_rate_hz (use control_frequency_hz)",
+                        device.name, self.channel_type
+                    )));
+                }
                 self.command_defaults
                     .validate(device, &self.channel_type, dof as usize)?;
+            }
+            DeviceType::Sensor => {
+                if self.mode.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept mode",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.dof.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept dof",
+                        device.name, self.channel_type
+                    )));
+                }
+                if let Some(profile) = &self.profile {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept profile ({:?})",
+                        device.name, self.channel_type, profile
+                    )));
+                }
+                if self.control_frequency_hz.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept control_frequency_hz (use sample_rate_hz)",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.enabled && self.publish_states.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": enabled sensor channels require publish_states",
+                        device.name, self.channel_type
+                    )));
+                }
+                if let Some(bad) = self
+                    .publish_states
+                    .iter()
+                    .find(|state| state.as_sensor().is_none())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels reject robot state kind {:?} in publish_states",
+                        device.name, self.channel_type, bad
+                    )));
+                }
+                if let Some(bad) = self
+                    .recorded_states
+                    .iter()
+                    .find(|state| state.as_sensor().is_none())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels reject robot state kind {:?} in recorded_states",
+                        device.name, self.channel_type, bad
+                    )));
+                }
+                if self
+                    .recorded_states
+                    .iter()
+                    .any(|state| !self.publish_states.contains(state))
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": recorded_states must be a subset of publish_states",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.enabled {
+                    let rate = self.sample_rate_hz.ok_or_else(|| {
+                        ConfigError::Validation(format!(
+                            "device \"{}\" channel \"{}\": enabled sensor channels require sample_rate_hz",
+                            device.name, self.channel_type
+                        ))
+                    })?;
+                    if !rate.is_finite() || rate <= 0.0 {
+                        return Err(ConfigError::Validation(format!(
+                            "device \"{}\" channel \"{}\": sample_rate_hz must be a positive finite number",
+                            device.name, self.channel_type
+                        )));
+                    }
+                }
+                self.command_defaults
+                    .validate(device, &self.channel_type, 0)?;
             }
         }
         Ok(())
@@ -2010,6 +2132,113 @@ impl RobotStateKind {
     }
 }
 
+/// Sensor sample kinds published by a `DeviceType::Sensor` channel.
+///
+/// Parallel to `RobotStateKind`. Each variant maps to one iceoryx2 service
+/// `{bus_root}/{channel_type}/samples/{topic_suffix}` carrying a
+/// `SensorFrameHeader` user header plus a `[u8]` payload (dtype + ndim +
+/// shape are self-describing). Add variants when new sensor families come
+/// online; the layout for the initial set is fixed and documented below.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorStateKind {
+    /// IMU 6-axis sample, fixed layout `[ax, ay, az, gx, gy, gz]`. Accel and
+    /// gyro are combined so consumers cannot observe cross-topic skew between
+    /// halves of the same IMU packet. shape = `[6]`.
+    ImuAccelGyro,
+    /// Tactile point cloud. Each point carries `[x, y, z, fx, fy, fz]` — 3D
+    /// position and 3D contact force. shape = `[N_points, 6]`, where
+    /// `N_points` is fixed per channel and reported by the driver via
+    /// `query --json`.
+    TactilePointCloud2,
+}
+
+impl SensorStateKind {
+    pub fn topic_suffix(self) -> &'static str {
+        match self {
+            Self::ImuAccelGyro => "imu_accel_gyro",
+            Self::TactilePointCloud2 => "tactile_point_cloud2",
+        }
+    }
+
+    /// Fixed value length per sample, or `None` for variable-shape kinds
+    /// whose width depends on driver-reported metadata.
+    pub fn fixed_value_len(self) -> Option<u32> {
+        match self {
+            Self::ImuAccelGyro => Some(6),
+            Self::TactilePointCloud2 => None,
+        }
+    }
+
+    pub fn is_variable_shape(self) -> bool {
+        self.fixed_value_len().is_none()
+    }
+}
+
+/// Tagged union of state kinds accepted on a `DeviceChannelConfigV2`. The
+/// validator narrows back to `RobotStateKind` (robot channels) or
+/// `SensorStateKind` (sensor channels) so downstream consumers can keep
+/// their existing typed signatures via `as_robot()` / `as_sensor()`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum ChannelStateKind {
+    Robot(RobotStateKind),
+    Sensor(SensorStateKind),
+}
+
+impl ChannelStateKind {
+    pub fn as_robot(self) -> Option<RobotStateKind> {
+        match self {
+            Self::Robot(kind) => Some(kind),
+            Self::Sensor(_) => None,
+        }
+    }
+
+    pub fn as_sensor(self) -> Option<SensorStateKind> {
+        match self {
+            Self::Sensor(kind) => Some(kind),
+            Self::Robot(_) => None,
+        }
+    }
+
+    pub fn topic_suffix(self) -> &'static str {
+        match self {
+            Self::Robot(kind) => kind.topic_suffix(),
+            Self::Sensor(kind) => kind.topic_suffix(),
+        }
+    }
+}
+
+impl Default for ChannelStateKind {
+    fn default() -> Self {
+        Self::Robot(RobotStateKind::default())
+    }
+}
+
+impl From<RobotStateKind> for ChannelStateKind {
+    fn from(value: RobotStateKind) -> Self {
+        Self::Robot(value)
+    }
+}
+
+impl From<SensorStateKind> for ChannelStateKind {
+    fn from(value: SensorStateKind) -> Self {
+        Self::Sensor(value)
+    }
+}
+
+impl PartialEq<RobotStateKind> for ChannelStateKind {
+    fn eq(&self, other: &RobotStateKind) -> bool {
+        matches!(self, Self::Robot(kind) if kind == other)
+    }
+}
+
+impl PartialEq<SensorStateKind> for ChannelStateKind {
+    fn eq(&self, other: &SensorStateKind) -> bool {
+        matches!(self, Self::Sensor(kind) if kind == other)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum RobotCommandKind {
@@ -2142,7 +2371,10 @@ impl ChannelPairingConfig {
                 "pairing leader and follower channel must differ".into(),
             ));
         }
-        if !leader.publish_states.contains(&self.leader_state) {
+        if !leader
+            .publish_states
+            .contains(&ChannelStateKind::from(self.leader_state))
+        {
             return Err(ConfigError::Validation(format!(
                 "pairing {}:{} leader_state {:?} is not present in publish_states",
                 self.leader_device, self.leader_channel_type, self.leader_state
@@ -2959,6 +3191,27 @@ pub struct AssemblerObservationRuntimeConfigV2 {
     pub value_len: u32,
 }
 
+/// Sensor observation routed into the LeRobot dataset alongside robot
+/// state observations. The assembler subscribes to `sample_topic` (a
+/// dynamic-payload `SensorFrameHeader` service) and writes one row per
+/// frame with `shape` flat-elements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssemblerSensorObservationRuntimeConfigV2 {
+    pub channel_id: String,
+    pub sensor_kind: SensorStateKind,
+    pub sample_topic: String,
+    /// Shape per sample (e.g. `[6]` for IMU, `[N_points, 6]` for tactile
+    /// point clouds). The Parquet writer flattens to `value_len` columns;
+    /// the original shape is preserved in `meta/info.json` features.
+    pub shape: Vec<u32>,
+}
+
+impl AssemblerSensorObservationRuntimeConfigV2 {
+    pub fn value_len(&self) -> u32 {
+        self.shape.iter().product()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssemblerActionRuntimeConfigV2 {
     pub channel_id: String,
@@ -2987,6 +3240,8 @@ pub struct AssemblerRuntimeConfigV2 {
     pub cameras: Vec<AssemblerCameraRuntimeConfigV2>,
     #[serde(default)]
     pub observations: Vec<AssemblerObservationRuntimeConfigV2>,
+    #[serde(default)]
+    pub sensor_observations: Vec<AssemblerSensorObservationRuntimeConfigV2>,
     #[serde(default)]
     pub actions: Vec<AssemblerActionRuntimeConfigV2>,
     pub embedded_config_toml: String,
@@ -3105,6 +3360,23 @@ pub struct DeviceQueryChannel {
     /// limit-aware bars and (later) the safety layer can clip targets.
     #[serde(default)]
     pub value_limits: Vec<StateValueLimitsEntry>,
+    /// Sensor sample kinds this channel can publish. Empty for camera /
+    /// robot channels. Drives `DeviceChannelConfigV2.publish_states` for
+    /// `kind = "sensor"` channels.
+    #[serde(default)]
+    pub supported_sensor_kinds: Vec<SensorStateKind>,
+    /// Shape per published sensor kind. Persisted on
+    /// `DeviceChannelConfigV2.sensor_shape_hints` so the assembler can
+    /// declare correct dataset feature shapes (e.g. `[256, 6]` for
+    /// tactile point clouds, `[6]` for IMU). Keyed by `SensorStateKind`
+    /// serde name.
+    #[serde(default)]
+    pub sensor_shape_hints:
+        std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
+    /// Driver-suggested sample period for a sensor channel. Operators can
+    /// override in TOML; the setup wizard uses this as the default.
+    #[serde(default)]
+    pub default_sample_rate_hz: Option<f64>,
     #[serde(default)]
     pub optional_info: toml::Table,
 }
@@ -3159,6 +3431,26 @@ pub struct ResolvedRobotChannel {
     pub control_frequency_hz: f64,
     pub command_defaults: ChannelCommandDefaults,
     pub value_limits: Vec<StateValueLimitsEntry>,
+}
+
+/// Resolved view of a `kind = "sensor"` channel — derived from
+/// `DeviceChannelConfigV2` and the driver-reported `shape_hints`.
+#[derive(Debug, Clone)]
+pub struct ResolvedSensorChannel {
+    pub channel_id: String,
+    pub device_name: String,
+    pub driver: String,
+    pub bus_root: String,
+    pub channel_type: String,
+    pub sample_rate_hz: f64,
+    /// One iceoryx2 service per published `SensorStateKind`, derived as
+    /// `{bus_root}/{channel_type}/samples/{topic_suffix}`.
+    pub sample_topics: Vec<(SensorStateKind, String)>,
+    pub recorded_states: Vec<SensorStateKind>,
+    /// Shape per published kind as reported by the driver `query --json`.
+    /// Empty when the driver has not yet been queried (e.g., before
+    /// controller startup); consumers should treat absence as "unknown".
+    pub shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
 }
 
 fn preview_resize_policy(
@@ -3344,13 +3636,21 @@ impl ProjectConfig {
                     continue;
                 }
                 let dof = channel.dof.unwrap_or_default();
-                let recorded_states = if channel.recorded_states.is_empty() {
-                    channel.publish_states.clone()
-                } else {
-                    channel.recorded_states.clone()
-                };
-                let state_topics = channel
+                let publish_robot = channel
                     .publish_states
+                    .iter()
+                    .filter_map(|state| state.as_robot())
+                    .collect::<Vec<_>>();
+                let recorded_states = if channel.recorded_states.is_empty() {
+                    publish_robot.clone()
+                } else {
+                    channel
+                        .recorded_states
+                        .iter()
+                        .filter_map(|state| state.as_robot())
+                        .collect::<Vec<_>>()
+                };
+                let state_topics = publish_robot
                     .iter()
                     .copied()
                     .map(|state| {
@@ -3372,6 +3672,53 @@ impl ProjectConfig {
                     control_frequency_hz: channel.control_frequency_hz.unwrap_or(60.0),
                     command_defaults: channel.command_defaults.clone(),
                     value_limits: channel.value_limits.clone(),
+                });
+            }
+        }
+        channels
+    }
+
+    pub fn resolved_sensor_channels(&self) -> Vec<ResolvedSensorChannel> {
+        let mut channels = Vec::new();
+        for device in &self.devices {
+            for channel in &device.channels {
+                if channel.kind != DeviceType::Sensor || !channel.enabled {
+                    continue;
+                }
+                let publish_sensor = channel
+                    .publish_states
+                    .iter()
+                    .filter_map(|state| state.as_sensor())
+                    .collect::<Vec<_>>();
+                let recorded_states = if channel.recorded_states.is_empty() {
+                    publish_sensor.clone()
+                } else {
+                    channel
+                        .recorded_states
+                        .iter()
+                        .filter_map(|state| state.as_sensor())
+                        .collect::<Vec<_>>()
+                };
+                let sample_topics = publish_sensor
+                    .iter()
+                    .copied()
+                    .map(|kind| {
+                        (
+                            kind,
+                            sensor_sample_topic_v2(&device.bus_root, &channel.channel_type, kind),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                channels.push(ResolvedSensorChannel {
+                    channel_id: device_channel_id(&device.name, &channel.channel_type),
+                    device_name: device.name.clone(),
+                    driver: device.driver.clone(),
+                    bus_root: device.bus_root.clone(),
+                    channel_type: channel.channel_type.clone(),
+                    sample_rate_hz: channel.sample_rate_hz.unwrap_or(0.0),
+                    sample_topics,
+                    recorded_states,
+                    shape_hints: channel.sensor_shape_hints.clone(),
                 });
             }
         }
@@ -3668,6 +4015,35 @@ impl ProjectConfig {
                     )
             })
             .collect();
+        let sensor_observations = self
+            .resolved_sensor_channels()
+            .into_iter()
+            .flat_map(|sensor| {
+                let recorded = sensor.recorded_states.clone();
+                let shape_hints = sensor.shape_hints.clone();
+                let channel_id = sensor.channel_id.clone();
+                sensor
+                    .sample_topics
+                    .into_iter()
+                    .filter(move |(kind, _)| recorded.contains(kind))
+                    .map(
+                        move |(sensor_kind, sample_topic)| AssemblerSensorObservationRuntimeConfigV2 {
+                            channel_id: channel_id.clone(),
+                            sensor_kind,
+                            sample_topic,
+                            shape: shape_hints
+                                .get(&sensor_kind)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    sensor_kind
+                                        .fixed_value_len()
+                                        .map(|n| vec![n])
+                                        .unwrap_or_default()
+                                }),
+                        },
+                    )
+            })
+            .collect();
         let actions = self
             .pairings
             .iter()
@@ -3708,6 +4084,7 @@ impl ProjectConfig {
             staging_slots: self.assembler.staging_slots,
             cameras,
             observations,
+            sensor_observations,
             actions,
             embedded_config_toml,
         }
@@ -3734,7 +4111,10 @@ impl ProjectConfig {
                     RobotCommandKind::EndPose => Some(RobotStateKind::EndEffectorPose),
                 };
                 let follower_state_topic = follower_state_kind.and_then(|kind| {
-                    if follower_channel.publish_states.contains(&kind) {
+                    if follower_channel
+                        .publish_states
+                        .contains(&ChannelStateKind::from(kind))
+                    {
                         Some(robot_state_topic_v2(
                             &follower_device.bus_root,
                             &pairing.follower_channel_type,
@@ -3838,6 +4218,22 @@ fn robot_state_topic_v2(bus_root: &str, channel_type: &str, state: RobotStateKin
         "{}/states/{}",
         channel_prefix_v2(bus_root, channel_type),
         state.topic_suffix()
+    )
+}
+
+/// Topic name for a sensor sample stream. Mirrors `robot_state_topic_v2`
+/// but writes under `samples/` to keep the iceoryx2 service type separate
+/// (dynamic-payload + `SensorFrameHeader`, vs the fixed-size services on
+/// `states/`).
+pub fn sensor_sample_topic_v2(
+    bus_root: &str,
+    channel_type: &str,
+    kind: SensorStateKind,
+) -> String {
+    format!(
+        "{}/samples/{}",
+        channel_prefix_v2(bus_root, channel_type),
+        kind.topic_suffix()
     )
 }
 

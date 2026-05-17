@@ -17,9 +17,10 @@ use rollio_bus::{
 };
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChannelPreviewConfig,
-    ChannelRecordConfig, ChromaSubsampling, CollectionMode, DeviceChannelConfigV2, DeviceType,
-    EncoderBackend, EncoderCodec, EncoderColorSpace, EncoderConfig, EpisodeFormat,
-    MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
+    ChannelRecordConfig, ChannelStateKind, ChromaSubsampling, CollectionMode,
+    DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec, EncoderColorSpace,
+    EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode,
+    RobotStateKind, SensorStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -265,6 +266,22 @@ struct DiscoveredChannelMeta {
     /// validation can consult the schema instead of any vendor table.
     #[serde(default)]
     direct_joint_compatibility: rollio_types::config::DirectJointCompatibility,
+    /// All `SensorStateKind` values this driver reports it can publish on a
+    /// sensor channel. Empty for non-sensor kinds. Used to seed
+    /// `publish_states` when a sensor channel enters the wizard.
+    #[serde(default)]
+    supported_sensor_kinds: Vec<rollio_types::config::SensorStateKind>,
+    /// Shape per published sensor kind reported by the driver. Persisted on
+    /// `DeviceChannelConfigV2.sensor_shape_hints` so the assembler can
+    /// declare correct LeRobot feature shapes for tactile point clouds and
+    /// IMU samples.
+    #[serde(default)]
+    sensor_shape_hints: std::collections::BTreeMap<rollio_types::config::SensorStateKind, Vec<u32>>,
+    /// Default sample period for a sensor channel. Defaults to None; the
+    /// setup wizard requires the operator (or driver) to provide one before
+    /// validation will pass.
+    #[serde(default)]
+    default_sample_rate_hz: Option<f64>,
 }
 
 fn default_channel_kind() -> DeviceType {
@@ -932,7 +949,8 @@ impl SetupSession {
             .unwrap_or_default();
 
         let channel = &mut self.config.devices[device_index].channels[channel_index];
-        let currently_enabled = channel.publish_states.contains(&state_kind);
+        let target_kind = ChannelStateKind::from(state_kind);
+        let currently_enabled = channel.publish_states.contains(&target_kind);
         if currently_enabled {
             // Block removal if a pairing depends on this state as its
             // leader_state.
@@ -947,8 +965,8 @@ impl SetupSession {
                 ));
                 return Ok(false);
             }
-            channel.publish_states.retain(|kind| *kind != state_kind);
-            channel.recorded_states.retain(|kind| *kind != state_kind);
+            channel.publish_states.retain(|kind| *kind != target_kind);
+            channel.recorded_states.retain(|kind| *kind != target_kind);
         } else {
             // Refuse to toggle on a kind the driver doesn't advertise so the
             // wizard cannot publish unsupported topics.
@@ -959,7 +977,7 @@ impl SetupSession {
                 ));
                 return Ok(false);
             }
-            channel.publish_states.push(state_kind);
+            channel.publish_states.push(target_kind);
         }
         self.config.validate()?;
         // Mirror the latest publish/recorded sets into the AvailableDevice
@@ -991,18 +1009,19 @@ impl SetupSession {
             return Ok(false);
         }
         let channel = &mut self.config.devices[device_index].channels[channel_index];
-        let currently_enabled = channel.recorded_states.contains(&state_kind);
+        let target_kind = ChannelStateKind::from(state_kind);
+        let currently_enabled = channel.recorded_states.contains(&target_kind);
         if currently_enabled {
-            channel.recorded_states.retain(|kind| *kind != state_kind);
+            channel.recorded_states.retain(|kind| *kind != target_kind);
         } else {
-            if !channel.publish_states.contains(&state_kind) {
+            if !channel.publish_states.contains(&target_kind) {
                 self.message = Some(format!(
                     "{:?} must be published before it can be recorded.",
                     state_kind
                 ));
                 return Ok(false);
             }
-            channel.recorded_states.push(state_kind);
+            channel.recorded_states.push(target_kind);
         }
         self.config.validate()?;
         self.sync_available_channel_state_lists(name, device_index, channel_index);
@@ -3092,6 +3111,7 @@ fn build_channel_config_from_meta(
                 publish_states: Vec::new(),
                 recorded_states: Vec::new(),
                 control_frequency_hz: None,
+                sample_rate_hz: None,
                 profile,
                 preview_enabled: true,
                 record_enabled: true,
@@ -3101,13 +3121,19 @@ fn build_channel_config_from_meta(
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
                 supported_commands: meta.supported_commands.clone(),
+                sensor_shape_hints: Default::default(),
                 extra: toml::Table::new(),
             }
         }
         DeviceType::Robot => {
             let mode = Some(select_supported_mode(&meta.modes, preferred_mode));
-            let publish_states =
+            let robot_publish: Vec<RobotStateKind> =
                 default_publish_states_for_meta(meta, &robot_publish_states_fallback(channel_type));
+            let publish_states: Vec<ChannelStateKind> = robot_publish
+                .iter()
+                .copied()
+                .map(ChannelStateKind::from)
+                .collect();
             let recorded_states = publish_states.clone();
             DeviceChannelConfigV2 {
                 channel_type: channel_type.to_owned(),
@@ -3120,6 +3146,7 @@ fn build_channel_config_from_meta(
                 publish_states,
                 recorded_states,
                 control_frequency_hz: meta.default_control_frequency_hz,
+                sample_rate_hz: None,
                 profile: None,
                 preview_enabled: true,
                 record_enabled: true,
@@ -3129,6 +3156,42 @@ fn build_channel_config_from_meta(
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
                 supported_commands: meta.supported_commands.clone(),
+                sensor_shape_hints: Default::default(),
+                extra: toml::Table::new(),
+            }
+        }
+        DeviceType::Sensor => {
+            // Sensor channels enter setup via driver `query --json` —
+            // the wizard does not yet have a dedicated picker, so we
+            // mirror the meta-reported sensor kinds into publish_states
+            // and require a non-zero sample_rate_hz to be filled in by
+            // a later wizard step (or operator hand-edit).
+            let sensor_kinds: Vec<SensorStateKind> = meta.supported_sensor_kinds.clone();
+            let publish_states: Vec<ChannelStateKind> = sensor_kinds
+                .iter()
+                .copied()
+                .map(ChannelStateKind::from)
+                .collect();
+            let recorded_states = publish_states.clone();
+            DeviceChannelConfigV2 {
+                channel_type: channel_type.to_owned(),
+                kind: DeviceType::Sensor,
+                enabled: true,
+                name: channel_name,
+                channel_label: meta.channel_label.clone(),
+                mode: None,
+                dof: None,
+                publish_states,
+                recorded_states,
+                control_frequency_hz: None,
+                sample_rate_hz: meta.default_sample_rate_hz,
+                profile: None,
+                preview_enabled: true,
+                command_defaults: meta.defaults.clone(),
+                value_limits: Vec::new(),
+                direct_joint_compatibility: Default::default(),
+                supported_commands: Vec::new(),
+                sensor_shape_hints: meta.sensor_shape_hints.clone(),
                 extra: toml::Table::new(),
             }
         }
@@ -3245,7 +3308,9 @@ fn policy_pair_compatible(
 }
 
 fn channel_supports_direct_joint_leader(ch: &DeviceChannelConfigV2) -> bool {
-    ch.publish_states.contains(&RobotStateKind::JointPosition) && ch.dof.is_some_and(|d| d > 0)
+    ch.publish_states
+        .contains(&ChannelStateKind::from(RobotStateKind::JointPosition))
+        && ch.dof.is_some_and(|d| d > 0)
 }
 
 fn channel_supports_direct_joint_follower(ch: &DeviceChannelConfigV2) -> bool {
@@ -3258,7 +3323,7 @@ fn channel_supports_parallel_leader(ch: &DeviceChannelConfigV2) -> bool {
     ch.dof == Some(1)
         && ch
             .publish_states
-            .contains(&RobotStateKind::ParallelPosition)
+            .contains(&ChannelStateKind::from(RobotStateKind::ParallelPosition))
 }
 
 fn channel_supports_parallel_follower(ch: &DeviceChannelConfigV2) -> bool {
@@ -3353,8 +3418,9 @@ fn ensure_channel_publishes_state(
     else {
         return;
     };
-    if !channel.publish_states.contains(&state) {
-        channel.publish_states.push(state);
+    let wrapped = ChannelStateKind::from(state);
+    if !channel.publish_states.contains(&wrapped) {
+        channel.publish_states.push(wrapped);
     }
 }
 
@@ -3480,7 +3546,8 @@ fn pairing_from_channels(
 }
 
 fn channel_supports_cartesian_leader(ch: &DeviceChannelConfigV2) -> bool {
-    ch.publish_states.contains(&RobotStateKind::EndEffectorPose)
+    ch.publish_states
+        .contains(&ChannelStateKind::from(RobotStateKind::EndEffectorPose))
 }
 
 fn channel_supports_cartesian_follower(ch: &DeviceChannelConfigV2) -> bool {
@@ -3913,10 +3980,13 @@ fn missing_value_limit_warnings(config: &ProjectConfig) -> Vec<String> {
                 continue;
             }
             for state_kind in &channel.publish_states {
+                let Some(robot_state) = state_kind.as_robot() else {
+                    continue;
+                };
                 let entry = channel
                     .value_limits
                     .iter()
-                    .find(|entry| entry.state_kind == *state_kind);
+                    .find(|entry| entry.state_kind == robot_state);
                 let needs_warning = match entry {
                     None => true,
                     Some(entry) => entry.min.is_empty() || entry.max.is_empty(),
@@ -3926,7 +3996,7 @@ fn missing_value_limit_warnings(config: &ProjectConfig) -> Vec<String> {
                         "device \"{}\" channel \"{}\": driver did not report value_limits for {}; bars will render as ??? until the device executable provides them",
                         device.name,
                         channel.channel_type,
-                        state_kind.topic_suffix()
+                        robot_state.topic_suffix()
                     ));
                 }
             }
@@ -4330,6 +4400,7 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                 .and_then(|s| match s.as_str() {
                     "camera" => Some(DeviceType::Camera),
                     "robot" => Some(DeviceType::Robot),
+                    "sensor" => Some(DeviceType::Sensor),
                     _ => None,
                 })
                 .unwrap_or(DeviceType::Robot);
@@ -4359,6 +4430,14 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                 crate::device_query::parse_query_direct_joint_compatibility(
                     channel.get("direct_joint_compatibility"),
                 );
+            let supported_sensor_kinds = crate::device_query::parse_query_supported_sensor_kinds(
+                channel.get("supported_sensor_kinds"),
+            );
+            let sensor_shape_hints = crate::device_query::parse_query_sensor_shape_hints(
+                channel.get("sensor_shape_hints"),
+            );
+            let default_sample_rate_hz = value_as_f64(channel.get("default_sample_rate_hz"))
+                .filter(|v| v.is_finite() && *v > 0.0);
             Some((
                 channel_type,
                 DiscoveredChannelMeta {
@@ -4374,6 +4453,9 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                     supported_states,
                     supported_commands,
                     direct_joint_compatibility,
+                    supported_sensor_kinds,
+                    sensor_shape_hints,
+                    default_sample_rate_hz,
                 },
             ))
         })
@@ -5206,7 +5288,7 @@ mod tests {
             .expect("arm channel should exist");
         assert!(arm
             .publish_states
-            .contains(&RobotStateKind::EndEffectorPose));
+            .contains(&ChannelStateKind::from(RobotStateKind::EndEffectorPose)));
         assert_eq!(arm.publish_states, arm.recorded_states);
     }
 
@@ -5235,9 +5317,12 @@ mod tests {
             .device_named("airbot_play")
             .and_then(|device| device.channel_named("arm"))
             .expect("arm channel still configured");
-        assert!(!arm.publish_states.contains(&RobotStateKind::JointEffort));
+        assert!(!arm
+            .publish_states
+            .contains(&ChannelStateKind::from(RobotStateKind::JointEffort)));
         assert!(
-            !arm.recorded_states.contains(&RobotStateKind::JointEffort),
+            !arm.recorded_states
+                .contains(&ChannelStateKind::from(RobotStateKind::JointEffort)),
             "recorded_states must stay a subset of publish_states",
         );
     }
@@ -5281,7 +5366,9 @@ mod tests {
             .device_named(&leader_name)
             .and_then(|device| device.channel_named("arm"))
             .expect("leader arm still configured");
-        assert!(arm.publish_states.contains(&RobotStateKind::JointPosition));
+        assert!(arm
+            .publish_states
+            .contains(&ChannelStateKind::from(RobotStateKind::JointPosition)));
         assert!(session.message.is_some(), "user should see a clear refusal");
     }
 
@@ -5320,7 +5407,7 @@ mod tests {
         assert!(
             !available_channel
                 .publish_states
-                .contains(&RobotStateKind::JointEffort),
+                .contains(&ChannelStateKind::from(RobotStateKind::JointEffort)),
             "AvailableDevice snapshot must mirror the updated publish_states; \
              got {:?}",
             available_channel.publish_states,
@@ -5328,7 +5415,7 @@ mod tests {
         assert!(
             !available_channel
                 .recorded_states
-                .contains(&RobotStateKind::JointEffort),
+                .contains(&ChannelStateKind::from(RobotStateKind::JointEffort)),
             "AvailableDevice snapshot must mirror the updated recorded_states",
         );
 
@@ -5344,7 +5431,7 @@ mod tests {
         assert!(
             !available_channel
                 .recorded_states
-                .contains(&RobotStateKind::JointVelocity),
+                .contains(&ChannelStateKind::from(RobotStateKind::JointVelocity)),
             "recorded_state toggle should also propagate; got {:?}",
             available_channel.recorded_states,
         );
@@ -5380,7 +5467,9 @@ mod tests {
             .device_named("airbot_play")
             .and_then(|device| device.channel_named("arm"))
             .expect("arm channel still configured");
-        assert!(!arm.recorded_states.contains(&RobotStateKind::JointEffort));
+        assert!(!arm
+            .recorded_states
+            .contains(&ChannelStateKind::from(RobotStateKind::JointEffort)));
     }
 
     #[test]

@@ -267,6 +267,55 @@ joint_mit_kp = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 joint_mit_kd = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 
 # -----------------------------------------------------------------------------
+# Sensor devices — `kind = "sensor"` channels publish on
+# `{bus_root}/{channel_type}/samples/{sensor_kind}` (dynamic-payload
+# `SensorFrameHeader` services). Initial `SensorStateKind` set:
+#   "imu_accel_gyro"        — 6 floats `[ax, ay, az, gx, gy, gz]`
+#   "tactile_point_cloud2"  — N x 6 floats `[x, y, z, fx, fy, fz]` per point
+#                             (N reported by the driver via `query --json`)
+# Sensor channels require `sample_rate_hz` and do NOT accept profile / mode /
+# dof / control_frequency_hz.
+# -----------------------------------------------------------------------------
+[[devices]]
+name = "imu"
+driver = "pseudo"
+id = "pseudo_sensor_imu_0"
+bus_root = "imu_bus"
+
+[devices.extra]
+transport = "simulated"
+
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 200.0
+publish_states = ["imu_accel_gyro"]
+recorded_states = ["imu_accel_gyro"]
+
+[[devices]]
+name = "tactile_left"
+driver = "pseudo"
+id = "pseudo_sensor_tactile_0"
+bus_root = "tactile_left_bus"
+
+[devices.extra]
+transport = "simulated"
+# Pseudo tactile point count. Overrides `DEFAULT_TACTILE_POINT_COUNT = 256`
+# inside the pseudo driver. The driver also reports the same value through
+# `query --json` so the assembler / LeRobot writer can declare the correct
+# `[N_points, 6]` feature shape.
+tactile_point_count = 256
+
+[[devices.channels]]
+channel_type = "tactile"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 60.0
+publish_states = ["tactile_point_cloud2"]
+recorded_states = ["tactile_point_cloud2"]
+
+# -----------------------------------------------------------------------------
 # Pairings — connect a leader robot channel to a follower channel under one
 # teleoperation policy. Empty when `mode = "intervention"`.
 # -----------------------------------------------------------------------------

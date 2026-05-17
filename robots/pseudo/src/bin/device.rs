@@ -2,18 +2,20 @@ use clap::{Args, Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{
     channel_command_service_name, channel_frames_service_name, channel_mode_control_service_name,
-    channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
-    STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
+    channel_mode_info_service_name, channel_sample_service_name, channel_state_service_name,
+    CONTROL_EVENTS_SERVICE, SAMPLE_BUFFER, SAMPLE_MAX_NODES, SAMPLE_MAX_PUBLISHERS,
+    SAMPLE_MAX_SUBSCRIBERS, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, DeviceQueryChannel,
     DeviceQueryDevice, DeviceQueryResponse, DeviceType, DirectJointCompatibility,
-    DirectJointCompatibilityPeer, RobotCommandKind, RobotMode, RobotStateKind,
+    DirectJointCompatibilityPeer, RobotCommandKind, RobotMode, RobotStateKind, SensorStateKind,
     StateValueLimitsEntry,
 };
 use rollio_types::messages::{
     CameraFrameHeader, ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15,
-    PixelFormat, Pose7,
+    PixelFormat, Pose7, SensorDType, SensorFrameHeader, SENSOR_FRAME_MAX_DIMS,
 };
 use serde_json::json;
 use std::error::Error;
@@ -404,6 +406,9 @@ fn run_device(device: BinaryDeviceConfig, cli: RunArgs) -> Result<(), Box<dyn Er
                     DeviceType::Robot => {
                         run_robot_channel(bus_root, channel, Arc::clone(&stop_flag))
                     }
+                    DeviceType::Sensor => {
+                        run_sensor_channel(bus_root, channel, Arc::clone(&stop_flag))
+                    }
                 };
                 if result.is_err() {
                     stop_flag.store(true, Ordering::Relaxed);
@@ -641,6 +646,186 @@ fn run_camera_channel(
 }
 
 // ---------------------------------------------------------------------------
+// Sensor channel (synthetic IMU + tactile point-cloud2)
+// ---------------------------------------------------------------------------
+
+/// Default number of tactile points when the channel does not override it
+/// via `[devices.extra].tactile_point_count`.
+const DEFAULT_TACTILE_POINT_COUNT: u32 = 256;
+
+fn shape_for_sensor_kind(kind: SensorStateKind, tactile_point_count: u32) -> Vec<u32> {
+    match kind {
+        SensorStateKind::ImuAccelGyro => vec![6],
+        SensorStateKind::TactilePointCloud2 => vec![tactile_point_count, 6],
+    }
+}
+
+fn element_count(shape: &[u32]) -> usize {
+    shape.iter().map(|&d| d as usize).product()
+}
+
+fn fill_sensor_payload(
+    kind: SensorStateKind,
+    elements: usize,
+    sample_index: u64,
+    out: &mut [u8],
+) {
+    let phase = sample_index as f32 * 0.01;
+    match kind {
+        SensorStateKind::ImuAccelGyro => {
+            // accel = [ax, ay, az] in m/s^2, gyro = [gx, gy, gz] in rad/s
+            let values: [f32; 6] = [
+                (phase).sin() * 1.5,
+                (phase + 0.7).sin() * 1.5,
+                9.81 + (phase * 0.3).sin() * 0.05,
+                (phase * 2.0).cos() * 0.4,
+                (phase * 2.0 + 0.5).cos() * 0.4,
+                (phase * 2.0 + 1.0).cos() * 0.4,
+            ];
+            for (i, &v) in values.iter().enumerate() {
+                out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        SensorStateKind::TactilePointCloud2 => {
+            // Six floats per point: (x, y, z, fx, fy, fz). Make the cloud
+            // a small synthetic sine surface with proportional force.
+            let n_points = elements / 6;
+            for p in 0..n_points {
+                let u = p as f32 / n_points.max(1) as f32;
+                let x = u * 0.05; // 0..5 cm
+                let y = (u * 4.0 + phase).sin() * 0.01;
+                let z = (u * 4.0 + phase + 0.7).cos() * 0.005;
+                let fx = (u * 6.0 + phase).sin() * 0.2;
+                let fy = (u * 6.0 + phase + 0.3).cos() * 0.2;
+                let fz = 0.5 + (u * 6.0 + phase + 0.6).sin() * 0.1;
+                let base = p * 6 * 4;
+                for (i, v) in [x, y, z, fx, fy, fz].iter().enumerate() {
+                    out[base + i * 4..base + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+fn tactile_point_count_from_extra(extra: &toml::Table) -> u32 {
+    extra
+        .get("tactile_point_count")
+        .and_then(|v| v.as_integer())
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(DEFAULT_TACTILE_POINT_COUNT)
+}
+
+fn run_sensor_channel(
+    bus_root: String,
+    channel: rollio_types::config::DeviceChannelConfigV2,
+    stop: Arc<AtomicBool>,
+) -> Result<(), Box<dyn Error>> {
+    let sample_rate_hz = channel
+        .sample_rate_hz
+        .ok_or("pseudo sensor requires sample_rate_hz")?;
+    if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
+        return Err("pseudo sensor sample_rate_hz must be > 0".into());
+    }
+    let tactile_point_count = tactile_point_count_from_extra(&channel.extra);
+
+    let node = NodeBuilder::new()
+        .signal_handling_mode(SignalHandlingMode::Disabled)
+        .create::<ipc::Service>()?;
+    let shutdown_subscriber = open_shutdown_subscriber(&node)?;
+    let mode_info_publisher =
+        open_channel_mode_publisher(&node, &bus_root, &channel.channel_type)?;
+
+    struct SensorPublisher {
+        kind: SensorStateKind,
+        shape: Vec<u32>,
+        elements: usize,
+        publisher: iceoryx2::port::publisher::Publisher<
+            ipc::Service,
+            [u8],
+            SensorFrameHeader,
+        >,
+    }
+
+    let mut publishers: Vec<SensorPublisher> = Vec::new();
+    for kind in channel.publish_states.iter().filter_map(|s| s.as_sensor()) {
+        let topic: ServiceName =
+            channel_sample_service_name(&bus_root, &channel.channel_type, kind.topic_suffix())
+                .as_str()
+                .try_into()?;
+        let service = node
+            .service_builder(&topic)
+            .publish_subscribe::<[u8]>()
+            .user_header::<SensorFrameHeader>()
+            .subscriber_max_buffer_size(SAMPLE_BUFFER)
+            .history_size(SAMPLE_BUFFER)
+            .max_publishers(SAMPLE_MAX_PUBLISHERS)
+            .max_subscribers(SAMPLE_MAX_SUBSCRIBERS)
+            .max_nodes(SAMPLE_MAX_NODES)
+            .open_or_create()?;
+        let shape = shape_for_sensor_kind(kind, tactile_point_count);
+        let elements = element_count(&shape);
+        let publisher = service
+            .publisher_builder()
+            .initial_max_slice_len(elements * SensorDType::F32.byte_size())
+            .allocation_strategy(AllocationStrategy::PowerOfTwo)
+            .create()?;
+        publishers.push(SensorPublisher {
+            kind,
+            shape,
+            elements,
+            publisher,
+        });
+    }
+
+    let period = Duration::from_secs_f64(1.0 / sample_rate_hz);
+    let mut next_tick = Instant::now();
+    let mut sample_index: u64 = 0;
+    let mut scratch: Vec<u8> = Vec::new();
+    loop {
+        if stop.load(Ordering::Relaxed) || drain_shutdown_events(&shutdown_subscriber)? {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= next_tick {
+            let timestamp_us = unix_timestamp_us();
+            for pub_entry in publishers.iter() {
+                let dtype = SensorDType::F32;
+                let payload_bytes = pub_entry.elements * dtype.byte_size();
+                scratch.clear();
+                scratch.resize(payload_bytes, 0);
+                fill_sensor_payload(pub_entry.kind, pub_entry.elements, sample_index, &mut scratch);
+                let mut shape_arr = [0u32; SENSOR_FRAME_MAX_DIMS];
+                for (i, &d) in pub_entry.shape.iter().enumerate() {
+                    if i < SENSOR_FRAME_MAX_DIMS {
+                        shape_arr[i] = d;
+                    }
+                }
+                let mut sample = pub_entry.publisher.loan_slice_uninit(payload_bytes)?;
+                *sample.user_header_mut() = SensorFrameHeader {
+                    timestamp_us,
+                    sample_index,
+                    sensor_kind: pub_entry.kind as u32,
+                    dtype,
+                    ndim: pub_entry.shape.len().min(SENSOR_FRAME_MAX_DIMS) as u8,
+                    _pad: [0; 2],
+                    shape: shape_arr,
+                };
+                let sample = sample.write_from_slice(&scratch);
+                sample.send()?;
+            }
+            sample_index = sample_index.saturating_add(1);
+            mode_info_publisher.send_copy(DeviceChannelMode::Enabled)?;
+            next_tick += period;
+            if Instant::now() > next_tick + period {
+                next_tick = Instant::now() + period;
+            }
+        } else {
+            std::thread::sleep((next_tick - now).min(Duration::from_millis(5)));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pixel format converters (source: RGB24 color bars)
 // ---------------------------------------------------------------------------
 
@@ -867,7 +1052,7 @@ fn run_robot_channel(
     let mode_info_publisher = open_channel_mode_publisher(&node, &bus_root, &channel.channel_type)?;
     // Apply the shared state-buffer caps (see `rollio_bus::STATE_BUFFER`).
     let mut state_publishers = Vec::new();
-    for state_kind in &channel.publish_states {
+    for state_kind in channel.publish_states.iter().filter_map(|s| s.as_robot()) {
         let topic: ServiceName =
             channel_state_service_name(&bus_root, &channel.channel_type, state_kind.topic_suffix())
                 .as_str()
@@ -1160,6 +1345,13 @@ fn pseudo_probe_ids(sim_cameras: u32, sim_arms: u32, dof: u32) -> Vec<String> {
     for index in 0..sim_arms {
         ids.push(format!("pseudo_robot_{index}_dof_{dof}"));
     }
+    // Synthetic sensor IDs follow `pseudo_sensor_imu_<index>` and
+    // `pseudo_sensor_tactile_<index>` so the wizard can probe them
+    // alongside cameras / arms without colliding with the other ID
+    // shapes. We always expose at least one of each so end-to-end tests
+    // can exercise both sensor kinds without extra flags.
+    ids.push("pseudo_sensor_imu_0".into());
+    ids.push("pseudo_sensor_tactile_0".into());
     ids
 }
 
@@ -1219,6 +1411,9 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
                 direct_joint_compatibility: DirectJointCompatibility::default(),
                 defaults: ChannelCommandDefaults::default(),
                 value_limits: Vec::new(),
+                supported_sensor_kinds: Vec::new(),
+                sensor_shape_hints: Default::default(),
+                default_sample_rate_hz: None,
                 optional_info: Default::default(),
             }],
         })
@@ -1289,6 +1484,76 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
                     parallel_mit_kd: Vec::new(),
                 },
                 value_limits: pseudo_robot_value_limits(dof),
+                supported_sensor_kinds: Vec::new(),
+                sensor_shape_hints: Default::default(),
+                default_sample_rate_hz: None,
+                optional_info: Default::default(),
+            }],
+        })
+    } else if id.starts_with("pseudo_sensor_imu_") {
+        let mut shape_hints = std::collections::BTreeMap::new();
+        shape_hints.insert(SensorStateKind::ImuAccelGyro, vec![6u32]);
+        Some(DeviceQueryDevice {
+            id: id.into(),
+            device_class: "pseudo-sensor".into(),
+            device_label: "Pseudo IMU".into(),
+            default_device_name: Some("pseudo_imu".into()),
+            optional_info: Default::default(),
+            channels: vec![DeviceQueryChannel {
+                channel_type: "imu".into(),
+                kind: DeviceType::Sensor,
+                available: true,
+                channel_label: Some("Pseudo IMU".into()),
+                default_name: Some("pseudo_imu".into()),
+                modes: vec!["enabled".into(), "disabled".into()],
+                profiles: Vec::new(),
+                supported_states: Vec::new(),
+                supported_commands: Vec::new(),
+                supports_fk: false,
+                supports_ik: false,
+                dof: None,
+                default_control_frequency_hz: None,
+                direct_joint_compatibility: DirectJointCompatibility::default(),
+                defaults: ChannelCommandDefaults::default(),
+                value_limits: Vec::new(),
+                supported_sensor_kinds: vec![SensorStateKind::ImuAccelGyro],
+                sensor_shape_hints: shape_hints,
+                default_sample_rate_hz: Some(200.0),
+                optional_info: Default::default(),
+            }],
+        })
+    } else if id.starts_with("pseudo_sensor_tactile_") {
+        let mut shape_hints = std::collections::BTreeMap::new();
+        shape_hints.insert(
+            SensorStateKind::TactilePointCloud2,
+            vec![DEFAULT_TACTILE_POINT_COUNT, 6u32],
+        );
+        Some(DeviceQueryDevice {
+            id: id.into(),
+            device_class: "pseudo-sensor".into(),
+            device_label: "Pseudo Tactile".into(),
+            default_device_name: Some("pseudo_tactile".into()),
+            optional_info: Default::default(),
+            channels: vec![DeviceQueryChannel {
+                channel_type: "tactile".into(),
+                kind: DeviceType::Sensor,
+                available: true,
+                channel_label: Some("Pseudo Tactile".into()),
+                default_name: Some("pseudo_tactile".into()),
+                modes: vec!["enabled".into(), "disabled".into()],
+                profiles: Vec::new(),
+                supported_states: Vec::new(),
+                supported_commands: Vec::new(),
+                supports_fk: false,
+                supports_ik: false,
+                dof: None,
+                default_control_frequency_hz: None,
+                direct_joint_compatibility: DirectJointCompatibility::default(),
+                defaults: ChannelCommandDefaults::default(),
+                value_limits: Vec::new(),
+                supported_sensor_kinds: vec![SensorStateKind::TactilePointCloud2],
+                sensor_shape_hints: shape_hints,
+                default_sample_rate_hz: Some(60.0),
                 optional_info: Default::default(),
             }],
         })

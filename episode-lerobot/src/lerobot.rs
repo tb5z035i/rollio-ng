@@ -16,8 +16,8 @@
 //! the LeRobot artifacts, so the raw data is always recoverable.
 
 use crate::dataset::{
-    action_key, observation_key, sanitize_component, ActionSample, EpisodeAssemblyInput,
-    ObservationSample,
+    action_key, observation_key, sanitize_component, sensor_observation_key, ActionSample,
+    EpisodeAssemblyInput, ObservationSample, SensorSample,
 };
 use arrow_array::builder::{Float64Builder, ListBuilder};
 use arrow_array::{ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch};
@@ -25,7 +25,7 @@ use arrow_schema::{DataType, Field, Schema};
 use parquet::arrow::ArrowWriter;
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
-    RobotStateKind,
+    AssemblerSensorObservationRuntimeConfigV2, RobotStateKind, SensorStateKind,
 };
 use rollio_types::messages::PixelFormat;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,7 @@ pub(crate) struct LeRobotRows {
     pub task_indices: Vec<i64>,
     pub done_flags: Vec<bool>,
     pub observation_columns: BTreeMap<String, Vec<Vec<f64>>>,
+    pub sensor_columns: BTreeMap<String, Vec<Vec<f32>>>,
     pub action_rows: Vec<Vec<f64>>,
 }
 
@@ -117,6 +118,24 @@ pub(crate) fn build_episode_rows(
         observation_columns.insert(key, rows);
     }
 
+    let mut sensor_columns = BTreeMap::new();
+    for sensor in &config.sensor_observations {
+        let key = sensor_observation_key(&sensor.channel_id, sensor.sensor_kind);
+        let samples = episode
+            .sensor_samples
+            .get(&key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let width = sensor.value_len() as usize;
+        let mut rows = Vec::with_capacity(row_count);
+        for timestamp_us in &frame_timestamps_us {
+            rows.push(sensor_values_at(samples, *timestamp_us, width));
+        }
+        // Key the column on the LeRobot feature key so downstream Parquet
+        // writers and `meta/info.json` agree.
+        sensor_columns.insert(sensor_observation_feature_key(sensor), rows);
+    }
+
     let mut action_rows = Vec::with_capacity(row_count);
     for timestamp_us in &frame_timestamps_us {
         let mut row = Vec::new();
@@ -144,6 +163,7 @@ pub(crate) fn build_episode_rows(
         task_indices,
         done_flags,
         observation_columns,
+        sensor_columns,
         action_rows,
     }
 }
@@ -213,6 +233,25 @@ fn action_values_at(samples: &[ActionSample], timestamp_us: u64, width: usize) -
     resize_values(&selected.values, width)
 }
 
+fn sensor_values_at(samples: &[SensorSample], timestamp_us: u64, width: usize) -> Vec<f32> {
+    if samples.is_empty() {
+        return vec![0.0_f32; width];
+    }
+    let mut selected = &samples[0];
+    for sample in samples {
+        if sample.timestamp_us <= timestamp_us {
+            selected = sample;
+        } else {
+            break;
+        }
+    }
+    let mut resized = vec![0.0_f32; width];
+    for (index, value) in selected.values.iter().copied().enumerate().take(width) {
+        resized[index] = value;
+    }
+    resized
+}
+
 fn resize_values(values: &[f64], width: usize) -> Vec<f64> {
     let mut resized = vec![0.0; width];
     for (index, value) in values.iter().copied().enumerate().take(width) {
@@ -250,6 +289,27 @@ fn feature_list_data_type() -> DataType {
     DataType::List(feature_list_inner_field())
 }
 
+fn feature_list_inner_field_f32() -> Arc<Field> {
+    Arc::new(Field::new("item", DataType::Float32, false))
+}
+
+fn feature_list_data_type_f32() -> DataType {
+    DataType::List(feature_list_inner_field_f32())
+}
+
+fn build_list_array_f32(rows: &[Vec<f32>]) -> arrow_array::ListArray {
+    use arrow_array::builder::Float32Builder;
+    let values = Float32Builder::new();
+    let mut builder = ListBuilder::new(values).with_field(feature_list_inner_field_f32());
+    for row in rows {
+        for value in row {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    builder.finish()
+}
+
 fn parquet_schema(config: &AssemblerRuntimeConfigV2) -> Schema {
     let mut fields = vec![
         Field::new("timestamp", DataType::Float64, false),
@@ -264,6 +324,13 @@ fn parquet_schema(config: &AssemblerRuntimeConfigV2) -> Schema {
         fields.push(Field::new(
             observation_feature_key(observation),
             feature_list_data_type(),
+            false,
+        ));
+    }
+    for sensor in &config.sensor_observations {
+        fields.push(Field::new(
+            sensor_observation_feature_key(sensor),
+            feature_list_data_type_f32(),
             false,
         ));
     }
@@ -288,6 +355,15 @@ fn parquet_columns(config: &AssemblerRuntimeConfigV2, rows: &LeRobotRows) -> Vec
             .get(&key)
             .expect("observation columns should exist for every configured observation");
         arrays.push(Arc::new(build_list_array(values)));
+    }
+
+    for sensor in &config.sensor_observations {
+        let feature_key = sensor_observation_feature_key(sensor);
+        let values = rows
+            .sensor_columns
+            .get(&feature_key)
+            .expect("sensor columns should exist for every configured sensor observation");
+        arrays.push(Arc::new(build_list_array_f32(values)));
     }
 
     arrays
@@ -507,6 +583,18 @@ fn build_feature_map(config: &AssemblerRuntimeConfigV2) -> BTreeMap<String, Feat
         );
     }
 
+    for sensor in &config.sensor_observations {
+        features.insert(
+            sensor_observation_feature_key(sensor),
+            FeatureSpec {
+                dtype: "float32".into(),
+                shape: sensor.shape.iter().map(|&d| d as usize).collect(),
+                names: None,
+                video_info: None,
+            },
+        );
+    }
+
     for camera in &config.cameras {
         features.insert(
             format!(
@@ -540,6 +628,19 @@ fn observation_feature_key(observation: &AssemblerObservationRuntimeConfigV2) ->
         "observation.state.{}.{}",
         sanitize_component(&observation.channel_id),
         observation.state_kind.topic_suffix()
+    )
+}
+
+/// Sensor channels write under `observation.sensor.{channel}.{kind}` so
+/// downstream training scripts can tell them apart from robot-state
+/// observations (`observation.state.*`).
+pub(crate) fn sensor_observation_feature_key(
+    sensor: &AssemblerSensorObservationRuntimeConfigV2,
+) -> String {
+    format!(
+        "observation.sensor.{}.{}",
+        sanitize_component(&sensor.channel_id),
+        sensor.sensor_kind.topic_suffix()
     )
 }
 
@@ -642,6 +743,7 @@ mod tests {
                 state_topic: "robot_a/arm/states/joint_position".into(),
                 value_len: 6,
             }],
+            sensor_observations: Vec::new(),
             actions: Vec::new(),
             embedded_config_toml: String::new(),
         }
@@ -684,6 +786,7 @@ mod tests {
             start_time_us: 1_000_000,
             stop_time_us: 1_000_000 + 1_000_000,
             observation_samples,
+            sensor_samples: BTreeMap::new(),
             action_samples: BTreeMap::new(),
             camera_streams: BTreeMap::new(),
         };

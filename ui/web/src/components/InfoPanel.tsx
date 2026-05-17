@@ -19,9 +19,11 @@ export function InfoPanel({
   const cameraNames =
     streamInfo?.cameras?.map((camera) => camera.name) ?? Array.from(frames.keys());
   const robotNames = streamInfo?.robots ?? Array.from(robotChannels.keys());
+  const sensors = streamInfo?.sensors ?? [];
   const hasData =
     cameraNames.length > 0 ||
     robotNames.length > 0 ||
+    sensors.length > 0 ||
     frames.size > 0 ||
     robotChannels.size > 0;
 
@@ -74,6 +76,22 @@ export function InfoPanel({
             </div>
           ))}
         </div>
+        {sensors.length > 0 ? (
+          <div className="info-panel__section">
+            <div className="info-panel__heading">Sensors</div>
+            {sensors.map((sensor) => (
+              <div className="info-panel__row" key={sensor.name}>
+                <span>
+                  {sensor.name}
+                  {sensor.online ? "" : " (offline)"}
+                </span>
+                <span>
+                  {formatSampleRate(sensor.sample_rate_hz)} · {sensor.recorded_states.length} rec
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="info-panel__section">
           <div className="info-panel__row">
             <span>WS</span>
@@ -132,6 +150,12 @@ function cameraResolution(
     return `${frame.width}x${frame.height}`;
   }
   return "n/a";
+}
+
+function formatSampleRate(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return "—";
+  if (rate >= 1000) return `${(rate / 1000).toFixed(1)} kHz`;
+  return `${rate.toFixed(rate >= 10 ? 0 : 1)} Hz`;
 }
 
 function robotDof(channel: AggregatedRobotChannel | undefined): number {

@@ -643,6 +643,99 @@ impl CameraFrameHeader {
 }
 
 // ---------------------------------------------------------------------------
+// SensorFrameHeader — user header for sensor `samples/{kind}` topics.
+// ---------------------------------------------------------------------------
+
+pub const SENSOR_FRAME_MAX_DIMS: usize = 6;
+
+/// Numeric dtype tag carried in `SensorFrameHeader.dtype`. Extend only at
+/// the end of the enum so prior recordings keep their discriminants.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[type_name("SensorDType")]
+#[repr(C)]
+pub enum SensorDType {
+    #[default]
+    F32,
+    F64,
+    I32,
+    U32,
+    I16,
+    U16,
+    I8,
+    U8,
+}
+
+impl SensorDType {
+    pub fn byte_size(self) -> usize {
+        match self {
+            Self::F32 | Self::I32 | Self::U32 => 4,
+            Self::F64 => 8,
+            Self::I16 | Self::U16 => 2,
+            Self::I8 | Self::U8 => 1,
+        }
+    }
+}
+
+/// Metadata for a sensor sample. Lives as a user header on an iceoryx2
+/// `publish_subscribe::<[u8]>()` service so the raw sample bytes stay
+/// zero-copy. The shape is self-describing so consumers (assembler,
+/// visualizer) can decode IMU vectors and tactile point clouds with one
+/// envelope.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("SensorFrameHeader")]
+#[repr(C)]
+pub struct SensorFrameHeader {
+    pub timestamp_us: u64,
+    pub sample_index: u64,
+    /// Discriminant of `SensorStateKind` (snake_case names map 1:1 to
+    /// integer order: `imu_accel_gyro = 0`, `tactile_point_cloud2 = 1`).
+    pub sensor_kind: u32,
+    pub dtype: SensorDType,
+    pub ndim: u8,
+    pub _pad: [u8; 2],
+    pub shape: [u32; SENSOR_FRAME_MAX_DIMS],
+}
+
+impl Default for SensorFrameHeader {
+    fn default() -> Self {
+        Self {
+            timestamp_us: 0,
+            sample_index: 0,
+            sensor_kind: 0,
+            dtype: SensorDType::F32,
+            ndim: 0,
+            _pad: [0; 2],
+            shape: [0; SENSOR_FRAME_MAX_DIMS],
+        }
+    }
+}
+
+impl SensorFrameHeader {
+    /// Total element count derived from the declared shape (product of the
+    /// first `ndim` dimensions). Returns 0 when `ndim` is 0.
+    pub fn element_count(&self) -> usize {
+        if self.ndim == 0 {
+            return 0;
+        }
+        let nd = (self.ndim as usize).min(SENSOR_FRAME_MAX_DIMS);
+        self.shape[..nd]
+            .iter()
+            .map(|&d| d as usize)
+            .product()
+    }
+
+    pub fn payload_size(&self) -> usize {
+        self.element_count() * self.dtype.byte_size()
+    }
+
+    pub fn shape_slice(&self) -> &[u32] {
+        let nd = (self.ndim as usize).min(SENSOR_FRAME_MAX_DIMS);
+        &self.shape[..nd]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RobotState
 // ---------------------------------------------------------------------------
 

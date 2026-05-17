@@ -13,7 +13,7 @@ use crate::discovery::run_driver_json;
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
     BinaryDeviceConfig, DeviceType, DirectJointCompatibility, DirectJointCompatibilityPeer,
-    ProjectConfig, RobotCommandKind, RobotStateKind, StateValueLimitsEntry,
+    ProjectConfig, RobotCommandKind, RobotStateKind, SensorStateKind, StateValueLimitsEntry,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -33,6 +33,9 @@ pub(crate) struct ChannelRuntimeMeta {
     pub(crate) supported_states: Vec<RobotStateKind>,
     pub(crate) supported_commands: Vec<RobotCommandKind>,
     pub(crate) direct_joint_compatibility: DirectJointCompatibility,
+    pub(crate) supported_sensor_kinds: Vec<SensorStateKind>,
+    pub(crate) sensor_shape_hints: BTreeMap<SensorStateKind, Vec<u32>>,
+    pub(crate) default_sample_rate_hz: Option<f64>,
 }
 
 pub(crate) type DeviceRuntimeMetaMap = BTreeMap<(String, String), ChannelRuntimeMeta>;
@@ -126,13 +129,23 @@ fn refresh_device_value_limits(
     let meta_by_channel = parse_channel_runtime_meta(query_device);
 
     for channel in device.channels.iter_mut() {
-        if channel.kind != DeviceType::Robot {
-            continue;
-        }
-        if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
-            channel.value_limits = meta.value_limits.clone();
-            channel.supported_commands = meta.supported_commands.clone();
-            channel.direct_joint_compatibility = meta.direct_joint_compatibility.clone();
+        match channel.kind {
+            DeviceType::Robot => {
+                if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
+                    channel.value_limits = meta.value_limits.clone();
+                    channel.supported_commands = meta.supported_commands.clone();
+                    channel.direct_joint_compatibility = meta.direct_joint_compatibility.clone();
+                }
+            }
+            DeviceType::Sensor => {
+                if let Some(meta) = meta_by_channel.get(&channel.channel_type) {
+                    channel.sensor_shape_hints = meta.sensor_shape_hints.clone();
+                    if channel.sample_rate_hz.is_none() {
+                        channel.sample_rate_hz = meta.default_sample_rate_hz;
+                    }
+                }
+            }
+            DeviceType::Camera => {}
         }
     }
 
@@ -157,6 +170,14 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
                 parse_query_supported_commands(channel.get("supported_commands"));
             let direct_joint_compatibility =
                 parse_query_direct_joint_compatibility(channel.get("direct_joint_compatibility"));
+            let supported_sensor_kinds =
+                parse_query_supported_sensor_kinds(channel.get("supported_sensor_kinds"));
+            let sensor_shape_hints =
+                parse_query_sensor_shape_hints(channel.get("sensor_shape_hints"));
+            let default_sample_rate_hz = channel
+                .get("default_sample_rate_hz")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v > 0.0);
             Some((
                 channel_type,
                 ChannelRuntimeMeta {
@@ -164,8 +185,48 @@ fn parse_channel_runtime_meta(device: &Value) -> BTreeMap<String, ChannelRuntime
                     supported_states,
                     supported_commands,
                     direct_joint_compatibility,
+                    supported_sensor_kinds,
+                    sensor_shape_hints,
+                    default_sample_rate_hz,
                 },
             ))
+        })
+        .collect()
+}
+
+/// Parse the `supported_sensor_kinds` array from a sensor channel query.
+/// Returns empty if absent or malformed.
+pub(crate) fn parse_query_supported_sensor_kinds(value: Option<&Value>) -> Vec<SensorStateKind> {
+    let Some(entries) = value.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let kind_str = entry.as_str()?.to_owned();
+            serde_json::from_value(Value::String(kind_str)).ok()
+        })
+        .collect()
+}
+
+/// Parse the `sensor_shape_hints` object from a sensor channel query.
+/// Expected shape: `{ "<sensor_kind>": [d0, d1, ...], ... }`.
+pub(crate) fn parse_query_sensor_shape_hints(
+    value: Option<&Value>,
+) -> BTreeMap<SensorStateKind, Vec<u32>> {
+    let Some(obj) = value.and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    obj.iter()
+        .filter_map(|(kind_str, dims)| {
+            let kind: SensorStateKind =
+                serde_json::from_value(Value::String(kind_str.clone())).ok()?;
+            let shape: Vec<u32> = dims
+                .as_array()?
+                .iter()
+                .filter_map(|v| v.as_u64().and_then(|x| u32::try_from(x).ok()))
+                .collect();
+            Some((kind, shape))
         })
         .collect()
 }

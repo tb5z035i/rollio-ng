@@ -563,7 +563,11 @@ fn load_runtime_config(args: &RunArgs) -> Result<RuntimeConfig, Box<dyn Error>> 
                         RobotStateKind::EndEffectorPose,
                     ]
                 } else {
-                    channel.publish_states.clone()
+                    channel
+                        .publish_states
+                        .iter()
+                        .filter_map(|state| state.as_robot())
+                        .collect()
                 },
             }),
         eef: device
