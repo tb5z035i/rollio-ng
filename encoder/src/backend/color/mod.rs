@@ -46,6 +46,7 @@ pub enum ColorBackendId {
     Nvidia,
     Vaapi,
     Passthrough,
+    HorizonX5,
 }
 
 impl ColorBackendId {
@@ -55,6 +56,7 @@ impl ColorBackendId {
             Self::Nvidia => "nvidia",
             Self::Vaapi => "vaapi",
             Self::Passthrough => "passthrough",
+            Self::HorizonX5 => "horizon-x5",
         }
     }
 }
@@ -138,6 +140,15 @@ pub struct ColorBackendRegistry {
     backends: Vec<Arc<dyn ColorEncoderBackend>>,
 }
 
+impl std::fmt::Debug for ColorBackendRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ids: Vec<_> = self.backends.iter().map(|b| b.id()).collect();
+        f.debug_struct("ColorBackendRegistry")
+            .field("backends", &ids)
+            .finish()
+    }
+}
+
 static REGISTRY: OnceLock<ColorBackendRegistry> = OnceLock::new();
 
 impl ColorBackendRegistry {
@@ -160,6 +171,19 @@ impl ColorBackendRegistry {
         ];
         backends.sort_by_key(|b| std::cmp::Reverse(b.priority()));
         Self { backends }
+    }
+
+    /// Initialize the process-wide singleton with a custom backend set.
+    /// Must be called before any call to `global()`. Panics if the
+    /// registry was already initialized (i.e. `global()` was called
+    /// first). Used by `rollio-encoder-x5` to inject the X5 backend.
+    pub fn init_with(backends: Vec<Arc<dyn ColorEncoderBackend>>) {
+        let mut sorted = backends;
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        let registry = Self { backends: sorted };
+        REGISTRY.set(registry).expect(
+            "ColorBackendRegistry::init_with called after registry was already initialized",
+        );
     }
 
     pub fn backends(&self) -> &[Arc<dyn ColorEncoderBackend>] {
@@ -227,9 +251,7 @@ fn color_backend_id_from_config(value: EncoderBackend) -> Result<ColorBackendId>
         EncoderBackend::Nvidia => Ok(ColorBackendId::Nvidia),
         EncoderBackend::Vaapi => Ok(ColorBackendId::Vaapi),
         EncoderBackend::Passthrough => Ok(ColorBackendId::Passthrough),
-        EncoderBackend::HorizonX5 => Err(EncoderError::message(
-            "horizon-x5 backend is a separate binary (encoder-x5); not available in this process",
-        )),
+        EncoderBackend::HorizonX5 => Ok(ColorBackendId::HorizonX5),
         EncoderBackend::Auto => Err(EncoderError::message(
             "color_backend_id_from_config: Auto is not a concrete backend",
         )),

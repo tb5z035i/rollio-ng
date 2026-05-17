@@ -22,7 +22,6 @@
 //! This matches the existing single-threaded worker pattern used by
 //! all other encoder backends.
 
-use std::path::Path;
 use std::time::Instant;
 
 use ffmpeg_next as ffmpeg;
@@ -31,7 +30,7 @@ use rollio_types::messages::{
     ENCODED_PACKET_FLAG_KEYFRAME,
 };
 
-use rollio_encoder::backend::color::ColorCodec;
+use rollio_encoder::backend::color::{ColorBackendId, ColorCodec, ColorEncoderBackend};
 use rollio_encoder::codec::{encoded_codec_id, CodecSession, CodecSessionParams, EncodedPacketSink, OwnedFrame};
 use rollio_encoder::error::{EncoderError, Result};
 use rollio_encoder::media::EncodeMetrics;
@@ -256,8 +255,21 @@ impl HorizonX5Backend {
     }
 
     pub fn available(&self) -> bool {
-        // Runtime check: the VPU library must be present on the target
-        Path::new("/usr/lib/libmultimedia.so.1").exists()
+        // Runtime check: ask the dynamic linker whether libmultimedia.so.1
+        // is resolvable. This respects LD_LIBRARY_PATH, ld.so.conf, and
+        // all standard search paths — not just a single hardcoded location.
+        let name = b"libmultimedia.so.1\0";
+        unsafe {
+            let handle = libc::dlopen(
+                name.as_ptr() as *const libc::c_char,
+                libc::RTLD_LAZY,
+            );
+            if handle.is_null() {
+                return false;
+            }
+            libc::dlclose(handle);
+            true
+        }
     }
 
     pub fn supports(&self, codec: ColorCodec, input: PixelFormat) -> bool {
@@ -282,6 +294,32 @@ impl HorizonX5Backend {
         first_frame: &OwnedFrame,
     ) -> Result<Box<dyn CodecSession>> {
         HorizonX5Session::new(params, first_frame)
+    }
+}
+
+impl ColorEncoderBackend for HorizonX5Backend {
+    fn id(&self) -> ColorBackendId {
+        ColorBackendId::HorizonX5
+    }
+
+    fn priority(&self) -> u32 {
+        self.priority()
+    }
+
+    fn available(&self) -> bool {
+        self.available()
+    }
+
+    fn supports(&self, codec: ColorCodec, input: PixelFormat) -> bool {
+        self.supports(codec, input)
+    }
+
+    fn open_session(
+        &self,
+        params: &CodecSessionParams<'_>,
+        first_frame: &OwnedFrame,
+    ) -> Result<Box<dyn CodecSession>> {
+        self.open_session(params, first_frame)
     }
 }
 

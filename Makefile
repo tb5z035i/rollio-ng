@@ -84,6 +84,7 @@ CMAKE_TOOLCHAIN_ARGS := -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 NPM_PLATFORM_ARGS    :=
 DEB_ARCH             := amd64
 TARGET_BUILD_DIR     := target/$(BUILD_PROFILE_SUBDIR)
+CARGO_EXCLUDE_X5     := --exclude rollio-encoder-x5
 else ifeq ($(TARGET_ARCH),arm64)
 RUST_TARGET          := aarch64-unknown-linux-gnu
 CARGO_TARGET_ARGS    := --target $(RUST_TARGET)
@@ -91,6 +92,7 @@ CMAKE_TOOLCHAIN_ARGS := -DCMAKE_TOOLCHAIN_FILE=$(CURDIR)/cmake/aarch64-linux-gnu
 NPM_PLATFORM_ARGS    := --cpu=arm64 --os=linux --libc=glibc
 DEB_ARCH             := arm64
 TARGET_BUILD_DIR     := target/$(RUST_TARGET)/$(BUILD_PROFILE_SUBDIR)
+CARGO_EXCLUDE_X5     :=
 else
 $(error Unsupported TARGET_ARCH=$(TARGET_ARCH); supported: amd64 arm64)
 endif
@@ -311,16 +313,16 @@ apply-ffmpeg-sys-cross-patch:
 
 rust-build: apply-vendored-patches
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo build --workspace --exclude rollio-encoder-x5 $(CARGO_BUILD_ARGS) $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
+		cargo build --workspace $(CARGO_EXCLUDE_X5) $(CARGO_BUILD_ARGS) $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
 
 rust-test: apply-vendored-patches
 ifeq ($(TARGET_ARCH),$(HOST_ARCH))
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo test --workspace --exclude rollio-encoder-x5 -j $(BUILD_JOBS)
+		cargo test --workspace $(CARGO_EXCLUDE_X5) -j $(BUILD_JOBS)
 else
 	@echo "rust-test: cross TARGET_ARCH=$(TARGET_ARCH) on HOST_ARCH=$(HOST_ARCH); compile-only (no native runner)"
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo test --workspace --exclude rollio-encoder-x5 --no-run $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
+		cargo test --workspace $(CARGO_EXCLUDE_X5) --no-run $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
 endif
 
 # rustfmt.toml uses the unstable `ignore` directive (skips third_party/),
@@ -337,7 +339,7 @@ rust-lint: apply-vendored-patches
 		exit 1; \
 	fi
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo clippy --workspace --exclude rollio-encoder-x5 $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS) -- -D warnings
+		cargo clippy --workspace $(CARGO_EXCLUDE_X5) $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS) -- -D warnings
 
 rust-fmt:
 	@if cargo +nightly fmt --version >/dev/null 2>&1; then \
