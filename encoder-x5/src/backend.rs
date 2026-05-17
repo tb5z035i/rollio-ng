@@ -511,6 +511,7 @@ impl CodecSession for HorizonX5Session {
                     extradata.len() as u32,
                 );
                 sink.write_config(config_header, extradata)?;
+                self.sequence += 1;
                 self.config_sent = true;
             }
         }
