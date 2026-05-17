@@ -583,6 +583,7 @@ fn channels_for_pixel_format(pixel_format: PixelFormat) -> usize {
         // channel count, not the wire-side compressed format.
         // H264AnnexB decodes to YUV → 3 channels in RGB terms.
         PixelFormat::Mjpeg | PixelFormat::H264AnnexB => 3,
+        PixelFormat::Nv12 => 3, // post-decode: YUV → RGB = 3 channels
     }
 }
 

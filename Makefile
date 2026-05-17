@@ -311,16 +311,16 @@ apply-ffmpeg-sys-cross-patch:
 
 rust-build: apply-vendored-patches
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo build --workspace $(CARGO_BUILD_ARGS) $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
+		cargo build --workspace --exclude rollio-encoder-x5 $(CARGO_BUILD_ARGS) $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
 
 rust-test: apply-vendored-patches
 ifeq ($(TARGET_ARCH),$(HOST_ARCH))
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo test --workspace -j $(BUILD_JOBS)
+		cargo test --workspace --exclude rollio-encoder-x5 -j $(BUILD_JOBS)
 else
 	@echo "rust-test: cross TARGET_ARCH=$(TARGET_ARCH) on HOST_ARCH=$(HOST_ARCH); compile-only (no native runner)"
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo test --workspace --no-run $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
+		cargo test --workspace --exclude rollio-encoder-x5 --no-run $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS)
 endif
 
 # rustfmt.toml uses the unstable `ignore` directive (skips third_party/),
@@ -337,7 +337,7 @@ rust-lint: apply-vendored-patches
 		exit 1; \
 	fi
 	AIRBOT_PINOCCHIO_BUILD_JOBS=$(BUILD_JOBS) \
-		cargo clippy --workspace $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS) -- -D warnings
+		cargo clippy --workspace --exclude rollio-encoder-x5 $(CARGO_TARGET_ARGS) -j $(BUILD_JOBS) -- -D warnings
 
 rust-fmt:
 	@if cargo +nightly fmt --version >/dev/null 2>&1; then \

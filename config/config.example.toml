@@ -71,8 +71,9 @@ child_poll_interval_ms = 100
 port = 19090
 #
 # Preview production knobs (size, fps, codec, jpeg_quality, output_mode)
-# now live under `[encoder.preview]` below — the visualizer is a thin
-# bridge and just forwards what the encoder emits.
+# now live under each camera channel's `[devices.channels.preview_config]`
+# sub-table — the visualizer is a thin bridge and just forwards what the
+# encoder emits.
 
 # -----------------------------------------------------------------------------
 # Devices — one [[devices]] block per device process the controller spawns.
@@ -99,9 +100,12 @@ id = "pseudo_camera_0"
 # is derived as "{bus_root}/{channel_type}/...". Must be unique per device.
 bus_root = "camera_top"
 
-# Optional per-device `[devices.extra]` block for driver-specific knobs
-# (transport, interface, end-effector model, …). The pseudo driver only
-# uses `transport`. Real drivers document their own keys.
+# Optional per-device extra keys for driver-specific knobs (transport,
+# interface, end-effector model, …). These are deserialized flat at the
+# device level via `#[serde(flatten)]`, so you can also write them as
+# top-level keys on the [[devices]] block (e.g. `transport = "simulated"`
+# directly under [[devices]]). The `[devices.extra]` sub-table form works
+# too — both parse identically. The pseudo driver only uses `transport`.
 [devices.extra]
 transport = "simulated"
 
@@ -120,17 +124,65 @@ kind = "camera"
 # (default: true)
 enabled = true
 
+# Whether the preview encoder is spawned for this camera channel.
+# Set to false to disable live preview while still recording.
+# (default: true)
+preview_enabled = true
+
+# Optional human-readable label for this channel (surfaced in the UI and
+# dataset metadata). Defaults to "{device_name}/{channel_type}".
+# channel_label = "Top Camera Color"
+
 # Camera capture profile. `pixel_format` controls what the driver publishes
 # on the bus; the encoder decodes if needed.
-#   "rgb24"  — packed 8-bit RGB (legacy default; works for any camera)
-#   "bgr24"  — packed 8-bit BGR
-#   "yuyv"   — packed YUV 4:2:2 (RealSense / V4L2 native fast path)
-#   "mjpeg"  — MJPEG (V4L2 native fast path; encoder decodes via libavcodec)
-#   "depth16"— 16-bit depth (RealSense depth)
-#   "gray8"  — 8-bit luma (RealSense IR, monochrome cameras)
+#   "rgb24"          — packed 8-bit RGB (legacy default; works for any camera)
+#   "bgr24"          — packed 8-bit BGR
+#   "yuyv"           — packed YUV 4:2:2 (RealSense / V4L2 native fast path)
+#   "mjpeg"          — MJPEG (V4L2 native fast path; encoder decodes via libavcodec)
+#   "h264-annex-b"   — H.264 Annex B NAL stream (FixedSource cameras)
+#   "depth16"        — 16-bit depth (RealSense depth)
+#   "gray8"          — 8-bit luma (RealSense IR, monochrome cameras)
 # Optional `native_pixel_format` pins the V4L2 driver to a specific fourcc
 # when the camera supports several (e.g. "MJPG" or "YUYV").
-profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
+profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
+
+# H.264 camera profile fields (only relevant when pixel_format = "h264-annex-b"):
+# h264_bitrate_bps = 4000000
+# h264_gop = 30
+# h264_preset = "medium"
+# h264_tune = "zerolatency"
+# h264_profile = "high"
+# mjpeg_quality = 80
+
+# Per-channel recording encoder settings. Omit the entire block to use
+# defaults (h264, rvl, auto backend, no crf/preset/tune).
+[devices.channels.record]
+video_codec = "h264"
+depth_codec = "rvl"
+backend = "auto"
+video_backend = "auto"
+depth_backend = "auto"
+queue_size = 32
+chroma_subsampling = "422"
+# crf = 18
+# preset = "slow"
+# tune = "film"
+# bit_depth = 8
+# color_space = "bt709-limited"
+
+# Per-channel preview encoder settings. Omit the entire block to use
+# defaults (encoded mode, h264, 320x240@15fps, crf=26).
+[devices.channels.preview_config]
+output_mode = "encoded"
+color_codec = "h264"
+depth_codec = "rvl"
+backend = "auto"
+width = 320
+height = 240
+fps = 15
+gop_seconds = 1
+crf = 26
+jpeg_quality = 50
 
 [[devices]]
 name = "camera_side"
@@ -265,116 +317,6 @@ discard_key = "x"
 # URLs at runtime; only override these to point the UI at a custom port.)
 # http_host = "0.0.0.0"   # (default: "0.0.0.0")
 # http_port = 3000        # (default: 3000)
-
-# -----------------------------------------------------------------------------
-# Encoder
-# -----------------------------------------------------------------------------
-[encoder]
-# Codec for color / IR / RGB-like streams. Aliases accepted: "libx264" /
-# "h264_nvenc" / "h264_vaapi" → "h264", same for h265 and av1.
-# (default: "h264")
-video_codec = "h264"
-
-# Codec for 16-bit depth streams. "rvl" is the in-repo lossless depth
-# codec (CPU-only); "h264"/"h265"/"av1" route depth through libav (lossy).
-# (default: "rvl")
-depth_codec = "rvl"
-
-# Backend hints. `backend` is a legacy fallback; per-codec
-# `video_backend` / `depth_backend` override it.
-#   "auto"   — pick the best available (NVENC > VAAPI > CPU)
-#   "cpu"    — libavcodec software encoder
-#   "nvidia" — NVENC (requires CUDA + NVENC-capable GPU)
-#   "vaapi"  — VAAPI (Intel/AMD)
-# RVL is CPU-only by construction; pairing rvl with nvidia/vaapi is a
-# validation error. (defaults: "auto" everywhere)
-backend = "auto"
-video_backend = "auto"
-depth_backend = "auto"
-
-# Per-encoder bus → encode queue depth (number of pending frames before
-# the encoder publishes a backpressure event). (default: 32)
-queue_size = 32
-
-# Codec input chroma subsampling.
-#   "422" (default) preserves YUYV / MJPG-422 native chroma; one less
-#                   swscale pass per frame compared to 4:2:0.
-#   "420"           legacy, smallest files, broadest player compatibility.
-# Auto-falls back to "420" when the resolved codec/backend pair can't
-# accept 4:2:2 input (libsvtav1, older NVENC, VAAPI).
-chroma_subsampling = "422"
-
-# Optional quality knobs. Each defaults to `None` so libavcodec applies
-# its own defaults (matches the legacy pre-config behaviour).
-#
-# crf:        constant-quality target, 0..=51. Lower = better quality,
-#             larger files. libx264 default ≈ 23; 18 ≈ visually lossless;
-#             15 ≈ archive; 0 = mathematically lossless. Mapped to "cq"
-#             with rc=vbr for NVENC and to "qp" with rc_mode=CQP for VAAPI.
-# preset:     codec speed/quality preset. "ultrafast".."veryslow" for
-#             libx264 / libx265, numeric "0".."13" for SVT-AV1, "p1".."p7"
-#             for NVENC.
-# tune:       psychovisual hint passed verbatim to the codec ("film",
-#             "animation", "grain", "stillimage", …).
-# bit_depth:  8 (default) or 10. 10-bit eliminates banding in dark scenes
-#             at ~25% larger files; requires the host's libx264/libx265 to
-#             be the 10-bit-capable build. Auto-falls back to 8.
-# color_space: "auto" (default; players guess), "bt709-limited" (modern
-#             HD), or "bt601-limited" (SD).
-# crf = 18
-# preset = "slow"
-# tune = "film"
-# bit_depth = 8
-# color_space = "bt709-limited"
-
-# -----------------------------------------------------------------------------
-# Encoder preview output (the always-on preview encoder)
-# -----------------------------------------------------------------------------
-# The controller spawns one preview-role `rollio-encoder` per camera
-# channel that opts in (see `preview_enabled` on each
-# [[devices.channels]]). The settings below decide what those preview
-# encoders produce and which iceoryx2 topic the visualizer subscribes
-# to.
-[encoder.preview]
-# Preview transport.
-#   "jpeg"    (default) — encoder publishes self-contained JPEG bytes
-#                         on `<bus_root>/<channel_type>/preview-jpeg`;
-#                         visualizer bridges them verbatim as binary
-#                         WebSocket frames (kind 0x01).
-#   "encoded"           — encoder publishes H.264 packets (color) and
-#                         RVL packets (depth) on `…/preview-config`
-#                         + `…/preview-packets`; visualizer bridges
-#                         them as binary kinds 0x02 + 0x03 and the
-#                         web UI decodes via WebCodecs.
-output_mode = "jpeg"
-
-# Color preview codec. Restricted to "h264" when output_mode = "encoded".
-color_codec = "h264"
-
-# Depth preview codec. Restricted to "rvl" when output_mode = "encoded".
-depth_codec = "rvl"
-
-# Encoder backend for the preview encoder. CPU by default to keep the
-# preview path light on shared hosts.
-backend = "cpu"
-
-# Preview raster size. The visualizer's set_preview_size WebSocket
-# command can change these at runtime (encoder restarts at the new
-# dims and emits a fresh keyframe).
-width = 320
-height = 240
-
-# Preview throttle.
-fps = 15
-
-# Keyframe interval for encoded-mode previews (seconds).
-gop_seconds = 1
-
-# CRF/quality knob. Lower = better quality / larger packets.
-crf = 32
-
-# JPEG quality (1..100), used when output_mode = "jpeg".
-jpeg_quality = 30
 
 # -----------------------------------------------------------------------------
 # Episode assembler

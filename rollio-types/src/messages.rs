@@ -238,6 +238,9 @@ pub enum PixelFormat {
     /// passthrough backend (which forwards bytes verbatim, no decode +
     /// re-encode, no scaling).
     H264AnnexB = 6,
+    /// Semi-planar YUV 4:2:0 (Y plane followed by interleaved UV plane).
+    /// Native input format for hardware encoders (e.g. Horizon X5 VPU).
+    Nv12 = 7,
 }
 
 impl PixelFormat {
@@ -249,6 +252,7 @@ impl PixelFormat {
             Self::Depth16 => 2,
             Self::Gray8 => 1,
             Self::H264AnnexB => 0, // variable-length compressed
+            Self::Nv12 => 0, // planar: 1.5 bytes/pixel average, not per-pixel addressable
         }
     }
 }

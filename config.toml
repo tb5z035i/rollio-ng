@@ -22,6 +22,7 @@ name = "camera"
 channel_label = "V4L2 Camera"
 publish_states = []
 recorded_states = []
+preview_enabled = true
 
 [devices.channels.profile]
 width = 1920
@@ -42,19 +43,28 @@ depth_codec = "rvl"
 backend = "auto"
 video_backend = "auto"
 depth_backend = "auto"
-artifact_format = "auto"
+chroma_subsampling = "422"
+crf = 15
+preset = "slow"
+bit_depth = 8
+color_space = "auto"
 queue_size = 32
 
 [encoder.preview]
 output_mode = "encoded"
+color_codec = "h264"
+depth_codec = "rvl"
+backend = "auto"
 width = 320
 height = 240
-fps = 60
+fps = 15
+gop_seconds = 1
+crf = 32
+jpeg_quality = 30
 
 [assembler]
-missing_video_timeout_ms = 5000
+missing_eos_timeout_ms = 30000
 staging_dir = "/dev/shm/rollio"
-encoded_handoff = "file"
 
 [storage]
 backend = "local"

@@ -37,6 +37,25 @@ h264_preset = "ultrafast"
 h264_tune = "zerolatency"
 h264_profile = "baseline"
 
+[devices.channels.record]
+video_codec = "h264"
+depth_codec = "rvl"
+video_backend = "auto"
+depth_backend = "cpu"
+chroma_subsampling = "422"
+queue_size = 32
+
+[devices.channels.preview_config]
+output_mode = "encoded"
+color_codec = "h264"
+depth_codec = "rvl"
+width = 320
+height = 240
+fps = 15
+gop_seconds = 1
+crf = 32
+jpeg_quality = 30
+
 [[devices]]
 name = "camera_yuyv"
 driver = "pseudo"
@@ -55,7 +74,7 @@ height = 480
 fps = 30
 pixel_format = "yuyv"
 
-[encoder]
+[devices.channels.record]
 video_codec = "h264"
 depth_codec = "rvl"
 video_backend = "auto"
@@ -63,11 +82,10 @@ depth_backend = "cpu"
 chroma_subsampling = "422"
 queue_size = 32
 
-[encoder.preview]
+[devices.channels.preview_config]
 output_mode = "encoded"
 color_codec = "h264"
 depth_codec = "rvl"
-#backend = "cpu"
 width = 320
 height = 240
 fps = 15

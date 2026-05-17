@@ -74,6 +74,7 @@ fn backend_label(backend: EncoderBackend) -> &'static str {
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
         EncoderBackend::Passthrough => "passthrough",
+        EncoderBackend::HorizonX5 => "horizon-x5",
     }
 }
 
@@ -84,6 +85,7 @@ fn backend_order(backend: EncoderBackend) -> u8 {
         EncoderBackend::Vaapi => 2,
         EncoderBackend::Auto => 3,
         EncoderBackend::Passthrough => 4,
+        EncoderBackend::HorizonX5 => 5,
     }
 }
 

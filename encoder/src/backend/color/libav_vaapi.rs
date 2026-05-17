@@ -571,6 +571,7 @@ fn input_strategy(pix: PixelFormat) -> InputStrategy {
         // fallbacks so the type system stays exhaustive.
         PixelFormat::H264AnnexB => InputStrategy::Raw(Pixel::GRAY8),
         PixelFormat::Depth16 => InputStrategy::Raw(Pixel::GRAY8),
+        PixelFormat::Nv12 => InputStrategy::Raw(Pixel::NV12),
     }
 }
 

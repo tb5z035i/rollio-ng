@@ -1203,6 +1203,7 @@ impl PixelFormatExt for PixelFormat {
             PixelFormat::Depth16 => "depth16",
             PixelFormat::Gray8 => "gray8",
             PixelFormat::H264AnnexB => "h264-annex-b",
+            PixelFormat::Nv12 => "nv12",
         }
     }
 }

@@ -194,7 +194,7 @@ fn availability_note(backend: EncoderBackend, available: bool) -> Option<String>
         EncoderBackend::Vaapi => "requires VAAPI-capable host libraries".into(),
         // Passthrough doesn't go through libav, so it has no codec-name
         // entry to advertise in the capability probe.
-        EncoderBackend::Passthrough => return None,
+        EncoderBackend::Passthrough | EncoderBackend::HorizonX5 => return None,
     })
 }
 
@@ -293,6 +293,8 @@ fn backend_is_usable(backend: EncoderBackend) -> bool {
         // lookup; its session is opened directly by
         // `PassthroughBackend::open_session`.
         EncoderBackend::Passthrough => false,
+        // HorizonX5 is handled by the separate encoder-x5 binary.
+        EncoderBackend::HorizonX5 => false,
     }
 }
 
@@ -407,6 +409,9 @@ pub(crate) fn resolve_chroma_subsampling(
         EncoderBackend::Passthrough => {
             unreachable!("passthrough never reaches libav chroma resolution")
         }
+        EncoderBackend::HorizonX5 => {
+            unreachable!("horizon-x5 is a separate binary")
+        }
     };
     if formats.into_iter().any(|fmt| fmt == wanted) {
         ChromaSubsampling::S422
@@ -474,6 +479,9 @@ pub(crate) fn resolve_bit_depth(
         (EncoderBackend::Vaapi, _) => unreachable!("vaapi handled above"),
         (EncoderBackend::Passthrough, _) => {
             unreachable!("passthrough never reaches libav bit-depth resolution")
+        }
+        (EncoderBackend::HorizonX5, _) => {
+            unreachable!("horizon-x5 is a separate binary")
         }
     };
     if formats.into_iter().any(|fmt| fmt == wanted) {
@@ -639,7 +647,7 @@ pub(crate) fn backend_hw_device_type(
     Some(match backend {
         EncoderBackend::Nvidia => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
         EncoderBackend::Vaapi => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-        EncoderBackend::Cpu | EncoderBackend::Auto | EncoderBackend::Passthrough => return None,
+        EncoderBackend::Cpu | EncoderBackend::Auto | EncoderBackend::Passthrough | EncoderBackend::HorizonX5 => return None,
     })
 }
 
@@ -719,6 +727,7 @@ pub(crate) fn pixel_format_for_libav(
         PixelFormat::H264AnnexB => Err(EncoderError::message(
             "H264 Annex B is routed through the passthrough backend, not direct AVFrame copy",
         )),
+        PixelFormat::Nv12 => Ok(ffmpeg::util::format::pixel::Pixel::NV12),
     }
 }
 
@@ -728,6 +737,7 @@ pub(crate) fn validate_source_pixel_format(pixel_format: PixelFormat) -> Result<
         | PixelFormat::Bgr24
         | PixelFormat::Gray8
         | PixelFormat::Yuyv
+        | PixelFormat::Nv12
         | PixelFormat::Mjpeg => Ok(()),
         PixelFormat::Depth16 => Err(EncoderError::message(
             "depth16 frames are only supported via the RVL backend",

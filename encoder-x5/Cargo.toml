@@ -1,0 +1,20 @@
+[package]
+name = "rollio-encoder-x5"
+version = "1.0.0"
+edition = "2021"
+description = "Horizon Robotics X5 SoC VPU encoder worker binary"
+
+[[bin]]
+name = "rollio-encoder-x5"
+path = "src/main.rs"
+
+[dependencies]
+rollio-encoder = { path = "../encoder" }
+rollio-types = { path = "../rollio-types" }
+rollio-bus = { path = "../rollio-bus" }
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "software-scaling"] }
+clap = { version = "4.6.0", features = ["derive"] }
+log = "0.4"
+
+[build-dependencies]
+cc = "1"

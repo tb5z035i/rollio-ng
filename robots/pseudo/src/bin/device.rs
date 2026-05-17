@@ -456,6 +456,7 @@ fn initial_slot_len(width: u32, height: u32, pf: PixelFormat) -> usize {
         PixelFormat::Yuyv | PixelFormat::Depth16 => pixels * 2,
         PixelFormat::Gray8 => pixels,
         PixelFormat::Mjpeg | PixelFormat::H264AnnexB => pixels * 3,
+        PixelFormat::Nv12 => pixels * 3 / 2,
     }
 }
 
@@ -532,6 +533,20 @@ fn publish_camera_frame(camera: &mut CameraRuntime) -> Result<(), Box<dyn Error>
                 &mut camera.frame,
             )?;
             (&camera.frame[..], PixelFormat::H264AnnexB)
+        }
+        PixelFormat::Nv12 => {
+            // Produce a synthetic NV12 frame: Y = luma from RGB, UV = 128 (gray)
+            let pixels = pixel_count(camera.width, camera.height);
+            let uv_size = pixels / 2;
+            let total = pixels + uv_size;
+            for i in 0..pixels {
+                let r = camera.rgb_buf[i * 3] as u16;
+                let g = camera.rgb_buf[i * 3 + 1] as u16;
+                let b = camera.rgb_buf[i * 3 + 2] as u16;
+                camera.frame[i] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).min(255) as u8;
+            }
+            camera.frame[pixels..total].fill(128);
+            (&camera.frame[..total], PixelFormat::Nv12)
         }
     };
 

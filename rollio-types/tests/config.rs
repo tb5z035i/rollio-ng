@@ -13,8 +13,15 @@ fn parse_example_project_config() {
     assert_eq!(config.pairings.len(), 1);
     assert_eq!(config.episode.fps, 30);
     assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
-    assert_eq!(config.encoder.video_codec, EncoderCodec::H264);
-    assert_eq!(config.encoder.depth_codec, EncoderCodec::Rvl);
+    // Per-channel record config: first camera channel should have H264 video codec
+    let first_cam = config.devices[0].channels.iter()
+        .find(|c| c.kind == DeviceType::Camera)
+        .expect("should have a camera channel");
+    let record_cfg = first_cam.record.as_ref()
+        .map(|r| r.resolve())
+        .unwrap_or_default();
+    assert_eq!(record_cfg.video_codec, EncoderCodec::H264);
+    assert_eq!(record_cfg.depth_codec, EncoderCodec::Rvl);
     assert_eq!(config.storage.queue_size, 32);
     assert_eq!(config.visualizer.port, 19090);
     assert_eq!(config.controller.shutdown_timeout_ms, 3000);
@@ -31,7 +38,7 @@ fn parse_example_project_config() {
     assert_eq!(cameras.len(), 2);
     assert_eq!(cameras[0].channel_id, "camera_top/color");
     assert_eq!(cameras[0].frame_topic, "camera_top/color/frames");
-    assert_eq!(cameras[0].pixel_format, PixelFormat::Rgb24);
+    assert_eq!(cameras[0].pixel_format, PixelFormat::H264AnnexB);
 
     let robots = config.resolved_robot_channels();
     assert_eq!(robots.len(), 2);
@@ -165,12 +172,18 @@ channel_type = "color"
 kind = "camera"
 profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
 
+[devices.channels.record]
+video_codec = "av1"
+video_backend = "nvidia"
+depth_codec = "rvl"
+depth_backend = "cpu"
+
 [[devices.channels]]
 channel_type = "depth"
 kind = "camera"
 profile = { width = 640, height = 480, fps = 30, pixel_format = "depth16" }
 
-[encoder]
+[devices.channels.record]
 video_codec = "av1"
 video_backend = "nvidia"
 depth_codec = "rvl"
@@ -228,11 +241,11 @@ channel_type = "color"
 kind = "camera"
 profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
 
-[encoder]
+[devices.channels.record]
 video_codec = "h264"
 depth_codec = "rvl"
 
-[encoder.preview]
+[devices.channels.preview_config]
 output_mode = "encoded"
 width = 320
 height = 240
@@ -286,11 +299,7 @@ channel_type = "color"
 kind = "camera"
 profile = { width = 640, height = 480, fps = 30, pixel_format = "h264-annex-b" }
 
-[encoder]
-video_codec = "h264"
-depth_codec = "rvl"
-
-[encoder.preview]
+[devices.channels.preview_config]
 output_mode = "jpeg"
 
 [storage]

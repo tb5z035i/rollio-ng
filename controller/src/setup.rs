@@ -18,8 +18,8 @@ use rollio_bus::{
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelPairingConfig, ChromaSubsampling,
     CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
-    EncoderColorSpace, EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode,
-    RobotStateKind, StorageBackend,
+    EncoderColorSpace, EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig,
+    RobotCommandKind, RobotMode, RobotStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -362,6 +362,10 @@ enum SetupExitKind {
 #[derive(Debug)]
 struct SetupSession {
     config: ProjectConfig,
+    /// Working encoder config used by the wizard for cycling codec/backend/crf
+    /// etc. On save, these settings are propagated to each camera channel's
+    /// per-channel `record` and `preview_config` fields.
+    encoder: EncoderConfig,
     available_devices: Vec<AvailableDevice>,
     teleop_pairing_cache: Vec<ChannelPairingConfig>,
     identify_device_name: Option<String>,
@@ -402,6 +406,9 @@ struct SetupStateEnvelope {
     identify_device: Option<String>,
     warnings: Vec<String>,
     config: ProjectConfig,
+    /// Working encoder config for the wizard UI to display current
+    /// codec/backend/crf/preset selections.
+    encoder: EncoderConfig,
     available_devices: Vec<AvailableDevice>,
 }
 
@@ -469,6 +476,7 @@ impl SetupSession {
             } else {
                 SetupStep::Devices
             },
+            encoder: EncoderConfig::default(),
             config,
             available_devices,
             teleop_pairing_cache,
@@ -497,6 +505,7 @@ impl SetupSession {
             identify_device: self.identify_device_name.clone(),
             warnings: self.warnings.clone(),
             config: self.config.clone(),
+            encoder: self.encoder.clone(),
             available_devices: self.available_devices.clone(),
         })?)
     }
@@ -1693,18 +1702,18 @@ impl SetupSession {
         // cycle therefore iterates only the libav-backed codec/backend pairs
         // and skips RVL entirely.
         let (codec, backend) = rotate_encoder_codec_backend(
-            self.config.encoder.video_codec,
-            self.config.encoder.video_backend,
+            self.encoder.video_codec,
+            self.encoder.video_backend,
             VIDEO_CODEC_BACKEND_OPTIONS,
             delta,
         );
-        let previous_codec = self.config.encoder.video_codec;
-        let previous_backend = self.config.encoder.video_backend;
-        self.config.encoder.video_codec = codec;
-        self.config.encoder.video_backend = backend;
+        let previous_codec = self.encoder.video_codec;
+        let previous_backend = self.encoder.video_backend;
+        self.encoder.video_codec = codec;
+        self.encoder.video_backend = backend;
         if let Err(error) = self.config.validate() {
-            self.config.encoder.video_codec = previous_codec;
-            self.config.encoder.video_backend = previous_backend;
+            self.encoder.video_codec = previous_codec;
+            self.encoder.video_backend = previous_backend;
             return Err(error.into());
         }
         Ok(true)
@@ -1715,18 +1724,18 @@ impl SetupSession {
         // every libav backend. The cycle therefore exposes RVL alongside the
         // libav (codec, backend) pairs.
         let (codec, backend) = rotate_encoder_codec_backend(
-            self.config.encoder.depth_codec,
-            self.config.encoder.depth_backend,
+            self.encoder.depth_codec,
+            self.encoder.depth_backend,
             DEPTH_CODEC_BACKEND_OPTIONS,
             delta,
         );
-        let previous_codec = self.config.encoder.depth_codec;
-        let previous_backend = self.config.encoder.depth_backend;
-        self.config.encoder.depth_codec = codec;
-        self.config.encoder.depth_backend = backend;
+        let previous_codec = self.encoder.depth_codec;
+        let previous_backend = self.encoder.depth_backend;
+        self.encoder.depth_codec = codec;
+        self.encoder.depth_backend = backend;
         if let Err(error) = self.config.validate() {
-            self.config.encoder.depth_codec = previous_codec;
-            self.config.encoder.depth_backend = previous_backend;
+            self.encoder.depth_codec = previous_codec;
+            self.encoder.depth_backend = previous_backend;
             return Err(error.into());
         }
         Ok(true)
@@ -1847,10 +1856,10 @@ impl SetupSession {
             ));
             return Ok(false);
         }
-        if self.config.encoder.preview.jpeg_quality == quality {
+        if self.encoder.preview.jpeg_quality == quality {
             return Ok(false);
         }
-        self.config.encoder.preview.jpeg_quality = quality;
+        self.encoder.preview.jpeg_quality = quality;
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1874,10 +1883,10 @@ impl SetupSession {
             self.message = Some(format!("Preview fps must be 1..1000, got {fps}."));
             return Ok(false);
         }
-        if self.config.encoder.preview.fps == fps {
+        if self.encoder.preview.fps == fps {
             return Ok(false);
         }
-        self.config.encoder.preview.fps = fps;
+        self.encoder.preview.fps = fps;
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1898,10 +1907,10 @@ impl SetupSession {
             Some(35),
             Some(51),
         ];
-        let current = self.config.encoder.crf;
+        let current = self.encoder.crf;
         let current_index = OPTIONS.iter().position(|&v| v == current).unwrap_or(0);
         let next_index = rotate_index(current_index, OPTIONS.len(), delta);
-        self.config.encoder.crf = OPTIONS[next_index];
+        self.encoder.crf = OPTIONS[next_index];
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1920,7 +1929,7 @@ impl SetupSession {
             Some("slower"),
             Some("veryslow"),
         ];
-        let current = self.config.encoder.preset.as_deref();
+        let current = self.encoder.preset.as_deref();
         let current_index = OPTIONS
             .iter()
             .position(|opt| match *opt {
@@ -1929,7 +1938,7 @@ impl SetupSession {
             })
             .unwrap_or(0);
         let next_index = rotate_index(current_index, OPTIONS.len(), delta);
-        self.config.encoder.preset = OPTIONS[next_index].map(str::to_owned);
+        self.encoder.preset = OPTIONS[next_index].map(str::to_owned);
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1940,10 +1949,10 @@ impl SetupSession {
         let options = [ChromaSubsampling::S422, ChromaSubsampling::S420];
         let current_index = options
             .iter()
-            .position(|c| *c == self.config.encoder.chroma_subsampling)
+            .position(|c| *c == self.encoder.chroma_subsampling)
             .unwrap_or(0);
         let next_index = rotate_index(current_index, options.len(), delta);
-        self.config.encoder.chroma_subsampling = options[next_index];
+        self.encoder.chroma_subsampling = options[next_index];
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1954,10 +1963,10 @@ impl SetupSession {
         let options = [8u8, 10u8];
         let current_index = options
             .iter()
-            .position(|d| *d == self.config.encoder.bit_depth)
+            .position(|d| *d == self.encoder.bit_depth)
             .unwrap_or(0);
         let next_index = rotate_index(current_index, options.len(), delta);
-        self.config.encoder.bit_depth = options[next_index];
+        self.encoder.bit_depth = options[next_index];
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -1972,10 +1981,10 @@ impl SetupSession {
         ];
         let current_index = options
             .iter()
-            .position(|s| *s == self.config.encoder.color_space)
+            .position(|s| *s == self.encoder.color_space)
             .unwrap_or(0);
         let next_index = rotate_index(current_index, options.len(), delta);
-        self.config.encoder.color_space = options[next_index];
+        self.encoder.color_space = options[next_index];
         if let Err(error) = self.config.validate() {
             return Err(error.into());
         }
@@ -3083,6 +3092,9 @@ fn build_channel_config_from_meta(
                 control_frequency_hz: None,
                 profile,
                 preview_enabled: true,
+                record_enabled: true,
+                record: None,
+                preview_settings: None,
                 command_defaults: meta.defaults.clone(),
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
@@ -3108,6 +3120,9 @@ fn build_channel_config_from_meta(
                 control_frequency_hz: meta.default_control_frequency_hz,
                 profile: None,
                 preview_enabled: true,
+                record_enabled: true,
+                record: None,
+                preview_settings: None,
                 command_defaults: meta.defaults.clone(),
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
@@ -5897,8 +5912,8 @@ mod tests {
         let mut session = setup_session(&[camera_discovery("cam0")]);
         // Snap to the first option in the table so we can predict the cycle
         // order regardless of the saved default.
-        session.config.encoder.video_codec = EncoderCodec::H264;
-        session.config.encoder.video_backend = EncoderBackend::Cpu;
+        session.encoder.video_codec = EncoderCodec::H264;
+        session.encoder.video_backend = EncoderBackend::Cpu;
 
         let expected = [
             (EncoderCodec::H264, EncoderBackend::Nvidia),
@@ -5915,8 +5930,8 @@ mod tests {
             session
                 .cycle_video_codec(1)
                 .unwrap_or_else(|err| panic!("cycle step {i} failed: {err}"));
-            assert_eq!(session.config.encoder.video_codec, *codec, "step {i}");
-            assert_eq!(session.config.encoder.video_backend, *backend, "step {i}");
+            assert_eq!(session.encoder.video_codec, *codec, "step {i}");
+            assert_eq!(session.encoder.video_backend, *backend, "step {i}");
         }
     }
 
@@ -5927,22 +5942,22 @@ mod tests {
     #[test]
     fn cycle_depth_codec_includes_rvl_and_libav_backends() {
         let mut session = setup_session(&[camera_discovery("cam0")]);
-        session.config.encoder.depth_codec = EncoderCodec::Rvl;
-        session.config.encoder.depth_backend = EncoderBackend::Cpu;
+        session.encoder.depth_codec = EncoderCodec::Rvl;
+        session.encoder.depth_backend = EncoderBackend::Cpu;
 
         session
             .cycle_depth_codec(1)
             .expect("forward cycle should succeed");
-        assert_eq!(session.config.encoder.depth_codec, EncoderCodec::H264);
-        assert_eq!(session.config.encoder.depth_backend, EncoderBackend::Cpu);
+        assert_eq!(session.encoder.depth_codec, EncoderCodec::H264);
+        assert_eq!(session.encoder.depth_backend, EncoderBackend::Cpu);
 
         // Walk back to land on RVL again, proving it's reachable from both
         // directions and the wrap-around is correct.
         session
             .cycle_depth_codec(-1)
             .expect("reverse cycle should succeed");
-        assert_eq!(session.config.encoder.depth_codec, EncoderCodec::Rvl);
-        assert_eq!(session.config.encoder.depth_backend, EncoderBackend::Cpu);
+        assert_eq!(session.encoder.depth_codec, EncoderCodec::Rvl);
+        assert_eq!(session.encoder.depth_backend, EncoderBackend::Cpu);
     }
 
     #[test]

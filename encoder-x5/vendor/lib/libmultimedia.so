@@ -1,0 +1,5 @@
+/* GNU ld linker script — link stub for cross-compilation.
+ * At runtime the real libmultimedia.so.1 from the X5 BSP is loaded.
+ * This file satisfies -lmultimedia at link time without shipping a binary blob.
+ */
+GROUP ( libmultimedia.so.1 )

@@ -46,7 +46,6 @@ static-ffmpeg = [
     "ffmpeg-sys-next/build-lib-x265",
     "ffmpeg-sys-next/build-pic",
 ]
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("ffmpeg_5_0", "ffmpeg_5_1", "ffmpeg_6_0", "ffmpeg_7_0", "ffmpeg_8_0"))'] }
 

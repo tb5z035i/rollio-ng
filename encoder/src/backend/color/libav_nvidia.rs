@@ -801,6 +801,7 @@ fn input_strategy(pix: PixelFormat) -> InputStrategy {
         // registry handles it. ColorEncoderBackend::supports() rejects
         // it before we get here.
         PixelFormat::Depth16 => InputStrategy::Raw(Pixel::GRAY8),
+        PixelFormat::Nv12 => InputStrategy::Raw(Pixel::NV12),
     }
 }
 

@@ -2178,6 +2178,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rollio-encoder-x5"
+version = "1.0.0"
+dependencies = [
+ "cc",
+ "clap",
+ "ffmpeg-next",
+ "log",
+ "rollio-bus",
+ "rollio-encoder",
+ "rollio-types",
+]
+
+[[package]]
 name = "rollio-episode-lerobot"
 version = "1.0.0"
 dependencies = [

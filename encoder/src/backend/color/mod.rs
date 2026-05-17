@@ -227,6 +227,9 @@ fn color_backend_id_from_config(value: EncoderBackend) -> Result<ColorBackendId>
         EncoderBackend::Nvidia => Ok(ColorBackendId::Nvidia),
         EncoderBackend::Vaapi => Ok(ColorBackendId::Vaapi),
         EncoderBackend::Passthrough => Ok(ColorBackendId::Passthrough),
+        EncoderBackend::HorizonX5 => Err(EncoderError::message(
+            "horizon-x5 backend is a separate binary (encoder-x5); not available in this process",
+        )),
         EncoderBackend::Auto => Err(EncoderError::message(
             "color_backend_id_from_config: Auto is not a concrete backend",
         )),
