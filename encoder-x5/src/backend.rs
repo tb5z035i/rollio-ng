@@ -73,16 +73,16 @@ extern "C" {
 
 // ─── Codec ID mapping ───────────────────────────────────────────────────────
 
-/// Maps our ColorCodec to the libmultimedia media_codec_id_t values.
-const MEDIA_CODEC_ID_H264: i32 = 1;
-const MEDIA_CODEC_ID_MJPEG: i32 = 3;
+// Stable app-level codec identifiers passed across the FFI boundary.
+// The C shim maps these to the BSP's `media_codec_id_t` (whose enum
+// values shift between BSP revisions, so we don't expose them here).
+const X5_CODEC_H264: i32 = 0;
+const X5_CODEC_MJPEG: i32 = 1;
 
 fn color_codec_to_x5(codec: ColorCodec) -> Option<i32> {
     match codec {
-        ColorCodec::H264 => Some(MEDIA_CODEC_ID_H264),
-        ColorCodec::Mjpg => Some(MEDIA_CODEC_ID_MJPEG),
-        // H265 could be added trivially (MEDIA_CODEC_ID_H265 = 2)
-        // but is not validated on hardware yet.
+        ColorCodec::H264 => Some(X5_CODEC_H264),
+        ColorCodec::Mjpg => Some(X5_CODEC_MJPEG),
         _ => None,
     }
 }
@@ -91,27 +91,38 @@ fn color_codec_to_x5(codec: ColorCodec) -> Option<i32> {
 
 /// Holds the swscale context and NV12 output buffer for pixel format
 /// conversion. Reused across frames for the lifetime of the session.
+/// Source and destination dims may differ: swscale will rescale when
+/// the preview output dims (set via UI SetSize) differ from the camera
+/// frame dims.
 struct Nv12Converter {
     sws_ctx: *mut ffmpeg::ffi::SwsContext,
-    /// Contiguous NV12 buffer: Y plane (width*height) followed by
-    /// UV plane (width * height/2).
+    /// Contiguous NV12 buffer at the OUTPUT dims: Y plane (dst_width *
+    /// dst_height) followed by UV plane (dst_width * dst_height/2).
     nv12_buf: Vec<u8>,
-    width: u32,
-    height: u32,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
 }
 
 impl Nv12Converter {
-    fn new(src_format: PixelFormat, width: u32, height: u32) -> Result<Self> {
+    fn new(
+        src_format: PixelFormat,
+        src_width: u32,
+        src_height: u32,
+        dst_width: u32,
+        dst_height: u32,
+    ) -> Result<Self> {
         let src_pix_fmt = pixel_format_to_av(src_format)?;
         let dst_pix_fmt = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NV12;
 
         let sws_ctx = unsafe {
             ffmpeg::ffi::sws_getContext(
-                width as i32,
-                height as i32,
+                src_width as i32,
+                src_height as i32,
                 src_pix_fmt,
-                width as i32,
-                height as i32,
+                dst_width as i32,
+                dst_height as i32,
                 dst_pix_fmt,
                 ffmpeg::ffi::SWS_BILINEAR as i32,
                 std::ptr::null_mut(),
@@ -121,49 +132,52 @@ impl Nv12Converter {
         };
         if sws_ctx.is_null() {
             return Err(EncoderError::message(format!(
-                "horizon-x5: failed to create swscale context for {:?} -> NV12",
-                src_format
+                "horizon-x5: failed to create swscale context for {:?} {}x{} -> NV12 {}x{}",
+                src_format, src_width, src_height, dst_width, dst_height,
             )));
         }
 
-        // NV12: Y = width*height, UV = width*(height/2)
-        let y_size = (width * height) as usize;
-        let uv_size = (width * (height / 2)) as usize;
+        let y_size = (dst_width * dst_height) as usize;
+        let uv_size = (dst_width * (dst_height / 2)) as usize;
         let nv12_buf = vec![0u8; y_size + uv_size];
 
         Ok(Self {
             sws_ctx,
             nv12_buf,
-            width,
-            height,
+            src_width,
+            src_height,
+            dst_width,
+            dst_height,
         })
     }
 
     /// Convert a raw frame to NV12 in-place. Returns (y_ptr, uv_ptr, y_stride, uv_stride).
     fn convert(&mut self, payload: &[u8], src_format: PixelFormat) -> Result<(&[u8], &[u8], u32, u32)> {
-        let w = self.width as i32;
-        let h = self.height as i32;
-        let y_size = (self.width * self.height) as usize;
+        let dst_w = self.dst_width as i32;
+        let src_h = self.src_height as i32;
+        let y_size = (self.dst_width * self.dst_height) as usize;
 
-        // Set up source slice pointers and strides based on pixel format
-        let (src_data, src_linesize) = source_planes(payload, src_format, self.width, self.height)?;
+        // Source: caller-provided payload at SOURCE dims.
+        let (src_data, src_linesize) = source_planes(payload, src_format, self.src_width, self.src_height)?;
 
-        // Destination: NV12 — Y plane at offset 0, UV plane at offset y_size
+        // Destination: NV12 at OUTPUT dims.
         let dst_data: [*mut u8; 4] = [
             self.nv12_buf.as_mut_ptr(),
             self.nv12_buf.as_mut_ptr().wrapping_add(y_size),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         ];
-        let dst_linesize: [i32; 4] = [w, w, 0, 0];
+        let dst_linesize: [i32; 4] = [dst_w, dst_w, 0, 0];
 
+        // srcSliceH = number of SOURCE rows. swscale handles rescaling
+        // to dst dims internally based on the SwsContext config.
         let ret = unsafe {
             ffmpeg::ffi::sws_scale(
                 self.sws_ctx,
                 src_data.as_ptr() as *const *const u8,
                 src_linesize.as_ptr(),
                 0,
-                h,
+                src_h,
                 dst_data.as_ptr(),
                 dst_linesize.as_ptr(),
             )
@@ -174,13 +188,11 @@ impl Nv12Converter {
             ));
         }
 
-        let y_stride = self.width;
-        let uv_stride = self.width;
         Ok((
             &self.nv12_buf[..y_size],
             &self.nv12_buf[y_size..],
-            y_stride,
-            uv_stride,
+            self.dst_width,
+            self.dst_width,
         ))
     }
 }
@@ -387,8 +399,13 @@ impl HorizonX5Session {
             ));
         }
 
-        // Create the NV12 converter (unless input is already NV12)
-        let converter = Nv12Converter::new(input_format, width, height)?;
+        // Source frame dims come from the first frame; output dims
+        // come from the session params (preview width/height, which
+        // may differ when the UI requests a resize). swscale handles
+        // rescaling in the same pass as the pixel-format conversion.
+        let src_width = first_frame.header.width;
+        let src_height = first_frame.header.height;
+        let converter = Nv12Converter::new(input_format, src_width, src_height, width, height)?;
 
         let session = HorizonX5Session {
             encoder,
@@ -476,18 +493,26 @@ impl CodecSession for HorizonX5Session {
         let elapsed = start.elapsed();
         self.metrics.record_frame(raw_bytes, encoded_bytes, elapsed);
 
-        // First frame: emit a Config packet (extradata = first keyframe for H264)
-        if !self.config_sent && is_key != 0 {
-            // For H264, the first keyframe contains SPS/PPS inline.
-            // We send the whole first packet as both Config and Packet.
-            let config_header = self.make_header(
-                EncodedPacketKind::Config,
-                pts as i64,
-                true,
-                encoded_bytes as u32,
-            );
-            sink.write_config(config_header, &self.out_buf[..encoded_bytes])?;
-            self.config_sent = true;
+        // First keyframe: extract SPS+PPS NAL units only and emit them
+        // as Config extradata. The X5 VPU prepends SPS+PPS inline at
+        // every keyframe, so the cached extradata is what the
+        // visualizer needs to (a) build the WebCodecs `avc1.PPCCLL`
+        // codec string and (b) re-inject SPS+PPS ahead of every IDR.
+        // Sending the whole first keyframe as extradata (i.e.
+        // SPS+PPS+IDR_slice) would cause the visualizer to prepend
+        // the IDR_slice to every subsequent keyframe — duplicating an
+        // IDR and breaking the browser decoder.
+        if !self.config_sent && self.codec == ColorCodec::H264 && is_key != 0 {
+            if let Some(extradata) = extract_h264_parameter_sets(&self.out_buf[..encoded_bytes]) {
+                let config_header = self.make_header(
+                    EncodedPacketKind::Config,
+                    pts as i64,
+                    true,
+                    extradata.len() as u32,
+                );
+                sink.write_config(config_header, extradata)?;
+                self.config_sent = true;
+            }
         }
 
         // Emit the encoded packet
@@ -526,4 +551,50 @@ impl Drop for HorizonX5Session {
             self.encoder = std::ptr::null_mut();
         }
     }
+}
+
+/// Walk an Annex B H.264 byte stream and return the leading run of
+/// parameter-set NALUs (SPS = type 7, PPS = type 8) — i.e. the bytes
+/// from the start up to but not including the first non-parameter
+/// NALU. Returns `None` when the stream is empty, not Annex B, or
+/// contains no parameter-set NALUs ahead of the first slice.
+///
+/// NAL header: byte 0 = `[forbidden:1][nal_ref_idc:2][nal_unit_type:5]`.
+/// We mask with 0x1F to read `nal_unit_type`.
+fn extract_h264_parameter_sets(stream: &[u8]) -> Option<&[u8]> {
+    let mut starts: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i + 3 <= stream.len() {
+        let is_3 = stream[i] == 0 && stream[i + 1] == 0 && stream[i + 2] == 1;
+        let is_4 = i + 4 <= stream.len()
+            && stream[i] == 0
+            && stream[i + 1] == 0
+            && stream[i + 2] == 0
+            && stream[i + 3] == 1;
+        if is_4 {
+            starts.push(i);
+            i += 4;
+        } else if is_3 {
+            starts.push(i);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    if starts.is_empty() {
+        return None;
+    }
+    let mut end = stream.len();
+    for &start in &starts {
+        let header_off = if stream.get(start + 2) == Some(&1) { start + 3 } else { start + 4 };
+        if header_off >= stream.len() {
+            break;
+        }
+        let nal_type = stream[header_off] & 0x1F;
+        if nal_type != 7 && nal_type != 8 {
+            end = start;
+            break;
+        }
+    }
+    if end == 0 { None } else { Some(&stream[..end]) }
 }

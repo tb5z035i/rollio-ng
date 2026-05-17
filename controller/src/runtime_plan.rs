@@ -10,6 +10,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 /// Resolve a user-facing path string from the project config against the
 /// invocation cwd of the controller. Absolute paths are returned unchanged;
@@ -362,11 +363,8 @@ fn encoder_binary_for(config: &EncoderRuntimeConfigV2, exe_dir: &Path) -> &'stat
     match backend {
         EncoderBackend::HorizonX5 => "rollio-encoder-x5",
         EncoderBackend::Auto => {
-            // Under Auto, prefer the X5 binary if it exists on disk.
-            // The binary's own registry will probe hardware availability
-            // at runtime and fail gracefully if the VPU is absent.
             let x5_path = exe_dir.join("rollio-encoder-x5");
-            if x5_path.exists() {
+            if x5_path.exists() && probe_encoder_has_backend(&x5_path, EncoderBackend::HorizonX5) {
                 "rollio-encoder-x5"
             } else {
                 "rollio-encoder"
@@ -374,6 +372,45 @@ fn encoder_binary_for(config: &EncoderRuntimeConfigV2, exe_dir: &Path) -> &'stat
         }
         _ => "rollio-encoder",
     }
+}
+
+/// Run `<binary> probe --json` and check whether the given backend is
+/// reported as available. Returns false on any failure (missing binary,
+/// timeout, parse error, or backend not available).
+fn probe_encoder_has_backend(binary: &Path, target: rollio_types::config::EncoderBackend) -> bool {
+    use rollio_types::config::EncoderCapabilityReport;
+
+    let output = match Command::new(binary)
+        .args(["probe", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            // Give the probe 5 seconds — it should be near-instant (just a
+            // dlopen check + codec enumeration).
+            match child.wait_with_output() {
+                Ok(o) => o,
+                Err(_) => return false,
+            }
+        }
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let report: EncoderCapabilityReport = match serde_json::from_slice(&output.stdout) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    report
+        .codecs
+        .iter()
+        .any(|cap| cap.backend == target && cap.available)
 }
 
 pub(crate) fn build_assembler_spec(

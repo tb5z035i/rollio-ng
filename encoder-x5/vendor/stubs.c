@@ -6,36 +6,63 @@
  * BSP is loaded via LD_LIBRARY_PATH / ld.so.conf — these stubs are never
  * called.
  *
- * If a stub IS accidentally called (e.g. running the binary off-target),
- * it returns HB_MEDIA_ERR_NOT_READY (-5), making the failure obvious.
+ * Signatures mirror /usr/include/hb_media_codec.h on the X5 BSP. If a
+ * stub IS accidentally called (e.g. running the binary off-target),
+ * it returns HB_MEDIA_ERR_UNKNOWN, making the failure obvious.
  */
-#include "include/hb_media_basic_types.h"
+#include "include/hb_media_codec.h"
 #include "include/hb_media_error.h"
 
-int32_t hb_mm_mc_initialize(mc_context_t *ctx, media_codec_id_t id, int32_t enc) {
-    (void)ctx; (void)id; (void)enc; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_get_default_context(media_codec_id_t codec_id,
+                                    hb_bool encoder,
+                                    media_codec_context_t *context) {
+    (void)codec_id; (void)encoder; (void)context;
+    return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_configure(mc_context_t ctx, const mc_video_codec_params_t *p) {
-    (void)ctx; (void)p; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_initialize(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_start(mc_context_t ctx) {
-    (void)ctx; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_configure(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_pause(mc_context_t ctx) {
-    (void)ctx; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_start(media_codec_context_t *context,
+                      const mc_av_codec_startup_params_t *info) {
+    (void)context; (void)info; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_release(mc_context_t ctx) {
-    (void)ctx; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_stop(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_dequeue_input_buffer(mc_context_t ctx, mc_av_frame_buffer_t *f, int32_t t) {
-    (void)ctx; (void)f; (void)t; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_pause(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_queue_input_buffer(mc_context_t ctx, const mc_av_frame_buffer_t *f) {
-    (void)ctx; (void)f; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_release(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_dequeue_output_buffer(mc_context_t ctx, mc_video_stream_buffer_t *s, int32_t t) {
-    (void)ctx; (void)s; (void)t; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_queue_input_buffer(media_codec_context_t *context,
+                                   media_codec_buffer_t *buffer,
+                                   hb_s32 timeout) {
+    (void)context; (void)buffer; (void)timeout; return HB_MEDIA_ERR_UNKNOWN;
 }
-int32_t hb_mm_mc_queue_output_buffer(mc_context_t ctx, const mc_video_stream_buffer_t *s) {
-    (void)ctx; (void)s; return HB_MEDIA_ERR_NOT_READY;
+hb_s32 hb_mm_mc_dequeue_input_buffer(media_codec_context_t *context,
+                                     media_codec_buffer_t *buffer,
+                                     hb_s32 timeout) {
+    (void)context; (void)buffer; (void)timeout; return HB_MEDIA_ERR_UNKNOWN;
+}
+hb_s32 hb_mm_mc_queue_output_buffer(media_codec_context_t *context,
+                                    media_codec_buffer_t *buffer,
+                                    hb_s32 timeout) {
+    (void)context; (void)buffer; (void)timeout; return HB_MEDIA_ERR_UNKNOWN;
+}
+hb_s32 hb_mm_mc_dequeue_output_buffer(media_codec_context_t *context,
+                                      media_codec_buffer_t *buffer,
+                                      media_codec_output_buffer_info_t *info,
+                                      hb_s32 timeout) {
+    (void)context; (void)buffer; (void)info; (void)timeout;
+    return HB_MEDIA_ERR_UNKNOWN;
+}
+hb_s32 hb_mm_mc_request_idr_frame(media_codec_context_t *context) {
+    (void)context; return HB_MEDIA_ERR_UNKNOWN;
+}
+hb_s32 hb_mm_strerror(hb_s32 err_num, hb_string err_buf, size_t errbuf_size) {
+    (void)err_num; (void)err_buf; (void)errbuf_size; return 0;
 }

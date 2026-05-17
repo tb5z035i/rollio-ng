@@ -1,67 +1,71 @@
-/*
- * Horizon Robotics X5 Multimedia SDK — Basic types
- *
- * Vendored subset for the rollio encoder shim.
- * Source: Horizon Linux BSP libmultimedia headers.
- * SPDX-License-Identifier: Proprietary (Horizon Robotics)
- */
+/***
+ *                     COPYRIGHT NOTICE
+ *            Copyright (C) 2019 -2023, Horizon Robotics Co., Ltd.
+ *                   All rights reserved.
+ ***/
 #ifndef HB_MEDIA_BASIC_TYPES_H
 #define HB_MEDIA_BASIC_TYPES_H
 
 #include <stdint.h>
-#include <stddef.h>
 
-/* Codec identifiers */
-typedef enum {
-    MEDIA_CODEC_ID_NONE = 0,
-    MEDIA_CODEC_ID_H264 = 1,
-    MEDIA_CODEC_ID_H265 = 2,
-    MEDIA_CODEC_ID_MJPEG = 3,
-} media_codec_id_t;
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
 
-/* Pixel format for input frames */
-typedef enum {
-    MC_PIXEL_FORMAT_NONE = 0,
-    MC_PIXEL_FORMAT_NV12 = 1,
-    MC_PIXEL_FORMAT_NV21 = 2,
-    MC_PIXEL_FORMAT_YUV420P = 3,
-    MC_PIXEL_FORMAT_YUYV = 4,
-} mc_pixel_format_t;
+/** hb_u8 is an 8 bit unsigned quantity that is byte aligned */
+typedef uint8_t hb_u8;
 
-/* Video stream buffer — output from encoder */
-typedef struct {
-    uint8_t *vir_ptr;
-    uint64_t phy_ptr;
-    uint32_t size;
-    uint64_t pts;
-    uint32_t stream_index;
-    int32_t  flags;  /* key frame if & 1 */
-} mc_video_stream_buffer_t;
+/** hb_s8 is an 8 bit signed quantity that is byte aligned */
+typedef int8_t hb_s8;
 
-/* AV frame buffer — input to encoder */
-typedef struct {
-    uint8_t *vir_ptr[3];   /* plane pointers: [0]=Y, [1]=UV (NV12) */
-    uint64_t phy_ptr[3];
-    uint32_t stride[3];
-    uint32_t width;
-    uint32_t height;
-    mc_pixel_format_t pix_fmt;
-    uint64_t pts;
-} mc_av_frame_buffer_t;
+/** hb_u16 is a 16 bit unsigned quantity that is 16 bit word aligned */
+typedef uint16_t hb_u16;
 
-/* Codec parameters for configure */
-typedef struct {
-    media_codec_id_t codec_id;
-    mc_pixel_format_t pix_fmt;
-    uint32_t width;
-    uint32_t height;
-    uint32_t frame_rate;
-    uint32_t bit_rate;       /* bps, 0 = VBR default */
-    uint32_t gop_size;       /* I-frame interval */
-    int32_t  quality;        /* MJPEG quality 1-100, ignored for H264 */
-} mc_video_codec_params_t;
+/** hb_s16 is a 16 bit signed quantity that is 16 bit word aligned */
+typedef int16_t hb_s16;
 
-/* Opaque codec context handle */
-typedef void *mc_context_t;
+/** hb_u32 is a 32 bit unsigned quantity that is 32 bit word aligned */
+typedef uint32_t hb_u32;
 
+/** hb_s32 is a 32 bit signed quantity that is 32 bit word aligned */
+typedef int32_t hb_s32;
+
+/** hb_u64 is a 64 bit unsigned quantity that is 64 bit word aligned */
+typedef uint64_t hb_u64;
+
+/** hb_s64 is a 64 bit signed quantity that is 64 bit word aligned */
+typedef int64_t hb_s64;
+
+/** 
+* The hb_bool type is intended to be used to represent a true or a false 
+* value. The hb_bool is a 32 bit quantity and is aligned on a 32 bit word 
+* boundary.
+*/
+typedef int32_t hb_bool;
+
+/**
+* The hb_ptr type is intended to be used to pass pointers.
+* This is a 32 bit pointer and is aligned on a 32 bit boundary.
+*/
+typedef void *hb_ptr;
+
+/**
+* The hb_string type is intended to be used to pass "C" type strings.
+* The hb_string type is a 32 bit pointer to a zero terminated string.
+* The pointer is word aligned and the string is byte aligned.
+*/
+typedef char *hb_string;
+
+/**
+* The hb_byte type is intended to be used to pass arrays of bytes such as
+* buffers. The hb_byte type is a 32 bit pointer to a zero terminated string.
+* The pointer is word aligned and the string is byte aligned.
+*/
+typedef unsigned char *hb_byte;
+
+#define HB_ARRAY_ELEMS(a) (sizeof((a)) / sizeof((a)[0]))
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 #endif /* HB_MEDIA_BASIC_TYPES_H */
