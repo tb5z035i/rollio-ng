@@ -2341,6 +2341,7 @@ dependencies = [
  "cc",
  "clap",
  "ffmpeg-next",
+ "libc",
  "log",
  "rollio-bus",
  "rollio-encoder",
