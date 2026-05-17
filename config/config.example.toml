@@ -316,6 +316,98 @@ publish_states = ["tactile_point_cloud2"]
 recorded_states = ["tactile_point_cloud2"]
 
 # -----------------------------------------------------------------------------
+# Cora passthrough devices (Phase 1)
+#
+# Each cora-* driver subscribes to one Cora (Fast-DDS) topic and republishes on
+# the standard rollio iceoryx2 services. Driver code lives in:
+#   sensors/imu_cora/      — sensor_msgs/Imu          → SensorStateKind::ImuAccelGyro
+#   sensors/tactile_cora/  — sensor_msgs/PointCloud2  → SensorStateKind::TactilePointCloud2
+#   robots/gripper_cora/   — sensor_msgs/JointState   → JointVector15 (dof=1)
+#
+# The cora C++ SDK is NOT vendored into the rollio repo. Set CORA_SDK_ROOT
+# (or per-arch CORA_SDK_X86_64_ROOT / CORA_SDK_AARCH64_ROOT) before
+# `cargo build` so each device's build.rs can find the SDK. See
+# `sensors/imu_cora/README.md` for the full env / RPATH story.
+# -----------------------------------------------------------------------------
+[[devices]]
+name = "imu_head"
+driver = "imu-cora"
+id = "imu_cora_0"
+bus_root = "imu_head"
+
+[devices.extra]
+cora_domain_id = 0
+cora_participant_name = "rollio_imu_head"
+cora_use_shared_memory = true
+cora_use_udp = true
+cora_callback_threads = 2
+
+[[devices.channels]]
+channel_type = "imu"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 200.0
+publish_states = ["imu_accel_gyro"]
+recorded_states = ["imu_accel_gyro"]
+[devices.channels.extra]
+cora_topic = "rt/imu/head/data"
+cora_qos = "reliable"             # "reliable" | "best_effort"
+
+[[devices]]
+name = "tactile_left_cora"
+driver = "tactile-cora"
+id = "tactile_cora_0"
+bus_root = "tactile_left_cora"
+
+[devices.extra]
+cora_domain_id = 0
+cora_participant_name = "rollio_tactile_left_cora"
+cora_use_shared_memory = true
+cora_use_udp = true
+cora_callback_threads = 2
+
+[[devices.channels]]
+channel_type = "tactile"
+kind = "sensor"
+enabled = true
+sample_rate_hz = 30.0
+publish_states = ["tactile_point_cloud2"]
+recorded_states = ["tactile_point_cloud2"]
+[devices.channels.extra]
+cora_topic = "rt/tactile/left/points"
+cora_qos = "best_effort"
+tactile_point_count = 1024
+# Six slot mappings into [x, y, z, fx, fy, fz]. Empty "" leaves that slot at 0.0.
+# This example assumes the source publishes 6 float32 fields named x/y/z/fx/fy/fz.
+pointcloud_field_map = ["x", "y", "z", "fx", "fy", "fz"]
+
+[[devices]]
+name = "gripper_right"
+driver = "gripper-cora"
+id = "gripper_cora_0"
+bus_root = "gripper_right"
+
+[devices.extra]
+cora_domain_id = 0
+cora_participant_name = "rollio_gripper_right"
+cora_use_shared_memory = true
+cora_use_udp = true
+cora_callback_threads = 2
+
+[[devices.channels]]
+channel_type = "gripper"
+kind = "robot"
+enabled = true
+dof = 1
+publish_states = ["joint_position", "joint_velocity", "joint_effort"]
+recorded_states = ["joint_position", "joint_velocity", "joint_effort"]
+[devices.channels.extra]
+cora_topic = "rt/gripper/right/state"
+cora_qos = "reliable"
+# Name of the joint inside JointState.name[] to extract for the dof=1 output.
+joint_name = "gripper_right_finger"
+
+# -----------------------------------------------------------------------------
 # Pairings — connect a leader robot channel to a follower channel under one
 # teleoperation policy. Empty when `mode = "intervention"`.
 # -----------------------------------------------------------------------------

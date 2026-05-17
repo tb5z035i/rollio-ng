@@ -20,6 +20,9 @@ members = [
     "test/bus-tap",
     "web-gateway",
     "control-server",
+    "sensors/imu_cora",
+    "sensors/tactile_cora",
+    "robots/gripper_cora",
 ]
 exclude = ["third_party"]
 

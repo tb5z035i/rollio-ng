@@ -1,0 +1,29 @@
+[package]
+name = "tactile-cora"
+version = "0.1.0"
+edition = "2021"
+description = "rollio device driver: subscribes to a sensor_msgs/PointCloud2 Cora topic and publishes SensorStateKind::TactilePointCloud2 samples (shape [N, 6]) to the iceoryx2 bus."
+
+[[bin]]
+name = "rollio-device-tactile-cora"
+path = "src/main.rs"
+
+[dependencies]
+rollio-bus = { path = "../../rollio-bus" }
+rollio-types = { path = "../../rollio-types" }
+iceoryx2 = { path = "../../third_party/iceoryx2/iceoryx2" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "0.8", features = ["parse"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+signal-hook = "0.3"
+
+[build-dependencies]
+bindgen = "0.69"
+cmake = "0.1"

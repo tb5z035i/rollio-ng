@@ -57,6 +57,9 @@ CORE_BINS=(
     rollio-device-pseudo
     rollio-device-airbot-play
     rollio-device-v4l2
+    rollio-device-imu-cora
+    rollio-device-tactile-cora
+    rollio-device-gripper-cora
     rollio-bus-tap
     rollio-test-publisher
 )
