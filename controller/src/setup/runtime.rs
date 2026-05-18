@@ -344,7 +344,25 @@ pub(super) fn run_interactive_setup(
                     ) {
                         break;
                     }
-                    return Err(setup_trigger_error(trigger).into());
+                    // A preview-runtime child died non-zero. The most
+                    // common cause is the v4l2 camera being held by
+                    // another process (e.g., a `rollio collect`
+                    // session in another terminal → EBUSY when the
+                    // setup-time device tries to open the same
+                    // device). Tearing down the entire wizard for a
+                    // recoverable error is hostile UX. Stop the
+                    // preview runtime, clear identify so the operator
+                    // can fix the conflict and try again, and surface
+                    // a clear message in the wizard footer.
+                    let summary = setup_trigger_error(trigger);
+                    let _ = stop_setup_runtime(&mut preview_runtime, &ipc);
+                    session.clear_identify_state();
+                    session.message = Some(format!(
+                        "Identify failed: {summary}. Another process may be holding the device \
+                         (try `lsof /dev/video0` or stop any running `rollio collect`)."
+                    ));
+                    state_dirty = true;
+                    continue;
                 }
             }
 

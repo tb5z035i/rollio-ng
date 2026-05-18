@@ -210,7 +210,7 @@ impl SetupStep {
             Self::States => "States",
             Self::Pairing => "Pairing",
             Self::Storage => "Settings",
-            Self::Preview => "Preview",
+            Self::Preview => "Overview",
         }
     }
 }
@@ -235,6 +235,11 @@ pub(super) struct SetupSession {
     pub(super) available_devices: Vec<AvailableDevice>,
     pub(super) teleop_pairing_cache: Vec<ChannelPairingConfig>,
     pub(super) identify_device_name: Option<String>,
+    /// Name (= `AvailableDevice.name`) of the channel whose subpanel is
+    /// currently open in Step 1. `None` when no subpanel is active.
+    /// Mutated by `open_subpanel` / `close_subpanel` and consumed by
+    /// the Ink UI to render the modal overlay.
+    pub(super) subpanel_target_name: Option<String>,
     pub(super) current_step: SetupStep,
     pub(super) output_path: PathBuf,
     pub(super) resume_mode: bool,
@@ -254,6 +259,12 @@ pub(super) struct SetupCommandEnvelope {
     pub(super) index: Option<usize>,
     pub(super) delta: Option<i32>,
     pub(super) value: Option<String>,
+    /// Optional sub-field selector used by generic subpanel commands
+    /// (`setup_subpanel_set_record_field` /
+    /// `setup_subpanel_cycle_record_field` and their preview
+    /// counterparts) — identifies WHICH record/preview encoder knob
+    /// the operator is editing.
+    pub(super) field: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +281,9 @@ pub(super) struct SetupStateEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) message: Option<String>,
     pub(super) identify_device: Option<String>,
+    /// Mirrors `SetupSession.subpanel_target_name` so the Ink UI knows
+    /// when to render the channel subpanel modal overlay.
+    pub(super) subpanel_target: Option<String>,
     pub(super) warnings: Vec<String>,
     pub(super) config: ProjectConfig,
     pub(super) available_devices: Vec<AvailableDevice>,
@@ -336,6 +350,7 @@ impl SetupSession {
             available_devices,
             teleop_pairing_cache,
             identify_device_name: None,
+            subpanel_target_name: None,
             output_path,
             resume_mode,
             warnings,
@@ -358,6 +373,7 @@ impl SetupSession {
             status: self.status,
             message: self.message.clone(),
             identify_device: self.identify_device_name.clone(),
+            subpanel_target: self.subpanel_target_name.clone(),
             warnings: self.warnings.clone(),
             config: self.config.clone(),
             available_devices: self.available_devices.clone(),
@@ -401,24 +417,25 @@ impl SetupSession {
     }
 
     pub(super) fn visible_steps(&self) -> &'static [SetupStep] {
-        // Pairing must precede States: choosing a teleop mapping decides
-        // which `leader_state` is required, and the States step refuses to
-        // toggle off a kind that an active pairing depends on. Putting
-        // States after Pairing surfaces those locked rows immediately
-        // instead of forcing the operator to backtrack.
+        // Final 4-step flow is Devices → Pairings → Settings → Overview.
+        // States is still a separate step today; it folds into the Step 1
+        // channel subpanel in a follow-up. Pairing must precede States so
+        // selecting a teleop mapping locks in `leader_state` before the
+        // operator can toggle state kinds (and so the States step can
+        // refuse to drop a kind a live pairing depends on).
         if self.config.mode == CollectionMode::Teleop {
             &[
                 SetupStep::Devices,
-                SetupStep::Storage,
                 SetupStep::Pairing,
                 SetupStep::States,
+                SetupStep::Storage,
                 SetupStep::Preview,
             ]
         } else {
             &[
                 SetupStep::Devices,
-                SetupStep::Storage,
                 SetupStep::States,
+                SetupStep::Storage,
                 SetupStep::Preview,
             ]
         }
@@ -447,6 +464,7 @@ impl SetupSession {
         self.current_step = next;
         if self.current_step != SetupStep::Devices {
             self.clear_identify_state();
+            self.subpanel_target_name = None;
         }
         changed
     }
@@ -466,6 +484,7 @@ impl SetupSession {
         self.current_step = previous;
         if self.current_step != SetupStep::Devices {
             self.clear_identify_state();
+            self.subpanel_target_name = None;
         }
         changed
     }
@@ -476,6 +495,7 @@ impl SetupSession {
         }
         if self.current_step != SetupStep::Devices {
             self.clear_identify_state();
+            self.subpanel_target_name = None;
         }
     }
 

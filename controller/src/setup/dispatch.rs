@@ -5,6 +5,24 @@ use rollio_types::config::{MappingStrategy, RobotStateKind};
 use std::error::Error;
 
 impl SetupSession {
+    /// Helper: dispatch a text-input command. Pulls `command.value`,
+    /// returns `SessionMutation::default()` when absent (the wizard
+    /// must send a value for every text field), otherwise delegates to
+    /// the field-specific setter and wraps the bool result in
+    /// `SessionMutation::config_changed`.
+    fn set_text_field(
+        &mut self,
+        value: Option<&str>,
+        setter: fn(&mut Self, &str) -> Result<bool, Box<dyn Error>>,
+    ) -> Result<SessionMutation, Box<dyn Error>> {
+        let Some(value) = value else {
+            return Ok(SessionMutation::default());
+        };
+        Ok(SessionMutation::config_changed(setter(self, value)?))
+    }
+}
+
+impl SetupSession {
     pub(super) fn apply_raw_command(
         &mut self,
         raw_json: &str,
@@ -41,6 +59,102 @@ impl SetupSession {
                     self.set_device_name(name, value)?,
                 ))
             }
+            "setup_open_subpanel" => {
+                let Some(name) = command.name.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::state_only(self.open_subpanel(name)))
+            }
+            "setup_close_subpanel" => {
+                Ok(SessionMutation::state_only(self.close_subpanel()))
+            }
+            "setup_subpanel_toggle_preview_enabled" => {
+                let Some(name) = command.name.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_toggle_preview_enabled(name)?,
+                ))
+            }
+            "setup_subpanel_toggle_record_enabled" => {
+                let Some(name) = command.name.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_toggle_record_enabled(name)?,
+                ))
+            }
+            "setup_subpanel_cycle_primary" => {
+                let Some(name) = command.name.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_cycle_primary(name, delta)?,
+                ))
+            }
+            "setup_subpanel_cycle_record_field" => {
+                let (Some(name), Some(field)) = (command.name.as_deref(), command.field.as_deref())
+                else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_cycle_record_field(name, field, delta)?,
+                ))
+            }
+            "setup_subpanel_set_record_field" => {
+                let (Some(name), Some(field), Some(value)) = (
+                    command.name.as_deref(),
+                    command.field.as_deref(),
+                    command.value.as_deref(),
+                ) else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_set_record_field(name, field, value)?,
+                ))
+            }
+            "setup_subpanel_cycle_preview_field" => {
+                let (Some(name), Some(field)) = (command.name.as_deref(), command.field.as_deref())
+                else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_cycle_preview_field(name, field, delta)?,
+                ))
+            }
+            "setup_subpanel_set_preview_field" => {
+                let (Some(name), Some(field), Some(value)) = (
+                    command.name.as_deref(),
+                    command.field.as_deref(),
+                    command.value.as_deref(),
+                ) else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_set_preview_field(name, field, value)?,
+                ))
+            }
+            "setup_subpanel_set_control_frequency_hz" => {
+                let (Some(name), Some(value)) = (command.name.as_deref(), command.value.as_deref())
+                else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.subpanel_set_control_frequency_hz(name, value)?,
+                ))
+            }
+            "setup_open_add_picker" => {
+                Ok(SessionMutation::state_only(self.open_add_picker()))
+            }
+            "setup_add_pseudo_camera" => Ok(SessionMutation::config_changed(
+                self.add_pseudo_camera()?,
+            )),
+            "setup_add_pseudo_robot" => Ok(SessionMutation::config_changed(
+                self.add_pseudo_robot()?,
+            )),
+            "setup_add_command_device" => Ok(SessionMutation::config_changed(
+                self.add_command_device()?,
+            )),
             "setup_toggle_identify" => {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
@@ -200,14 +314,51 @@ impl SetupSession {
                     self.set_ui_http_host(value)?,
                 ))
             }
-            "setup_set_episode_fps" => {
-                let Some(value) = command.value.as_deref() else {
-                    return Ok(SessionMutation::default());
-                };
-                Ok(SessionMutation::config_changed(
-                    self.set_episode_fps(value)?,
-                ))
+            "setup_set_episode_fps" => self.set_text_field(command.value.as_deref(), Self::set_episode_fps),
+            "setup_set_episode_chunk_size" => {
+                self.set_text_field(command.value.as_deref(), Self::set_episode_chunk_size)
             }
+            "setup_set_controller_shutdown_timeout_ms" => self
+                .set_text_field(command.value.as_deref(), Self::set_controller_shutdown_timeout_ms),
+            "setup_set_controller_child_poll_interval_ms" => self.set_text_field(
+                command.value.as_deref(),
+                Self::set_controller_child_poll_interval_ms,
+            ),
+            "setup_set_visualizer_port" => {
+                self.set_text_field(command.value.as_deref(), Self::set_visualizer_port)
+            }
+            "setup_set_ui_http_port" => {
+                self.set_text_field(command.value.as_deref(), Self::set_ui_http_port)
+            }
+            "setup_set_ui_start_key" => {
+                self.set_text_field(command.value.as_deref(), Self::set_ui_start_key)
+            }
+            "setup_set_ui_stop_key" => {
+                self.set_text_field(command.value.as_deref(), Self::set_ui_stop_key)
+            }
+            "setup_set_ui_keep_key" => {
+                self.set_text_field(command.value.as_deref(), Self::set_ui_keep_key)
+            }
+            "setup_set_ui_discard_key" => {
+                self.set_text_field(command.value.as_deref(), Self::set_ui_discard_key)
+            }
+            "setup_set_assembler_missing_eos_timeout_ms" => self.set_text_field(
+                command.value.as_deref(),
+                Self::set_assembler_missing_eos_timeout_ms,
+            ),
+            "setup_set_assembler_staging_dir" => {
+                self.set_text_field(command.value.as_deref(), Self::set_assembler_staging_dir)
+            }
+            "setup_set_assembler_staging_slots" => {
+                self.set_text_field(command.value.as_deref(), Self::set_assembler_staging_slots)
+            }
+            "setup_set_storage_queue_size" => {
+                self.set_text_field(command.value.as_deref(), Self::set_storage_queue_size)
+            }
+            "setup_set_monitor_metrics_frequency_hz" => self.set_text_field(
+                command.value.as_deref(),
+                Self::set_monitor_metrics_frequency_hz,
+            ),
             "setup_save" => {
                 save_project_config(&self.config, &self.output_path)?;
                 self.mark_saved();

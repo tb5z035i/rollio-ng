@@ -11,8 +11,8 @@ use super::state::{
 };
 use crate::discovery::known_device_executables;
 use rollio_types::config::{
-    BinaryDeviceConfig, ChannelPairingConfig, CollectionMode, DeviceType, MappingStrategy,
-    ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind,
+    BinaryDeviceConfig, ChannelPairingConfig, CollectionMode, DeviceType, EncoderCodec,
+    MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode, RobotStateKind,
 };
 use rollio_types::messages::PixelFormat;
 use serde_json::json;
@@ -720,7 +720,8 @@ fn preview_runtime_project_overrides_visualizer_port() {
 fn visible_steps_include_pairing_for_teleop_default() {
     // Teleop is now the only collection mode the wizard exposes — the
     // default discovery config lands on it directly so the Pairing
-    // step is always visible.
+    // step is always visible, and it now precedes Settings/Storage so
+    // the operator establishes pairings before tuning module knobs.
     let session = setup_session(&[camera_discovery("cam0"), robot_discovery("robot0", 6)]);
 
     assert_eq!(session.config.mode, CollectionMode::Teleop);
@@ -728,9 +729,9 @@ fn visible_steps_include_pairing_for_teleop_default() {
         session.visible_steps(),
         &[
             SetupStep::Devices,
-            SetupStep::Storage,
             SetupStep::Pairing,
             SetupStep::States,
+            SetupStep::Storage,
             SetupStep::Preview,
         ]
     );
@@ -748,8 +749,8 @@ fn visible_steps_drop_pairing_for_legacy_intervention_configs() {
         session.visible_steps(),
         &[
             SetupStep::Devices,
-            SetupStep::Storage,
             SetupStep::States,
+            SetupStep::Storage,
             SetupStep::Preview,
         ]
     );
@@ -1435,6 +1436,419 @@ fn build_preview_project_config_forces_jpeg_for_terminal_ui() {
             );
         }
     }
+}
+
+/// Regression for the Step-1 add-device picker: each of the three
+/// picker options (pseudo camera, pseudo robot, command device stub)
+/// must produce a config that passes `validate()` and that bumps the
+/// generated id suffix when called repeatedly.
+#[test]
+fn add_pseudo_devices_round_trip_and_dedupe_ids() {
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let before = session.config.devices.len();
+    let before_available = session.available_devices.len();
+
+    assert!(session.add_pseudo_camera().expect("camera adds"));
+    assert!(session.add_pseudo_camera().expect("second camera adds"));
+    assert!(session.add_pseudo_robot().expect("robot adds"));
+    let command_ok = session.add_command_device().expect("command stub call");
+    if !command_ok {
+        panic!(
+            "command stub add returned false; message = {:?}",
+            session.message
+        );
+    }
+
+    assert_eq!(session.config.devices.len(), before + 4);
+    assert_eq!(session.available_devices.len(), before_available + 4);
+
+    let pseudo_camera_ids: Vec<&str> = session
+        .config
+        .devices
+        .iter()
+        .filter(|d| d.driver == "pseudo" && d.channels[0].kind == DeviceType::Camera)
+        .filter(|d| d.id.starts_with("pseudo_camera_"))
+        .map(|d| d.id.as_str())
+        .collect();
+    assert_eq!(pseudo_camera_ids, vec!["pseudo_camera_0", "pseudo_camera_1"]);
+
+    assert!(session
+        .config
+        .devices
+        .iter()
+        .any(|d| d.driver == "command"));
+
+    session
+        .config
+        .validate()
+        .expect("config after pseudo + command additions still validates");
+}
+
+/// Subpanel toggle for `preview_enabled` / `record_enabled` must mirror
+/// the new value into the AvailableDevice snapshot so the Ink modal
+/// (which reads from `available_devices`) renders the flip without
+/// waiting for the operator to navigate away and back. Regression for
+/// "p / r seem to do nothing in the subpanel".
+#[test]
+fn subpanel_toggle_mirrors_record_and_preview_into_available_devices() {
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+
+    // Open the subpanel and toggle preview off.
+    assert!(session.open_subpanel(&camera_name));
+    let before_preview = session
+        .available_device(&camera_name)
+        .and_then(|d| d.current.channels.first())
+        .map(|c| c.preview_enabled)
+        .unwrap();
+    let toggled = session
+        .subpanel_toggle_preview_enabled(&camera_name)
+        .expect("preview toggle returns ok");
+    assert!(
+        toggled,
+        "toggle should succeed; message = {:?}",
+        session.message
+    );
+    let after_preview = session
+        .available_device(&camera_name)
+        .and_then(|d| d.current.channels.first())
+        .map(|c| c.preview_enabled)
+        .unwrap();
+    assert_eq!(
+        after_preview, !before_preview,
+        "AvailableDevice mirror must reflect the new preview_enabled"
+    );
+
+    // Toggle record off — must round-trip into available_devices too.
+    let before_record = session
+        .available_device(&camera_name)
+        .and_then(|d| d.current.channels.first())
+        .map(|c| c.record_enabled)
+        .unwrap();
+    let toggled = session
+        .subpanel_toggle_record_enabled(&camera_name)
+        .expect("record toggle returns ok");
+    assert!(
+        toggled,
+        "record toggle should succeed; message = {:?}",
+        session.message
+    );
+    let after_record = session
+        .available_device(&camera_name)
+        .and_then(|d| d.current.channels.first())
+        .map(|c| c.record_enabled)
+        .unwrap();
+    assert_eq!(
+        after_record, !before_record,
+        "AvailableDevice mirror must reflect the new record_enabled"
+    );
+
+    // h/l cycle dispatches the right per-kind helper. The fixture
+    // advertises only one profile so the value doesn't actually change;
+    // the test just confirms the cycle call returns Ok and doesn't
+    // accidentally route to the robot path.
+    let _ = session
+        .subpanel_cycle_primary(&camera_name, 1)
+        .expect("primary cycle returns ok");
+
+    // Advancing the step closes the subpanel.
+    assert!(session.advance_step());
+    assert!(
+        session.subpanel_target_name.is_none(),
+        "leaving the devices step must close the subpanel"
+    );
+}
+
+/// Per-channel record / preview encoder editing through the subpanel.
+/// Each knob must materialize the encoder block on first edit (so the
+/// operator doesn't have to opt in to `record = { … }` manually) and
+/// cycle / text edits must round-trip back into `config.devices`.
+#[test]
+fn subpanel_record_and_preview_field_edits_round_trip() {
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    // Cycling a record-block enum field materializes the block.
+    assert!(session.config.devices[0].channels[0].record.is_none());
+    assert!(session
+        .subpanel_cycle_record_field(&camera_name, "video_codec", 1)
+        .expect("cycle ok"));
+    let record = session.config.devices[0].channels[0]
+        .record
+        .as_ref()
+        .expect("record block materialized");
+    assert_eq!(record.video_codec, Some(EncoderCodec::H265));
+
+    // Text-edit a record-block field.
+    assert!(session
+        .subpanel_set_record_field(&camera_name, "crf", "21")
+        .expect("set crf ok"));
+    let record = session.config.devices[0].channels[0]
+        .record
+        .as_ref()
+        .expect("record block still present");
+    assert_eq!(record.crf, Some(21));
+
+    // Empty value clears a text field back to default (None).
+    assert!(session
+        .subpanel_set_record_field(&camera_name, "crf", "")
+        .expect("clear crf ok"));
+    let record = session.config.devices[0].channels[0]
+        .record
+        .as_ref()
+        .expect("record block still present");
+    assert_eq!(record.crf, None);
+
+    // Invalid text input is rejected with a message; no mutation.
+    let outcome = session
+        .subpanel_set_record_field(&camera_name, "crf", "not-a-number")
+        .expect("invalid input is reported via message, not error");
+    assert!(!outcome);
+    assert!(session.message.as_deref().unwrap_or("").contains("crf"));
+
+    // Preview side: cycle output_mode + set jpeg_quality.
+    assert!(session.config.devices[0].channels[0]
+        .preview_settings
+        .is_none());
+    assert!(session
+        .subpanel_cycle_preview_field(&camera_name, "output_mode", 1)
+        .expect("cycle preview ok"));
+    let preview = session.config.devices[0].channels[0]
+        .preview_settings
+        .as_ref()
+        .expect("preview block materialized");
+    // Cycle starts at index 0 (jpeg) and steps to 1 (encoded).
+    assert_eq!(
+        preview.output_mode,
+        Some(rollio_types::config::PreviewOutputMode::Encoded)
+    );
+    assert!(session
+        .subpanel_set_preview_field(&camera_name, "jpeg_quality", "75")
+        .expect("set jpeg_quality ok"));
+    let preview = session.config.devices[0].channels[0]
+        .preview_settings
+        .as_ref()
+        .expect("preview block still present");
+    assert_eq!(preview.jpeg_quality, Some(75));
+}
+
+/// Cycling the record video codec must walk through every variant of
+/// `EncoderCodec` that's valid for an RGB stream (h264, h265, av1,
+/// mjpg) and wrap back to h264. Regression for "subpanel cycle doesn't
+/// reach every available option" — Mjpg was missing from the cycle
+/// list before this test landed.
+#[test]
+fn subpanel_cycle_record_video_codec_walks_every_available_option() {
+    use rollio_types::config::EncoderCodec;
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    let expected = [
+        EncoderCodec::H265,
+        EncoderCodec::Av1,
+        EncoderCodec::Mjpg,
+        EncoderCodec::H264,
+    ];
+    for (i, want) in expected.iter().enumerate() {
+        let outcome = session
+            .subpanel_cycle_record_field(&camera_name, "video_codec", 1)
+            .expect("cycle ok");
+        assert!(outcome, "cycle step {i} succeeds");
+        assert_eq!(
+            session.config.devices[0].channels[0]
+                .record
+                .as_ref()
+                .and_then(|r| r.video_codec),
+            Some(*want),
+            "step {i}: expected video_codec={want:?}"
+        );
+        // The AvailableDevice mirror (which the Ink UI reads from)
+        // must reflect the new value. Regression for "h/l in subpanel
+        // does nothing visible" — the cycle landed in config.devices
+        // but never made it to available_devices.
+        let mirrored = session
+            .available_device(&camera_name)
+            .and_then(|d| d.current.channels.first())
+            .and_then(|c| c.record.as_ref())
+            .and_then(|r| r.video_codec);
+        assert_eq!(
+            mirrored,
+            Some(*want),
+            "step {i}: AvailableDevice mirror must reflect cycled value"
+        );
+    }
+}
+
+/// Preset cycles through the canonical x264/x265 preset list plus
+/// `None` (= libav default). Regression for "Preset row should cycle
+/// in available options, not be a free-text input".
+#[test]
+fn subpanel_cycle_record_preset_walks_canonical_list() {
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    // Cycle forward 9 steps: from None we should walk ultrafast →
+    // veryfast → fast → medium → slow → slower → veryslow → (wrap)
+    // None → ultrafast. Each step must succeed.
+    let expected = [
+        Some("ultrafast"),
+        Some("veryfast"),
+        Some("fast"),
+        Some("medium"),
+        Some("slow"),
+        Some("slower"),
+        Some("veryslow"),
+        None,
+        Some("ultrafast"),
+    ];
+    for (i, want) in expected.iter().enumerate() {
+        assert!(session
+            .subpanel_cycle_record_field(&camera_name, "preset", 1)
+            .expect("cycle ok"));
+        let actual = session.config.devices[0].channels[0]
+            .record
+            .as_ref()
+            .and_then(|r| r.preset.as_deref());
+        assert_eq!(actual, *want, "step {i}: expected preset={want:?}");
+    }
+}
+
+/// `depth_codec` is locked to RVL — the libav depth backends were
+/// never wired through `DepthBackendRegistry`. Cycling must stay on
+/// RVL (no-op) regardless of how many `h`/`l` presses the operator
+/// sends.
+#[test]
+fn subpanel_cycle_record_depth_codec_locked_to_rvl() {
+    use rollio_types::config::EncoderCodec;
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    for _ in 0..6 {
+        let _ = session
+            .subpanel_cycle_record_field(&camera_name, "depth_codec", 1)
+            .expect("cycle ok");
+        assert_eq!(
+            session.config.devices[0].channels[0]
+                .record
+                .as_ref()
+                .and_then(|r| r.depth_codec),
+            Some(EncoderCodec::Rvl),
+            "depth_codec must stay on RVL after every cycle"
+        );
+    }
+}
+
+/// Backend cycle must include HorizonX5 so operators on aarch64
+/// Horizon boards can route through the hardware VPU from the wizard
+/// without hand-editing the TOML.
+#[test]
+fn subpanel_cycle_record_backend_reaches_horizon_x5() {
+    use rollio_types::config::EncoderBackend;
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    // Six steps from the unset (Auto) starting point should land back
+    // on Auto. Along the way we must observe HorizonX5.
+    let mut saw_horizon_x5 = false;
+    let mut last = None;
+    for _ in 0..6 {
+        let _ = session
+            .subpanel_cycle_record_field(&camera_name, "video_backend", 1)
+            .expect("cycle ok");
+        let next = session.config.devices[0].channels[0]
+            .record
+            .as_ref()
+            .and_then(|r| r.video_backend);
+        if next == Some(EncoderBackend::HorizonX5) {
+            saw_horizon_x5 = true;
+        }
+        last = next;
+    }
+    assert!(saw_horizon_x5, "HorizonX5 must be reachable from the cycle");
+    // After a full revolution we wrap back to the first option (Auto).
+    assert_eq!(last, Some(EncoderBackend::Auto));
+}
+
+/// On a validation rejection, the subpanel cycle must restore the
+/// channel to its pre-edit state. Otherwise a rejected cycle leaves
+/// the wizard showing an invalid value plus a rejection message.
+#[test]
+fn subpanel_cycle_rolls_back_on_validation_failure() {
+    use rollio_types::config::{ChannelRecordConfig, EncoderCodec};
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|d| d.device_type == DeviceType::Camera)
+        .expect("camera row")
+        .name
+        .clone();
+    assert!(session.open_subpanel(&camera_name));
+
+    // Seed a record block with a known starting codec so we can prove
+    // the rollback restored *this* value, not some default.
+    session.config.devices[0].channels[0].record = Some(ChannelRecordConfig {
+        video_codec: Some(EncoderCodec::H264),
+        ..ChannelRecordConfig::default()
+    });
+
+    let outcome = session
+        .subpanel_set_record_field(&camera_name, "crf", "999")
+        .expect("set returns Ok regardless of validation");
+    assert!(!outcome, "out-of-range crf must be rejected");
+    let record = session.config.devices[0].channels[0]
+        .record
+        .as_ref()
+        .expect("record block preserved");
+    // The starting video_codec was preserved exactly.
+    assert_eq!(record.video_codec, Some(EncoderCodec::H264));
+    // crf was NOT mutated by the rejected set.
+    assert_eq!(record.crf, None);
+    assert!(
+        session.message.as_deref().unwrap_or("").contains("crf"),
+        "rejection should mention the field"
+    );
 }
 
 #[test]
