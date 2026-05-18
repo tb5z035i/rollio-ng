@@ -1,0 +1,43 @@
+// cora_h264_packet.idl
+//
+// Reference IDL for the H264 encoded video topic published by Cora on
+//   /rt/robot/camera/<device>/left/video_encoded
+//   /rt/robot/camera/<device>/right/video_encoded
+//
+// The exact message type and CDR layout should be confirmed through
+// on-device testing (see 阶段0 of coracam-h264-annexb实施方案.zh.md).
+// The DDS type name used by the publisher is stored in
+// ChannelWorkerConfig::dds_type_name; update device_descriptor.hpp if the
+// actual Cora type name differs from the default
+// "cora_msgs::msg::dds_::H264Packet_".
+//
+// CDR encoding: XCDR1 little-endian (CDR_LE, representation identifier 0x0001).
+//
+// Coracam assumes each DDS sample contains exactly one H264 Annex-B access
+// unit (complete from SPS/PPS/IDR or delta slice boundary).  If the upstream
+// publisher produces single NAL units, access-unit assembly must be added in
+// the channel worker's DDS receive loop.
+
+module cora_msgs {
+  module msg {
+    module dds_ {
+      struct Time_ {
+        long   sec;
+        unsigned long nanosec;
+      };
+      struct Header_ {
+        Time_  stamp;
+        string frame_id;
+      };
+      // H264 Annex-B access unit.
+      @appendable
+      struct H264Packet_ {
+        Header_        header;
+        unsigned long  width;
+        unsigned long  height;
+        boolean        is_keyframe;
+        sequence<octet> data;       // complete Annex-B AU; start codes preserved
+      };
+    };
+  };
+};

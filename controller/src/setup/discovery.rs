@@ -92,6 +92,15 @@ pub(super) fn build_channel_config_from_meta(
     match meta.kind {
         DeviceType::Camera => {
             let profile = pick_default_camera_profile(&meta.profiles);
+            // H264AnnexB is already an encoded stream — preview has no
+            // independent value and enabling it requires encoder.preview
+            // output_mode = "encoded", which breaks raw-camera preview
+            // quality for other devices. Default to false; operators can
+            // opt in via the wizard or by editing the config directly.
+            let preview_enabled = !matches!(
+                profile.as_ref().map(|p| p.pixel_format),
+                Some(PixelFormat::H264AnnexB)
+            );
             DeviceChannelConfigV2 {
                 channel_type: channel_type.to_owned(),
                 kind: DeviceType::Camera,

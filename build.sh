@@ -75,6 +75,9 @@ CORE_BINS=(
 # discoverable by the controller (see cameras/README.md).
 CAMERA_BINS=(
     "realsense/rollio-device-realsense"
+    # "rollio-devices-coracam/rollio-device-coracam-head"
+    # "rollio-devices-coracam/rollio-device-coracam-lefthand"
+    "rollio-devices-coracam/rollio-device-coracam-righthand"
 )
 
 # On arm64, include the Horizon X5 VPU encoder binary.
@@ -391,6 +394,7 @@ build_nero() {
     preflight_wheel
     [[ -f robots/nero/pyproject.toml ]] || die "robots/nero/pyproject.toml not found"
     install -d "$DEB_DIST"
+    rm -f "$DEB_DIST"/rollio_device_nero-*.whl
     log "Building Nero wheel via ${WHEEL_BUILDER[*]}"
     # `uv build` and `python -m build` both accept a project directory,
     # but their output-dir flag spelling differs.

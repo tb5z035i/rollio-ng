@@ -337,10 +337,7 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
-        fn finish(
-            self: Box<Self>,
-            _sink: &mut dyn crate::codec::EncodedPacketSink,
-        ) -> Result<()> {
+        fn finish(self: Box<Self>, _sink: &mut dyn crate::codec::EncodedPacketSink) -> Result<()> {
             Ok(())
         }
         fn metrics(&self) -> &EncodeMetrics {
@@ -402,9 +399,7 @@ mod tests {
     /// `Debug` on the Ok variant, which trait objects don't carry.
     /// This helper converts to a Result we can call `.unwrap_err()`
     /// on.
-    fn err_of(
-        r: Result<Box<dyn CodecSession>>,
-    ) -> EncoderError {
+    fn err_of(r: Result<Box<dyn CodecSession>>) -> EncoderError {
         match r {
             Ok(_) => panic!("expected Err but got Ok"),
             Err(e) => e,

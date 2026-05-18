@@ -101,6 +101,10 @@ endif
 # permutations coexist without blowing each other's cache away.
 CAMERAS_BUILD_DIR := cameras/build-$(TARGET_ARCH)-$(BUILD_TYPE)
 
+# Enable the Cora/Fast-DDS camera bridge by default.  Override with
+# `make ROLLIO_BUILD_CORACAM=OFF` to skip Fast-DDS entirely.
+ROLLIO_BUILD_CORACAM ?= ON
+
 # Parallel jobs: cargo, cmake, and the airbot_play_rust Pinocchio cmake
 # sub-build (`AIRBOT_PINOCCHIO_BUILD_JOBS`) all share this knob. Lower it
 # if rustc + native C++ thrashes CPU or OOMs.
@@ -354,7 +358,8 @@ rust-fmt:
 
 cpp-build:
 	cmake -B $(CAMERAS_BUILD_DIR) -S cameras $(CMAKE_TOOLCHAIN_ARGS) \
-	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
+	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
+	  -DROLLIO_BUILD_CORACAM=$(ROLLIO_BUILD_CORACAM)
 	cmake --build $(CAMERAS_BUILD_DIR) --parallel $(BUILD_JOBS)
 
 cpp-test: cpp-build
