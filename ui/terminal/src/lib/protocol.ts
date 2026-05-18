@@ -233,12 +233,6 @@ export interface SetupStateMessage {
   identify_device?: string | null;
   warnings: string[];
   config: SetupConfigSnapshot;
-  /** Working encoder snapshot the controller maintains alongside `config`
-   *  so the wizard can cycle codec/backend/CRF/preset selections without
-   *  mutating the persisted ProjectConfig. Wire format places it as a
-   *  sibling of `config`, not nested inside it (see
-   *  `controller/src/setup.rs::SetupStateEnvelope`). */
-  encoder: SetupEncoderSnapshot;
   available_devices: SetupAvailableDevice[];
 }
 
@@ -298,20 +292,11 @@ export type CommandAction =
   | "setup_cycle_episode_format"
   | "setup_cycle_storage_backend"
   | "setup_cycle_collection_mode"
-  | "setup_cycle_video_codec"
-  | "setup_cycle_depth_codec"
   | "setup_set_project_name"
   | "setup_set_storage_output_path"
   | "setup_set_storage_endpoint"
   | "setup_set_ui_http_host"
   | "setup_set_episode_fps"
-  | "setup_set_jpeg_quality"
-  | "setup_set_preview_fps"
-  | "setup_cycle_encoder_crf"
-  | "setup_cycle_encoder_preset"
-  | "setup_cycle_chroma_subsampling"
-  | "setup_cycle_encoder_bit_depth"
-  | "setup_cycle_encoder_color_space"
   | "setup_save"
   | "setup_cancel";
 

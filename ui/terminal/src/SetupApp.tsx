@@ -25,9 +25,7 @@ type StaticEditableFieldId =
   | "storage_output_path"
   | "storage_endpoint"
   | "ui_http_host"
-  | "episode_fps"
-  | "jpeg_quality"
-  | "preview_fps";
+  | "episode_fps";
 type EditableFieldId = StaticEditableFieldId | `device_name:${string}`;
 
 type SettingsField = {
@@ -1010,13 +1008,6 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       : (setupState.config.storage.endpoint ?? "");
 
   const episodeFps = setupState.config.episode.fps ?? 30;
-  const crf = setupState.encoder.crf;
-  const encPreset = setupState.encoder.preset;
-  const bitDepth = setupState.encoder.bit_depth ?? 8;
-  const colorSpace = setupState.encoder.color_space ?? "auto";
-  const chroma = setupState.encoder.chroma_subsampling;
-  const jpegQ = setupState.encoder.preview?.jpeg_quality ?? 30;
-  const previewFps = setupState.encoder.preview?.fps ?? 15;
 
   return [
     {
@@ -1048,78 +1039,6 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       value: String(episodeFps),
       kind: "text",
       editableFieldId: "episode_fps",
-    },
-    {
-      id: "video_codec",
-      groupSubtitle: "RGB & depth encoders",
-      label: "RGB codec",
-      value: formatCodecBackend(
-        setupState.encoder.video_codec,
-        setupState.encoder.video_backend ?? setupState.encoder.backend,
-      ),
-      kind: "cycle",
-      action: "setup_cycle_video_codec",
-    },
-    {
-      id: "depth_codec",
-      label: "Depth codec",
-      value: formatCodecBackend(
-        setupState.encoder.depth_codec,
-        setupState.encoder.depth_backend ?? setupState.encoder.backend,
-      ),
-      kind: "cycle",
-      action: "setup_cycle_depth_codec",
-    },
-    {
-      id: "jpeg_quality",
-      groupSubtitle: "Preview encoder",
-      label: "JPEG quality",
-      value: String(jpegQ),
-      kind: "text",
-      editableFieldId: "jpeg_quality",
-    },
-    {
-      id: "preview_fps",
-      label: "Preview fps",
-      value: String(previewFps),
-      kind: "text",
-      editableFieldId: "preview_fps",
-    },
-    {
-      id: "encoder_crf",
-      groupSubtitle: "Encoder quality (optional)",
-      label: "CRF",
-      value: formatCrfCycleLabel(crf),
-      kind: "cycle",
-      action: "setup_cycle_encoder_crf",
-    },
-    {
-      id: "encoder_preset",
-      label: "Preset",
-      value: formatPresetCycleLabel(encPreset),
-      kind: "cycle",
-      action: "setup_cycle_encoder_preset",
-    },
-    {
-      id: "chroma_subsampling",
-      label: "Chroma subsampling",
-      value: formatChromaShort(chroma),
-      kind: "cycle",
-      action: "setup_cycle_chroma_subsampling",
-    },
-    {
-      id: "encoder_bit_depth",
-      label: "Bit depth",
-      value: String(bitDepth),
-      kind: "cycle",
-      action: "setup_cycle_encoder_bit_depth",
-    },
-    {
-      id: "encoder_color_space",
-      label: "Color space",
-      value: colorSpace,
-      kind: "cycle",
-      action: "setup_cycle_encoder_color_space",
     },
     {
       id: "storage_backend",
@@ -1803,9 +1722,7 @@ function buildDetailLines(
         ]),
         buildDetailLine("preview-format", [
           textSegment("Format: ", { color: "cyan", bold: true }),
-          textSegment(
-            `${setupState.config.episode.format} | RGB: ${setupState.encoder.video_codec} | Depth: ${setupState.encoder.depth_codec}`,
-          ),
+          textSegment(`${setupState.config.episode.format}`),
         ]),
         buildDetailLine("preview-storage", [
           textSegment("Storage: ", { color: "cyan", bold: true }),
@@ -2078,8 +1995,6 @@ function editCommandForField(
   | "setup_set_storage_endpoint"
   | "setup_set_ui_http_host"
   | "setup_set_episode_fps"
-  | "setup_set_jpeg_quality"
-  | "setup_set_preview_fps"
 > {
   switch (field) {
     case "project_name":
@@ -2092,10 +2007,6 @@ function editCommandForField(
       return "setup_set_ui_http_host";
     case "episode_fps":
       return "setup_set_episode_fps";
-    case "jpeg_quality":
-      return "setup_set_jpeg_quality";
-    case "preview_fps":
-      return "setup_set_preview_fps";
   }
 }
 
