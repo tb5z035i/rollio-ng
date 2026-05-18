@@ -33,27 +33,46 @@ pixel_format = "mjpeg"
 native_pixel_format = "MJPG"
 
 [devices.channels.record]
-video_codec = "h264"
-depth_codec = "rvl"
-backend = "auto"
-video_backend = "auto"
-depth_backend = "auto"
-chroma_subsampling = "s422"
-bit_depth = 8
-color_space = "auto"
-queue_size = 32
+video_backend = "nvidia"
+crf = 10
 
 [devices.channels.preview_config]
-output_mode = "encoded"
-color_codec = "h264"
-depth_codec = "rvl"
-backend = "auto"
-width = 320
-height = 240
-fps = 15
-gop_seconds = 1
-crf = 26
-jpeg_quality = 50
+crf = 30
+
+[devices.channels.command_defaults]
+joint_mit_kp = []
+joint_mit_kd = []
+parallel_mit_kp = []
+parallel_mit_kd = []
+
+[[devices]]
+name = "camera_2"
+executable = "rollio-device-v4l2"
+driver = "v4l2"
+id = "/dev/video2"
+bus_root = "camera_2"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+enabled = true
+name = "camera_2"
+channel_label = "V4L2 Camera"
+publish_states = []
+recorded_states = []
+preview_enabled = true
+record_enabled = true
+
+[devices.channels.profile]
+width = 640
+height = 480
+fps = 60
+pixel_format = "yuyv"
+native_pixel_format = "YUYV"
+
+[devices.channels.record]
+video_backend = "nvidia"
+crf = 5
 
 [devices.channels.command_defaults]
 joint_mit_kp = []
