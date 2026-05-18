@@ -59,8 +59,13 @@ pub(crate) fn build_collect_specs(
     current_exe_dir: &Path,
     invocation_cwd: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
-    let mut specs =
-        build_preview_specs(config, workspace_root, child_working_dir, current_exe_dir)?;
+    let mut specs = build_preview_specs(
+        config,
+        workspace_root,
+        child_working_dir,
+        current_exe_dir,
+        invocation_cwd,
+    )?;
 
     // The control server hosts the long-lived control plane WebSocket and
     // forwards episode commands / status / backpressure via iceoryx2. The
@@ -150,6 +155,7 @@ pub(crate) fn build_preview_specs(
     workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs = Vec::new();
 
@@ -166,6 +172,7 @@ pub(crate) fn build_preview_specs(
             workspace_root,
             child_working_dir,
             current_exe_dir,
+            invocation_cwd,
         )?);
     }
 
@@ -271,6 +278,7 @@ pub(crate) fn build_device_spec(
     workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
     let inline_config = toml::to_string(device)?;
     let executable_name = device
@@ -278,11 +286,15 @@ pub(crate) fn build_device_spec(
         .clone()
         .unwrap_or_else(|| default_device_executable_name(&device.driver));
     let program = resolve_registered_program(&executable_name, workspace_root, current_exe_dir);
-    let common_args = vec![
+    let mut common_args = vec![
         OsString::from("run"),
         OsString::from("--config-inline"),
         OsString::from(inline_config),
     ];
+    if let Some(mapping_path) = coracam_mapping_path(device, invocation_cwd)? {
+        common_args.push(OsString::from("--mapping"));
+        common_args.push(OsString::from(mapping_path));
+    }
 
     Ok(ChildSpec {
         id: format!("device-{}", device.name),
@@ -292,6 +304,66 @@ pub(crate) fn build_device_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+    })
+}
+
+fn coracam_mapping_path(
+    device: &BinaryDeviceConfig,
+    invocation_cwd: &Path,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let is_coracam = device.driver.starts_with("coracam-")
+        || device
+            .executable
+            .as_deref()
+            .is_some_and(|name| name.starts_with("rollio-device-coracam-"));
+    if !is_coracam {
+        return Ok(None);
+    }
+
+    let value = device_extra_string(
+        device,
+        &[
+            "coracam_mapping_file",
+            "cora_mapping_file",
+            "mapping_file",
+            "mapping",
+        ],
+    )?;
+    Ok(value.map(|path| resolve_invocation_relative_path(&path, invocation_cwd)))
+}
+
+fn device_extra_string(
+    device: &BinaryDeviceConfig,
+    keys: &[&str],
+) -> Result<Option<String>, Box<dyn Error>> {
+    for key in keys {
+        if let Some(value) = device.extra.get(*key) {
+            return toml_value_as_string(device, key, value).map(Some);
+        }
+    }
+
+    if let Some(toml::Value::Table(extra)) = device.extra.get("extra") {
+        for key in keys {
+            if let Some(value) = extra.get(*key) {
+                return toml_value_as_string(device, key, value).map(Some);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn toml_value_as_string(
+    device: &BinaryDeviceConfig,
+    key: &str,
+    value: &toml::Value,
+) -> Result<String, Box<dyn Error>> {
+    value.as_str().map(str::to_owned).ok_or_else(|| {
+        format!(
+            "device \"{}\": extra key \"{}\" must be a string path",
+            device.name, key
+        )
+        .into()
     })
 }
 
@@ -499,9 +571,7 @@ pub(crate) fn storage_binary_for(
             Ok("rollio-storage-local-lerobot")
         }
         (EpisodeFormat::Mcap, StorageBackend::Local) => Ok("rollio-storage-local"),
-        (_, StorageBackend::Http) => {
-            Err("storage.backend = http is not implemented yet".into())
-        }
+        (_, StorageBackend::Http) => Err("storage.backend = http is not implemented yet".into()),
     }
 }
 
@@ -565,6 +635,44 @@ mod tests {
         assert!(
             !inline.contains("output_path = \"./output\""),
             "relative output_path should be replaced, got: {inline}"
+        );
+    }
+
+    #[test]
+    fn build_device_spec_passes_coracam_mapping_as_runtime_arg() {
+        let mut extra = toml::Table::new();
+        extra.insert(
+            "coracam_mapping_file".into(),
+            toml::Value::String("./coracam-mapping.toml".into()),
+        );
+        let device = BinaryDeviceConfig {
+            name: "coracam_righthand".into(),
+            executable: Some("rollio-device-coracam-righthand".into()),
+            driver: "coracam-righthand".into(),
+            id: "cora-righthand".into(),
+            bus_root: "coracam_righthand".into(),
+            channels: Vec::new(),
+            extra,
+        };
+
+        let spec = build_device_spec(
+            &device,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+        )
+        .expect("device spec should build");
+
+        assert_eq!(
+            spec.command.args,
+            vec![
+                OsString::from("run"),
+                OsString::from("--config-inline"),
+                spec.command.args[2].clone(),
+                OsString::from("--mapping"),
+                OsString::from("/userdata/coracam-mapping.toml"),
+            ]
         );
     }
 

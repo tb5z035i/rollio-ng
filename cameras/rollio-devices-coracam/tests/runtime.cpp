@@ -16,6 +16,7 @@
 #include "cora_types.hpp"
 #include "h264_annexb.hpp"
 #include "iox2/iceoryx2.hpp"
+#include "rollio/device_config.hpp"
 #include "rollio/topic_names.hpp"
 #include "rollio/types.h"
 
@@ -536,6 +537,46 @@ auto run_cora_mapping_test() -> void {
 }
 
 // ---------------------------------------------------------------------------
+// Test: BinaryDeviceConfig parser accepts controller-emitted [extra]
+// ---------------------------------------------------------------------------
+
+auto run_device_config_extra_test() -> void {
+    const std::string toml =
+        "name = \"coracam_righthand\"\n"
+        "executable = \"rollio-device-coracam-righthand\"\n"
+        "driver = \"coracam-righthand\"\n"
+        "id = \"cora-righthand\"\n"
+        "bus_root = \"coracam_righthand\"\n"
+        "\n"
+        "[extra]\n"
+        "coracam_mapping_file = \"./coracam-mapping.toml\"\n"
+        "\n"
+        "[[channels]]\n"
+        "channel_type = \"left_raw\"\n"
+        "kind = \"camera\"\n"
+        "enabled = true\n"
+        "[channels.profile]\n"
+        "width = 640\n"
+        "height = 480\n"
+        "fps = 25\n"
+        "pixel_format = \"bgr24\"\n";
+
+    const auto config = rollio::parse_binary_device_config(toml);
+    if (config.name != "coracam_righthand" || config.driver != "coracam-righthand") {
+        throw std::runtime_error("device_config: root fields mismatch");
+    }
+    if (config.channels.size() != 1U || config.channels[0].channel_type != "left_raw") {
+        throw std::runtime_error("device_config: channel after [extra] not parsed");
+    }
+    if (!config.channels[0].profile.has_value() ||
+        config.channels[0].profile->pixel_format != rollio::PixelFormat::Bgr24) {
+        throw std::runtime_error("device_config: channel profile after [extra] not parsed");
+    }
+
+    std::cerr << "rollio-devices-coracam-tests: device_config [extra] parser OK\n";
+}
+
+// ---------------------------------------------------------------------------
 // Test: runtime publish
 // ---------------------------------------------------------------------------
 
@@ -676,6 +717,7 @@ auto main() -> int {
         run_au_assembler_test();
         run_cdr_golden_bytes_test();
         run_cora_mapping_test();
+        run_device_config_extra_test();
         run_probe_test();
         run_dry_run_test();
         run_runtime_test();

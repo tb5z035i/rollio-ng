@@ -3,8 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -26,6 +30,78 @@ auto unix_timestamp_us() -> uint64_t {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(SystemClock::now().time_since_epoch())
             .count());
+}
+
+auto env_is_enabled(const char* name) -> bool {
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
+           std::strcmp(value, "FALSE") != 0 && std::strcmp(value, "off") != 0 &&
+           std::strcmp(value, "OFF") != 0;
+}
+
+auto h264_dump_dir() -> std::filesystem::path {
+    const char* explicit_dir = std::getenv("ROLLIO_CORACAM_H264_DUMP_DIR");
+    if (explicit_dir != nullptr && *explicit_dir != '\0') {
+        return explicit_dir;
+    }
+    if (!env_is_enabled("ROLLIO_CORACAM_H264_DUMP")) {
+        return {};
+    }
+    const char* log_dir = std::getenv("ROLLIO_LOG_DIR");
+    if (log_dir == nullptr || *log_dir == '\0') {
+        return {};
+    }
+    return std::filesystem::path(log_dir) / "h264-coracam";
+}
+
+auto h264_nal_type_list(const uint8_t* data, std::size_t size) -> std::string {
+    const auto offsets = find_nal_offsets(data, size);
+    std::ostringstream out;
+    for (std::size_t i = 0; i < offsets.size(); ++i) {
+        if (i != 0U) {
+            out << ',';
+        }
+        out << static_cast<int>(data[offsets[i]] & 0x1FU);
+    }
+    return out.str();
+}
+
+auto append_h264_dump(const std::filesystem::path& dir, const std::string& channel_type,
+                      const std::vector<uint8_t>& data) -> void {
+    if (dir.empty()) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        std::cerr << "[coracam] " << channel_type << ": failed to create h264 dump dir "
+                  << dir.string() << ": " << ec.message() << '\n';
+        return;
+    }
+    const auto path = dir / (channel_type + ".h264");
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out.is_open()) {
+        std::cerr << "[coracam] " << channel_type << ": failed to open h264 dump " << path.string()
+                  << '\n';
+        return;
+    }
+    out.write(reinterpret_cast<const char*>(data.data()),
+              static_cast<std::streamsize>(data.size()));
+}
+
+auto log_h264_sample_debug(const std::string& channel_type, uint64_t frame_index,
+                           const std::vector<uint8_t>& data, bool has_sps, bool has_pps,
+                           bool has_idr) -> void {
+    if (frame_index >= 20U && !has_sps && !has_pps && !has_idr) {
+        return;
+    }
+    std::cerr << "[coracam] " << channel_type << ": h264 sample idx=" << frame_index
+              << " bytes=" << data.size() << " nals=["
+              << h264_nal_type_list(data.data(), data.size()) << "] sps=" << has_sps
+              << " pps=" << has_pps << " idr=" << has_idr << '\n';
 }
 
 // Generate a simple BGR24 test pattern for the mock path.
@@ -304,6 +380,11 @@ void ChannelWorker::worker_loop_dds() {
                 // Always scan NALs — foxglove provides no is_keyframe metadata.
                 bool has_sps = false, has_pps = false, has_idr = false;
                 scan_sps_pps(pkt.data.data(), pkt.data.size(), has_sps, has_pps, has_idr);
+                if (const auto dir = h264_dump_dir(); !dir.empty()) {
+                    append_h264_dump(dir, cfg_.channel_type, pkt.data);
+                    log_h264_sample_debug(cfg_.channel_type, frame_index, pkt.data, has_sps,
+                                          has_pps, has_idr);
+                }
 
                 if (has_idr) {
                     status_.keyframes += 1;

@@ -258,14 +258,16 @@ inline auto starts_with(std::string_view value, std::string_view prefix) -> bool
 
 inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceConfig {
     BinaryDeviceConfig device;
-    // `Channel` consumes keys for the most recent `[[channels]]` entry.
+    // `RootSkip` swallows keys for root sub-tables such as `[extra]` that
+    // Rust may emit for flattened device metadata. `Channel` consumes keys for
+    // the most recent `[[channels]]` entry.
     // `ChannelProfile` consumes keys for `[channels.profile]` (or
     // `[devices.channels.profile]`) and writes them into the most recent
     // channel's profile. `ChannelSkip` swallows keys for any other channel
     // sub-table (e.g. `[channels.command_defaults]`, `[channels.extra]`)
     // without crashing — these are emitted by the Rust `toml` serializer for
     // fields the C++ drivers don't need.
-    enum class Section { Root, Channel, ChannelProfile, ChannelSkip };
+    enum class Section { Root, RootSkip, Channel, ChannelProfile, ChannelSkip };
     auto section = Section::Root;
 
     std::size_t cursor = 0;
@@ -284,6 +286,10 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             if (trimmed == "[[channels]]" || trimmed == "[[devices.channels]]") {
                 device.channels.emplace_back();
                 section = Section::Channel;
+                continue;
+            }
+            if (trimmed == "[extra]" || trimmed == "[devices.extra]") {
+                section = Section::RootSkip;
                 continue;
             }
             // Sub-tables of the most recent channel are produced by the Rust
@@ -369,9 +375,10 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
             } else {
                 // Ignore unknown profile keys (e.g. native_pixel_format).
             }
-        } else {
+        } else if (section == Section::ChannelSkip || section == Section::RootSkip) {
             // Section::ChannelSkip — intentionally ignore every key in
-            // unrelated channel sub-tables.
+            // unrelated channel sub-tables. Section::RootSkip does the same
+            // for root sub-tables.
         }
     }
 

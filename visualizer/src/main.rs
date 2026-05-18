@@ -331,6 +331,7 @@ fn ipc_poll_loop(
                     } else {
                         std::borrow::Cow::Borrowed(&payload[..])
                     };
+                    dump_visualizer_h264_packet(&name, &payload_bytes);
                     let bytes = protocol::encode_packet(
                         &name,
                         codec_id,
@@ -391,4 +392,57 @@ fn cache_config(cache: &Arc<Mutex<Vec<Vec<u8>>>>, name: &str, bytes: &[u8]) {
     };
     guard.retain(|entry| !entry_matches(entry));
     guard.push(bytes.to_vec());
+}
+
+fn dump_visualizer_h264_packet(name: &str, payload: &[u8]) {
+    let Some(dir) = visualizer_h264_dump_dir() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        log::warn!(
+            "failed to create visualizer H.264 dump dir {}: {error}",
+            dir.display()
+        );
+        return;
+    }
+    let path = dir.join(format!("{}.h264", name.replace('/', "_")));
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        log::warn!("failed to open visualizer H.264 dump {}", path.display());
+        return;
+    };
+    use std::io::Write;
+    if let Err(error) = file.write_all(payload) {
+        log::warn!(
+            "failed to write visualizer H.264 dump {}: {error}",
+            path.display()
+        );
+    }
+}
+
+fn visualizer_h264_dump_dir() -> Option<PathBuf> {
+    match std::env::var("ROLLIO_VISUALIZER_H264_DUMP_DIR") {
+        Ok(dir) if !dir.is_empty() => return Some(PathBuf::from(dir)),
+        _ => {}
+    }
+    if !env_is_enabled("ROLLIO_VISUALIZER_H264_DUMP") {
+        return None;
+    }
+    let log_dir = std::env::var("ROLLIO_LOG_DIR").ok()?;
+    if log_dir.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(log_dir).join("h264-visualizer"))
+}
+
+fn env_is_enabled(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok(value)
+            if !value.is_empty()
+                && !matches!(value, "0" | "false" | "FALSE" | "off" | "OFF")
+    )
 }

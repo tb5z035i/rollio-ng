@@ -39,10 +39,12 @@ pub enum ShutdownTrigger {
 
 pub fn spawn_child(spec: &ChildSpec, log_dir: &Path) -> io::Result<ManagedChild> {
     fs::create_dir_all(log_dir)?;
+    let log_dir = fs::canonicalize(log_dir).unwrap_or_else(|_| log_dir.to_path_buf());
 
     let mut command = Command::new(&spec.command.program);
     command.args(&spec.command.args);
     command.current_dir(&spec.working_directory);
+    command.env("ROLLIO_LOG_DIR", &log_dir);
 
     let log_path = if spec.inherit_stdio {
         None
@@ -319,6 +321,34 @@ mod tests {
             Duration::from_millis(10),
         )
         .expect("termination should succeed");
+    }
+
+    #[test]
+    fn spawn_child_injects_log_dir_env() {
+        let log_dir = unique_test_log_dir();
+        let spec = ChildSpec {
+            id: "env_check".into(),
+            command: shell_command(
+                "test -d \"$ROLLIO_LOG_DIR\" && case \"$ROLLIO_LOG_DIR\" in /*) exit 0;; *) exit 2;; esac",
+            ),
+            working_directory: PathBuf::from("."),
+            inherit_stdio: false,
+        };
+        let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
+
+        let trigger = monitor_children(
+            std::slice::from_mut(&mut child),
+            &AtomicBool::new(false),
+            Duration::from_millis(10),
+        )
+        .expect("monitoring should succeed");
+
+        match trigger {
+            ShutdownTrigger::ChildExited { status, .. } => {
+                assert!(status.success(), "child should see absolute ROLLIO_LOG_DIR");
+            }
+            ShutdownTrigger::Signal => panic!("expected child exit trigger"),
+        }
     }
 
     fn shell_command(script: &str) -> ResolvedCommand {

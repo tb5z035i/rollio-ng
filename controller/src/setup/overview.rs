@@ -258,6 +258,7 @@ pub(super) fn build_setup_preview_specs(
     child_working_dir: &Path,
     current_exe_dir: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
+    let invocation_cwd = std::env::current_dir()?;
     build_preview_specs(project, workspace_root, child_working_dir, current_exe_dir)
 }
 
