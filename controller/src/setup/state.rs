@@ -596,4 +596,3 @@ pub(super) fn device_identity_from_binary(device: &BinaryDeviceConfig) -> Device
         channel_type: ch.channel_type.clone(),
     }
 }
-

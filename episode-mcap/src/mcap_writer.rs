@@ -24,6 +24,7 @@ pub enum SchemaType {
     CompressedVideo,
     RawImage,
     JointStates,
+    PoseInFrame,
     Imu,
     TactileData,
     CameraCalibration,
@@ -37,6 +38,7 @@ impl SchemaType {
             Self::CompressedVideo => "foxglove.CompressedVideo",
             Self::RawImage => "foxglove.RawImage",
             Self::JointStates => "foxglove.JointStates",
+            Self::PoseInFrame => "foxglove.PoseInFrame",
             Self::Imu => "discover.Imu",
             Self::TactileData => "discover.TactileData",
             Self::CameraCalibration => "foxglove.CameraCalibration",
@@ -50,6 +52,7 @@ impl SchemaType {
             Self::CompressedVideo => "CompressedVideo.bfbs",
             Self::RawImage => "RawImage.bfbs",
             Self::JointStates => "JointStates.bfbs",
+            Self::PoseInFrame => "PoseInFrame.bfbs",
             Self::Imu => "Imu.bfbs",
             Self::TactileData => "TactileData.bfbs",
             Self::CameraCalibration => "CameraCalibration.bfbs",
@@ -106,13 +109,8 @@ impl McapEpisodeWriter {
             return Ok(id);
         }
         let bfbs_path = bfbs_dir.join(schema_type.bfbs_filename());
-        let schema_data = std::fs::read(&bfbs_path).map_err(|e| {
-            format!(
-                "Failed to read schema file {}: {}",
-                bfbs_path.display(),
-                e
-            )
-        })?;
+        let schema_data = std::fs::read(&bfbs_path)
+            .map_err(|e| format!("Failed to read schema file {}: {}", bfbs_path.display(), e))?;
         let schema_id =
             self.writer
                 .add_schema(schema_type.schema_name(), SCHEMA_ENCODING, &schema_data)?;

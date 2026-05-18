@@ -5,11 +5,12 @@
 
 use flatbuffers::FlatBufferBuilder;
 
-use crate::fb::foxglove::{
-    CompressedVideo, CompressedVideoArgs, JointState, JointStateArgs, JointStates,
-    JointStatesArgs, Time,
-};
 use crate::fb::discover::{Imu, ImuArgs, TactileData, TactileDataArgs, TactilePoint};
+use crate::fb::foxglove::{
+    CompressedVideo, CompressedVideoArgs, JointState, JointStateArgs, JointStates, JointStatesArgs,
+    Pose, PoseArgs, PoseInFrame, PoseInFrameArgs, Quaternion, QuaternionArgs, Time, Vector3,
+    Vector3Args,
+};
 
 // ---------------------------------------------------------------------------
 // Timestamp helper
@@ -67,6 +68,28 @@ pub fn encode_joint_states(
     values: &[f64],
     joint_names: Option<&[String]>,
 ) -> Vec<u8> {
+    encode_joint_state_values(
+        timestamp_us,
+        values,
+        JointStatesField::Position,
+        joint_names,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JointStatesField {
+    Position,
+    Velocity,
+    Effort,
+}
+
+/// Encode a single vector into one field of `foxglove.JointStates`.
+pub fn encode_joint_state_values(
+    timestamp_us: u64,
+    values: &[f64],
+    field: JointStatesField,
+    joint_names: Option<&[String]>,
+) -> Vec<u8> {
     let mut fbb = FlatBufferBuilder::with_capacity(512);
     let ts = time_from_us(timestamp_us);
 
@@ -90,10 +113,10 @@ pub fn encode_joint_states(
                 &mut fbb,
                 &JointStateArgs {
                     name: Some(name_off),
-                    position: Some(val),
-                    velocity: None,
+                    position: (field == JointStatesField::Position).then_some(val),
+                    velocity: (field == JointStatesField::Velocity).then_some(val),
                     acceleration: None,
-                    effort: None,
+                    effort: (field == JointStatesField::Effort).then_some(val),
                 },
             )
         })
@@ -159,6 +182,48 @@ pub fn encode_joint_mit_states(
         },
     );
     fbb.finish_minimal(js);
+    fbb.finished_data().to_vec()
+}
+
+/// Encode a 7-element `[x, y, z, qx, qy, qz, qw]` pose as
+/// `foxglove.PoseInFrame`.
+pub fn encode_pose_in_frame(timestamp_us: u64, frame_id: &str, values: &[f64]) -> Vec<u8> {
+    let mut fbb = FlatBufferBuilder::with_capacity(256);
+    let ts = time_from_us(timestamp_us);
+    let frame_id_off = fbb.create_string(frame_id);
+    let position = Vector3::create(
+        &mut fbb,
+        &Vector3Args {
+            x: values[0],
+            y: values[1],
+            z: values[2],
+        },
+    );
+    let orientation = Quaternion::create(
+        &mut fbb,
+        &QuaternionArgs {
+            x: values[3],
+            y: values[4],
+            z: values[5],
+            w: values[6],
+        },
+    );
+    let pose = Pose::create(
+        &mut fbb,
+        &PoseArgs {
+            position: Some(position),
+            orientation: Some(orientation),
+        },
+    );
+    let pose_in_frame = PoseInFrame::create(
+        &mut fbb,
+        &PoseInFrameArgs {
+            timestamp: Some(&ts),
+            frame_id: Some(frame_id_off),
+            pose: Some(pose),
+        },
+    );
+    fbb.finish_minimal(pose_in_frame);
     fbb.finished_data().to_vec()
 }
 
@@ -282,6 +347,51 @@ mod tests {
         assert_eq!(joints.len(), 6);
         assert_eq!(joints.get(0).name(), Some("j0"));
         assert!((joints.get(0).position().unwrap() - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_encode_joint_state_fields_roundtrip() {
+        let values = [1.0, 2.0];
+        let buf = encode_joint_state_values(1_000_000, &values, JointStatesField::Velocity, None);
+        let js = flatbuffers::root::<JointStates>(&buf).unwrap();
+        let joints = js.joints().unwrap();
+        assert!(joints.get(0).position().is_none());
+        assert_eq!(joints.get(0).velocity(), Some(1.0));
+        assert!(joints.get(0).effort().is_none());
+
+        let buf = encode_joint_state_values(1_000_000, &values, JointStatesField::Effort, None);
+        let js = flatbuffers::root::<JointStates>(&buf).unwrap();
+        let joints = js.joints().unwrap();
+        assert_eq!(joints.get(1).effort(), Some(2.0));
+    }
+
+    #[test]
+    fn test_encode_joint_mit_states_roundtrip() {
+        let position = [0.1, 0.2];
+        let velocity = [1.0, 2.0];
+        let effort = [3.0, 4.0];
+        let buf = encode_joint_mit_states(1_000_000, 2, &position, &velocity, &effort, None);
+        let js = flatbuffers::root::<JointStates>(&buf).unwrap();
+        let joints = js.joints().unwrap();
+        assert_eq!(joints.get(1).position(), Some(0.2));
+        assert_eq!(joints.get(1).velocity(), Some(2.0));
+        assert_eq!(joints.get(1).effort(), Some(4.0));
+    }
+
+    #[test]
+    fn test_encode_pose_in_frame_roundtrip() {
+        let values = [0.1, 0.2, 0.3, 0.0, 0.0, 0.707, 0.707];
+        let buf = encode_pose_in_frame(2_000_000, "arm", &values);
+        let pose = flatbuffers::root::<PoseInFrame>(&buf).unwrap();
+        assert_eq!(pose.frame_id(), Some("arm"));
+        let inner = pose.pose().unwrap();
+        let position = inner.position().unwrap();
+        let orientation = inner.orientation().unwrap();
+        assert_eq!(position.x(), 0.1);
+        assert_eq!(position.y(), 0.2);
+        assert_eq!(position.z(), 0.3);
+        assert_eq!(orientation.z(), 0.707);
+        assert_eq!(orientation.w(), 0.707);
     }
 
     #[test]

@@ -46,25 +46,64 @@ from ..ipc.types import (
     DeviceChannelMode,
     JointMitCommand15,
     JointVector15,
+    MitCommandElement,
     ParallelMitCommand2,
     ParallelVector2,
     Pose7,
+    SampleHeader,
 )
 
 
 # Helper: every state/command service must request the same caps as the Rust
 # producers/consumers. Wrapping the call here keeps the per-service builders
 # below short and ensures we don't drift apart from the Rust side over time.
-def _open_state_or_command_pubsub(node, service_name, payload_type):
+def _open_state_or_command_pubsub(
+    node,
+    service_name,
+    payload_type,
+    *,
+    user_header_type: type | None = None,
+    initial_max_slice_len: int | None = None,
+):
     return open_or_create_pubsub(
         node,
         service_name,
         payload_type,
+        user_header_type=user_header_type,
+        initial_max_slice_len=initial_max_slice_len,
         max_publishers=STATE_MAX_PUBLISHERS,
         max_subscribers=STATE_MAX_SUBSCRIBERS,
         max_nodes=STATE_MAX_NODES,
         subscriber_max_buffer_size=STATE_BUFFER,
         history_size=STATE_BUFFER,
+    )
+
+
+def _slice_type(element_type: type) -> type:
+    try:
+        import iceoryx2 as iox2
+    except Exception as exc:  # pragma: no cover - depends on host install
+        raise RuntimeError("iceoryx2 Python bindings are unavailable") from exc
+    return iox2.Slice[element_type]
+
+
+def _open_f64_vector_pubsub(node, service_name, *, initial_max_slice_len: int | None = None):
+    return _open_state_or_command_pubsub(
+        node,
+        service_name,
+        _slice_type(ctypes.c_double),
+        user_header_type=SampleHeader,
+        initial_max_slice_len=initial_max_slice_len,
+    )
+
+
+def _open_mit_vector_pubsub(node, service_name, *, initial_max_slice_len: int | None = None):
+    return _open_state_or_command_pubsub(
+        node,
+        service_name,
+        _slice_type(MitCommandElement),
+        user_header_type=SampleHeader,
+        initial_max_slice_len=initial_max_slice_len,
     )
 
 
@@ -78,6 +117,89 @@ def _send(publisher: Any, payload: ctypes.Structure) -> None:
     sample = publisher.loan_uninit()
     sample = sample.write_payload(payload)
     sample.send()
+
+
+def _set_sample_header(sample: Any, timestamp_us: int) -> None:
+    header = SampleHeader.of(timestamp_us)
+    target = sample.user_header_mut()
+    if hasattr(target, "contents"):
+        ctypes.memmove(ctypes.byref(target.contents), ctypes.byref(header), ctypes.sizeof(header))
+    else:
+        target.timestamp_us = header.timestamp_us
+
+
+def _sample_timestamp(sample: Any) -> int:
+    header = sample.user_header()
+    if hasattr(header, "contents"):
+        header = header.contents
+    return int(header.timestamp_us)
+
+
+def _payload_values(sample: Any) -> list[Any]:
+    payload = sample.payload()
+    return [payload[i] for i in range(len(payload))]
+
+
+def _send_f64_vector(publisher: Any, timestamp_us: int, values: list[float]) -> None:
+    sample = publisher.loan_slice_uninit(len(values))
+    _set_sample_header(sample, timestamp_us)
+    array_type = ctypes.c_double * len(values)
+    sample = sample.write_from_slice(array_type(*[float(value) for value in values]))
+    sample.send()
+
+
+def _send_mit_vector(publisher: Any, timestamp_us: int, elements: list[MitCommandElement]) -> None:
+    sample = publisher.loan_slice_uninit(len(elements))
+    _set_sample_header(sample, timestamp_us)
+    array_type = MitCommandElement * len(elements)
+    sample = sample.write_from_slice(array_type(*elements))
+    sample.send()
+
+
+def _drain_latest_f64_vector(subscriber: Any, factory: type, max_len: int) -> Any | None:
+    latest = None
+    while True:
+        sample = subscriber.receive()
+        if sample is None:
+            return latest
+        values = [float(value) for value in _payload_values(sample)]
+        if len(values) > max_len:
+            continue
+        latest = factory.from_values(_sample_timestamp(sample), values)
+
+
+def _drain_latest_mit_vector(subscriber: Any, factory: type, max_len: int) -> Any | None:
+    latest = None
+    while True:
+        sample = subscriber.receive()
+        if sample is None:
+            return latest
+        elements = _payload_values(sample)
+        if len(elements) > max_len:
+            continue
+        msg = factory()
+        msg.timestamp_us = _sample_timestamp(sample)
+        msg.len = len(elements)
+        for index, element in enumerate(elements):
+            msg.position[index] = float(element.position)
+            msg.velocity[index] = float(element.velocity)
+            msg.effort[index] = float(element.effort)
+            msg.kp[index] = float(element.kp)
+            msg.kd[index] = float(element.kd)
+        latest = msg
+
+
+def _mit_elements_from_command(msg: JointMitCommand15 | ParallelMitCommand2) -> list[MitCommandElement]:
+    out: list[MitCommandElement] = []
+    for index in range(int(msg.len)):
+        element = MitCommandElement()
+        element.position = float(msg.position[index])
+        element.velocity = float(msg.velocity[index])
+        element.effort = float(msg.effort[index])
+        element.kp = float(msg.kp[index])
+        element.kd = float(msg.kd[index])
+        out.append(element)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -125,53 +247,50 @@ class ArmIox:
         )
 
         self._joint_position_cmd_sub = make_subscriber(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_JOINT_POSITION),
-                JointVector15,
             )
         )
         self._joint_mit_cmd_sub = make_subscriber(
-            _open_state_or_command_pubsub(
+            _open_mit_vector_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_JOINT_MIT),
-                JointMitCommand15,
             )
         )
         self._end_pose_cmd_sub = make_subscriber(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_END_POSE),
-                Pose7,
             )
         )
 
         self._joint_position_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_POSITION),
-                JointVector15,
+                initial_max_slice_len=15,
             )
         )
         self._joint_velocity_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_VELOCITY),
-                JointVector15,
+                initial_max_slice_len=15,
             )
         )
         self._joint_effort_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_JOINT_EFFORT),
-                JointVector15,
+                initial_max_slice_len=15,
             )
         )
         self._end_pose_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_END_EFFECTOR_POSE),
-                Pose7,
+                initial_max_slice_len=7,
             )
         )
 
@@ -197,25 +316,41 @@ class ArmIox:
         _send(self._mode_out_pub, DeviceChannelMode.of(mode_value))
 
     def poll_joint_position_command(self) -> JointVector15 | None:
-        return drain_latest(self._joint_position_cmd_sub)
+        return _drain_latest_f64_vector(self._joint_position_cmd_sub, JointVector15, 15)
 
     def poll_joint_mit_command(self) -> JointMitCommand15 | None:
-        return drain_latest(self._joint_mit_cmd_sub)
+        return _drain_latest_mit_vector(self._joint_mit_cmd_sub, JointMitCommand15, 15)
 
     def poll_end_pose_command(self) -> Pose7 | None:
-        return drain_latest(self._end_pose_cmd_sub)
+        return _drain_latest_f64_vector(self._end_pose_cmd_sub, Pose7, 7)
 
     def publish_joint_position(self, msg: JointVector15) -> None:
-        _send(self._joint_position_state_pub, msg)
+        _send_f64_vector(
+            self._joint_position_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def publish_joint_velocity(self, msg: JointVector15) -> None:
-        _send(self._joint_velocity_state_pub, msg)
+        _send_f64_vector(
+            self._joint_velocity_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def publish_joint_effort(self, msg: JointVector15) -> None:
-        _send(self._joint_effort_state_pub, msg)
+        _send_f64_vector(
+            self._joint_effort_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def publish_end_effector_pose(self, msg: Pose7) -> None:
-        _send(self._end_pose_state_pub, msg)
+        _send_f64_vector(
+            self._end_pose_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(7)],
+        )
 
     def shutdown_requested(self) -> bool:
         # Reading the control_events subscriber is a non-blocking pop; it
@@ -263,39 +398,37 @@ class GripperIox:
         )
 
         self._parallel_position_cmd_sub = make_subscriber(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_PARALLEL_POSITION),
-                ParallelVector2,
             )
         )
         self._parallel_mit_cmd_sub = make_subscriber(
-            _open_state_or_command_pubsub(
+            _open_mit_vector_pubsub(
                 self._node,
                 channel_command_service_name(bus_root, channel_type, COMMAND_PARALLEL_MIT),
-                ParallelMitCommand2,
             )
         )
 
         self._parallel_position_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_POSITION),
-                ParallelVector2,
+                initial_max_slice_len=2,
             )
         )
         self._parallel_velocity_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_VELOCITY),
-                ParallelVector2,
+                initial_max_slice_len=2,
             )
         )
         self._parallel_effort_state_pub = make_publisher(
-            _open_state_or_command_pubsub(
+            _open_f64_vector_pubsub(
                 self._node,
                 channel_state_service_name(bus_root, channel_type, STATE_PARALLEL_EFFORT),
-                ParallelVector2,
+                initial_max_slice_len=2,
             )
         )
 
@@ -315,19 +448,31 @@ class GripperIox:
         _send(self._mode_out_pub, DeviceChannelMode.of(mode_value))
 
     def poll_parallel_position_command(self) -> ParallelVector2 | None:
-        return drain_latest(self._parallel_position_cmd_sub)
+        return _drain_latest_f64_vector(self._parallel_position_cmd_sub, ParallelVector2, 2)
 
     def poll_parallel_mit_command(self) -> ParallelMitCommand2 | None:
-        return drain_latest(self._parallel_mit_cmd_sub)
+        return _drain_latest_mit_vector(self._parallel_mit_cmd_sub, ParallelMitCommand2, 2)
 
     def publish_parallel_position(self, msg: ParallelVector2) -> None:
-        _send(self._parallel_position_state_pub, msg)
+        _send_f64_vector(
+            self._parallel_position_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def publish_parallel_velocity(self, msg: ParallelVector2) -> None:
-        _send(self._parallel_velocity_state_pub, msg)
+        _send_f64_vector(
+            self._parallel_velocity_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def publish_parallel_effort(self, msg: ParallelVector2) -> None:
-        _send(self._parallel_effort_state_pub, msg)
+        _send_f64_vector(
+            self._parallel_effort_state_pub,
+            int(msg.timestamp_us),
+            [float(msg.values[i]) for i in range(int(msg.len))],
+        )
 
     def shutdown_requested(self) -> bool:
         while True:

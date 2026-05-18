@@ -373,7 +373,10 @@ impl SetupSession {
     }
 }
 
-pub(super) fn select_supported_mode(supported_modes: &[RobotMode], preferred: RobotMode) -> RobotMode {
+pub(super) fn select_supported_mode(
+    supported_modes: &[RobotMode],
+    preferred: RobotMode,
+) -> RobotMode {
     // Prefer a wizard-selectable mode when available so freshly discovered
     // channels never default to `Identifying`/`Disabled` (those modes
     // exist for the identify flow / channel disable, not for steady-state
@@ -406,4 +409,3 @@ pub(super) fn wizard_selectable_modes(supported_modes: &[RobotMode]) -> Vec<Robo
         .filter(|mode| supported_modes.contains(mode))
         .collect()
 }
-

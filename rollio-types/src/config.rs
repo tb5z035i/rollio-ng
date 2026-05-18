@@ -1598,12 +1598,12 @@ impl ChannelRecordConfig {
             video_codec: self.video_codec.unwrap_or_default(),
             depth_codec: self.depth_codec.unwrap_or(EncoderCodec::Rvl),
             backend: self.backend.unwrap_or_default(),
-            video_backend: self.video_backend.unwrap_or(
-                self.backend.unwrap_or_default(),
-            ),
-            depth_backend: self.depth_backend.unwrap_or(
-                self.backend.unwrap_or_default(),
-            ),
+            video_backend: self
+                .video_backend
+                .unwrap_or(self.backend.unwrap_or_default()),
+            depth_backend: self
+                .depth_backend
+                .unwrap_or(self.backend.unwrap_or_default()),
             chroma_subsampling: self.chroma_subsampling.unwrap_or_default(),
             crf: self.crf,
             preset: self.preset.clone(),
@@ -2008,6 +2008,27 @@ impl RobotStateKind {
     pub fn uses_pose_payload(self) -> bool {
         matches!(self, Self::EndEffectorPose)
     }
+
+    pub fn transport_payload_kind(self) -> Option<RobotTransportPayloadKind> {
+        match self {
+            Self::JointPosition
+            | Self::JointVelocity
+            | Self::JointEffort
+            | Self::EndEffectorPose
+            | Self::ParallelPosition
+            | Self::ParallelVelocity
+            | Self::ParallelEffort => Some(RobotTransportPayloadKind::F64Vector),
+            Self::EndEffectorTwist | Self::EndEffectorWrench => None,
+        }
+    }
+
+    pub fn runtime_contract(self, dof: u32) -> Option<RobotStreamContract> {
+        self.transport_payload_kind()
+            .map(|transport_payload_kind| RobotStreamContract {
+                value_len: self.value_len(dof),
+                transport_payload_kind,
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -2034,6 +2055,46 @@ impl RobotCommandKind {
     pub fn uses_pose_payload(self) -> bool {
         matches!(self, Self::EndPose)
     }
+
+    pub fn value_len(self, dof: u32) -> u32 {
+        match self {
+            Self::JointPosition | Self::JointMit => dof,
+            Self::ParallelPosition | Self::ParallelMit => dof.min(MAX_PARALLEL as u32),
+            Self::EndPose => 7,
+        }
+    }
+
+    pub fn transport_payload_kind(self) -> RobotTransportPayloadKind {
+        match self {
+            Self::JointPosition | Self::ParallelPosition | Self::EndPose => {
+                RobotTransportPayloadKind::F64Vector
+            }
+            Self::JointMit | Self::ParallelMit => {
+                RobotTransportPayloadKind::MitCommandElementVector
+            }
+        }
+    }
+
+    pub fn runtime_contract(self, dof: u32) -> RobotStreamContract {
+        RobotStreamContract {
+            value_len: self.value_len(dof),
+            transport_payload_kind: self.transport_payload_kind(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum RobotTransportPayloadKind {
+    #[default]
+    F64Vector,
+    MitCommandElementVector,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RobotStreamContract {
+    pub value_len: u32,
+    pub transport_payload_kind: RobotTransportPayloadKind,
 }
 
 /// Per-state value limits for visualization and (future) safety checks.
@@ -2495,8 +2556,16 @@ pub struct VisualizerCameraSourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualizerRobotSourceConfig {
     pub channel_id: String,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub channel_type: String,
     pub state_kind: RobotStateKind,
     pub state_topic: String,
+    #[serde(default)]
+    pub value_len: u32,
+    #[serde(default)]
+    pub transport_payload_kind: RobotTransportPayloadKind,
     /// Optional per-element value bounds for this state kind. The visualizer
     /// forwards them to the UI so bars can be normalized against the real
     /// hardware envelope instead of an arbitrary fallback.
@@ -2563,8 +2632,12 @@ pub struct TeleopRuntimeConfigV2 {
     pub follower_channel_id: String,
     pub leader_state_kind: RobotStateKind,
     pub leader_state_topic: String,
+    #[serde(default)]
+    pub leader_state_value_len: u32,
     pub follower_command_kind: RobotCommandKind,
     pub follower_command_topic: String,
+    #[serde(default)]
+    pub follower_command_value_len: u32,
     /// Optional follower-state subscription used by the initial syncing
     /// phase so the router can ramp commands toward the leader at
     /// `sync_max_step_rad` per cycle until the follower is within
@@ -2574,6 +2647,8 @@ pub struct TeleopRuntimeConfigV2 {
     pub follower_state_kind: Option<RobotStateKind>,
     #[serde(default)]
     pub follower_state_topic: Option<String>,
+    #[serde(default)]
+    pub follower_state_value_len: Option<u32>,
     /// Maximum per-cycle step (rad) while the follower is still syncing
     /// toward the leader. Defaults to 0.005 rad (~0.29°).
     #[serde(default)]
@@ -2954,17 +3029,29 @@ impl AssemblerCameraRuntimeConfigV2 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssemblerObservationRuntimeConfigV2 {
     pub channel_id: String,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub channel_type: String,
     pub state_kind: RobotStateKind,
     pub state_topic: String,
     pub value_len: u32,
+    #[serde(default)]
+    pub transport_payload_kind: RobotTransportPayloadKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssemblerActionRuntimeConfigV2 {
     pub channel_id: String,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub channel_type: String,
     pub command_kind: RobotCommandKind,
     pub command_topic: String,
     pub value_len: u32,
+    #[serde(default)]
+    pub transport_payload_kind: RobotTransportPayloadKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3031,6 +3118,54 @@ impl AssemblerRuntimeConfigV2 {
                 return Err(ConfigError::Validation(format!(
                     "assembler runtime v2: camera \"{}\" requires non-empty recording_config_topic and recording_packet_topic",
                     camera.channel_id,
+                )));
+            }
+        }
+        for observation in &self.observations {
+            if observation.state_topic.trim().is_empty() || observation.channel_id.trim().is_empty()
+            {
+                return Err(ConfigError::Validation(
+                    "assembler runtime v2: observation requires non-empty channel_id and state_topic"
+                        .into(),
+                ));
+            }
+            let Some(contract) = observation
+                .state_kind
+                .runtime_contract(observation.value_len)
+            else {
+                if self.format == EpisodeFormat::Mcap {
+                    return Err(ConfigError::Validation(format!(
+                        "assembler runtime v2: {:?} is not supported for MCAP recording",
+                        observation.state_kind
+                    )));
+                }
+                continue;
+            };
+            if observation.transport_payload_kind != contract.transport_payload_kind {
+                return Err(ConfigError::Validation(format!(
+                    "assembler runtime v2: observation \"{}\" {:?} uses {:?}, expected {:?}",
+                    observation.channel_id,
+                    observation.state_kind,
+                    observation.transport_payload_kind,
+                    contract.transport_payload_kind
+                )));
+            }
+        }
+        for action in &self.actions {
+            if action.command_topic.trim().is_empty() || action.channel_id.trim().is_empty() {
+                return Err(ConfigError::Validation(
+                    "assembler runtime v2: action requires non-empty channel_id and command_topic"
+                        .into(),
+                ));
+            }
+            let contract = action.command_kind.runtime_contract(action.value_len);
+            if action.transport_payload_kind != contract.transport_payload_kind {
+                return Err(ConfigError::Validation(format!(
+                    "assembler runtime v2: action \"{}\" {:?} uses {:?}, expected {:?}",
+                    action.channel_id,
+                    action.command_kind,
+                    action.transport_payload_kind,
+                    contract.transport_payload_kind
                 )));
             }
         }
@@ -3227,6 +3362,23 @@ impl ProjectConfig {
             }
             device.validate()?;
         }
+        if self.episode.format == EpisodeFormat::Mcap {
+            for device in &self.devices {
+                for channel in &device.channels {
+                    if channel.kind != DeviceType::Robot {
+                        continue;
+                    }
+                    for state in &channel.recorded_states {
+                        if state.transport_payload_kind().is_none() {
+                            return Err(ConfigError::Validation(format!(
+                                "device \"{}\" channel \"{}\": recorded state {:?} is not supported for MCAP",
+                                device.name, channel.channel_type, state
+                            )));
+                        }
+                    }
+                }
+            }
+        }
         for pairing in &self.pairings {
             pairing.validate(self)?;
         }
@@ -3406,14 +3558,12 @@ impl ProjectConfig {
                     .is_some_and(|channel| channel.preview_enabled)
             })
             .map(|camera| {
-                let channel_cfg = self
-                    .device_named(&camera.device_name)
-                    .and_then(|device| {
-                        device
-                            .channels
-                            .iter()
-                            .find(|c| c.channel_type == camera.channel_type)
-                    });
+                let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                    device
+                        .channels
+                        .iter()
+                        .find(|c| c.channel_type == camera.channel_type)
+                });
                 let preview_cfg = channel_cfg
                     .and_then(|ch| ch.preview_settings.as_ref())
                     .map(|p| p.resolve())
@@ -3446,8 +3596,14 @@ impl ProjectConfig {
                             .find(|entry| entry.state_kind == state_kind);
                         VisualizerRobotSourceConfig {
                             channel_id: channel_id.clone(),
+                            device_name: robot.device_name.clone(),
+                            channel_type: robot.channel_type.clone(),
                             state_kind,
                             state_topic,
+                            value_len: state_kind.value_len(robot.dof),
+                            transport_payload_kind: state_kind
+                                .transport_payload_kind()
+                                .unwrap_or_default(),
                             value_min: entry.map(|e| e.min.clone()).unwrap_or_default(),
                             value_max: entry.map(|e| e.max.clone()).unwrap_or_default(),
                         }
@@ -3465,24 +3621,20 @@ impl ProjectConfig {
     pub fn encoder_runtime_configs_v2(&self) -> Vec<EncoderRuntimeConfigV2> {
         let mut configs = Vec::new();
         for camera in self.resolved_camera_channels() {
-            let channel_cfg = self
-                .device_named(&camera.device_name)
-                .and_then(|device| {
-                    device
-                        .channels
-                        .iter()
-                        .find(|c| c.channel_type == camera.channel_type)
-                });
+            let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                device
+                    .channels
+                    .iter()
+                    .find(|c| c.channel_type == camera.channel_type)
+            });
             let record_cfg = channel_cfg
                 .and_then(|ch| ch.record.as_ref())
                 .map(|r| r.resolve())
                 .unwrap_or_default();
             let codec = record_cfg.codec_for_pixel_format(camera.pixel_format);
             let backend = record_cfg.backend_for_pixel_format(camera.pixel_format);
-            let preview_enabled =
-                channel_cfg.is_some_and(|channel| channel.preview_enabled);
-            let record_enabled =
-                channel_cfg.is_some_and(|channel| channel.record_enabled);
+            let preview_enabled = channel_cfg.is_some_and(|channel| channel.preview_enabled);
+            let record_enabled = channel_cfg.is_some_and(|channel| channel.record_enabled);
 
             // Recording-role encoder for every camera with record_enabled.
             if record_enabled {
@@ -3521,16 +3673,11 @@ impl ProjectConfig {
                     .and_then(|ch| ch.preview_settings.as_ref())
                     .map(|p| p.resolve())
                     .unwrap_or_default();
-                let (preview_codec_color, preview_codec_depth) = (
-                    preview_cfg.color_codec,
-                    preview_cfg.depth_codec,
-                );
-                let resize_policy =
-                    preview_resize_policy(camera.pixel_format, &preview_cfg);
+                let (preview_codec_color, preview_codec_depth) =
+                    (preview_cfg.color_codec, preview_cfg.depth_codec);
+                let resize_policy = preview_resize_policy(camera.pixel_format, &preview_cfg);
                 let (preview_width, preview_height) = match resize_policy {
-                    PreviewResizePolicy::Dynamic => {
-                        (preview_cfg.width, preview_cfg.height)
-                    }
+                    PreviewResizePolicy::Dynamic => (preview_cfg.width, preview_cfg.height),
                     PreviewResizePolicy::FixedSource => (camera.width, camera.height),
                 };
                 let preview_backend = match resize_policy {
@@ -3544,28 +3691,27 @@ impl ProjectConfig {
                     preview_codec_color
                 };
 
-                let (config_topic, packet_topic, jpeg_topic) =
-                    match preview_cfg.output_mode {
-                        PreviewOutputMode::Encoded => (
-                            Some(rollio_bus::preview_config_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                            Some(rollio_bus::preview_packet_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                            None,
-                        ),
-                        PreviewOutputMode::Jpeg => (
-                            None,
-                            None,
-                            Some(rollio_bus::preview_jpeg_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                        ),
-                    };
+                let (config_topic, packet_topic, jpeg_topic) = match preview_cfg.output_mode {
+                    PreviewOutputMode::Encoded => (
+                        Some(rollio_bus::preview_config_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                        Some(rollio_bus::preview_packet_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                        None,
+                    ),
+                    PreviewOutputMode::Jpeg => (
+                        None,
+                        None,
+                        Some(rollio_bus::preview_jpeg_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                    ),
+                };
 
                 configs.push(EncoderRuntimeConfigV2 {
                     process_id: preview_encoder_process_id(&camera.channel_id),
@@ -3618,14 +3764,12 @@ impl ProjectConfig {
                     .is_some_and(|channel| channel.record_enabled)
             })
             .map(|camera| {
-                let channel_cfg = self
-                    .device_named(&camera.device_name)
-                    .and_then(|device| {
-                        device
-                            .channels
-                            .iter()
-                            .find(|c| c.channel_type == camera.channel_type)
-                    });
+                let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                    device
+                        .channels
+                        .iter()
+                        .find(|c| c.channel_type == camera.channel_type)
+                });
                 let record_cfg = channel_cfg
                     .and_then(|ch| ch.record.as_ref())
                     .map(|r| r.resolve())
@@ -3658,14 +3802,18 @@ impl ProjectConfig {
                     .state_topics
                     .into_iter()
                     .filter(move |(state_kind, _)| recorded.contains(state_kind))
-                    .map(
-                        move |(state_kind, state_topic)| AssemblerObservationRuntimeConfigV2 {
+                    .filter_map(move |(state_kind, state_topic)| {
+                        let contract = state_kind.runtime_contract(robot.dof)?;
+                        Some(AssemblerObservationRuntimeConfigV2 {
                             channel_id: robot.channel_id.clone(),
+                            device_name: robot.device_name.clone(),
+                            channel_type: robot.channel_type.clone(),
                             state_kind,
                             state_topic,
-                            value_len: state_kind.value_len(robot.dof),
-                        },
-                    )
+                            value_len: contract.value_len,
+                            transport_payload_kind: contract.transport_payload_kind,
+                        })
+                    })
             })
             .collect();
         let actions = self
@@ -3677,24 +3825,22 @@ impl ProjectConfig {
                     .channel_named(&pairing.follower_channel_type)?;
                 let dof = follower.dof.unwrap_or_default();
                 let bus_root = &self.device_named(&pairing.follower_device)?.bus_root;
+                let contract = pairing.follower_command.runtime_contract(dof);
                 Some(AssemblerActionRuntimeConfigV2 {
                     channel_id: device_channel_id(
                         &pairing.follower_device,
                         &pairing.follower_channel_type,
                     ),
+                    device_name: pairing.follower_device.clone(),
+                    channel_type: pairing.follower_channel_type.clone(),
                     command_kind: pairing.follower_command,
                     command_topic: robot_command_topic_v2(
                         bus_root,
                         &pairing.follower_channel_type,
                         pairing.follower_command,
                     ),
-                    value_len: match pairing.follower_command {
-                        RobotCommandKind::JointPosition | RobotCommandKind::JointMit => dof,
-                        RobotCommandKind::ParallelPosition | RobotCommandKind::ParallelMit => {
-                            dof.min(MAX_PARALLEL as u32)
-                        }
-                        RobotCommandKind::EndPose => 7,
-                    },
+                    value_len: contract.value_len,
+                    transport_payload_kind: contract.transport_payload_kind,
                 })
             })
             .collect();
@@ -3719,6 +3865,7 @@ impl ProjectConfig {
             .filter_map(|pairing| {
                 let leader_device = self.device_named(&pairing.leader_device)?;
                 let follower_device = self.device_named(&pairing.follower_device)?;
+                let leader_channel = leader_device.channel_named(&pairing.leader_channel_type)?;
                 let follower_channel =
                     follower_device.channel_named(&pairing.follower_channel_type)?;
                 // Pick the follower state-kind that matches the command kind so
@@ -3744,6 +3891,9 @@ impl ProjectConfig {
                         None
                     }
                 });
+                let follower_state_value_len = follower_state_kind
+                    .filter(|_| follower_state_topic.is_some())
+                    .map(|kind| kind.value_len(follower_channel.dof.unwrap_or_default()));
                 Some(TeleopRuntimeConfigV2 {
                     process_id: format!(
                         "teleop.{}.{}.to.{}.{}",
@@ -3766,16 +3916,23 @@ impl ProjectConfig {
                         &pairing.leader_channel_type,
                         pairing.leader_state,
                     ),
+                    leader_state_value_len: pairing
+                        .leader_state
+                        .value_len(leader_channel.dof.unwrap_or_default()),
                     follower_command_kind: pairing.follower_command,
                     follower_command_topic: robot_command_topic_v2(
                         &follower_device.bus_root,
                         &pairing.follower_channel_type,
                         pairing.follower_command,
                     ),
+                    follower_command_value_len: pairing
+                        .follower_command
+                        .value_len(follower_channel.dof.unwrap_or_default()),
                     follower_state_kind: follower_state_topic.is_some().then_some(
                         follower_state_kind.expect("follower_state_kind set when topic resolved"),
                     ),
                     follower_state_topic,
+                    follower_state_value_len,
                     sync_max_step_rad: Some(DEFAULT_TELEOP_SYNC_MAX_STEP_RAD),
                     sync_complete_threshold_rad: Some(DEFAULT_TELEOP_SYNC_COMPLETE_THRESHOLD_RAD),
                     mapping: pairing.mapping,

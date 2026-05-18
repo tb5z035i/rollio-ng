@@ -17,9 +17,11 @@ from .types import (
     DeviceChannelMode,
     JointMitCommand15,
     JointVector15,
+    MitCommandElement,
     ParallelMitCommand2,
     ParallelVector2,
     Pose7,
+    SampleHeader,
 )
 
 __all__ = [
@@ -33,7 +35,9 @@ __all__ = [
     "DeviceChannelMode",
     "JointMitCommand15",
     "JointVector15",
+    "MitCommandElement",
     "ParallelMitCommand2",
     "ParallelVector2",
     "Pose7",
+    "SampleHeader",
 ]

@@ -17,10 +17,7 @@ use rollio_types::config::{
     DeviceQueryResponse, DeviceType, DirectJointCompatibility, DirectJointCompatibilityPeer,
     RobotCommandKind, RobotMode, RobotStateKind, StateValueLimitsEntry,
 };
-use rollio_types::messages::{
-    ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15, ParallelMitCommand2,
-    ParallelVector2, Pose7,
-};
+use rollio_types::messages::{ControlEvent, DeviceChannelMode, MitCommandElement, SampleHeader};
 use serde_json::json;
 use std::error::Error;
 use std::path::PathBuf;
@@ -189,11 +186,14 @@ type ChannelModeSubscriber =
     iceoryx2::port::subscriber::Subscriber<ipc::Service, DeviceChannelMode, ()>;
 type ChannelModePublisher =
     iceoryx2::port::publisher::Publisher<ipc::Service, DeviceChannelMode, ()>;
-type ParallelPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, ParallelVector2, ()>;
-type ParallelPositionSubscriber =
-    iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>;
-type ParallelMitSubscriber =
-    iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelMitCommand2, ()>;
+type F64VectorPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [f64], SampleHeader>;
+type F64VectorSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>;
+type MitCommandSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [MitCommandElement], SampleHeader>;
+type ParallelPublisher = F64VectorPublisher;
+type ParallelPositionSubscriber = F64VectorSubscriber;
+type ParallelMitSubscriber = MitCommandSubscriber;
 
 /// Coordinates the physical AIRBOT Play base LED so it stays on while **either** the arm or EEF
 /// channel is in identifying mode (each channel has its own mode IPC service).
@@ -766,7 +766,8 @@ fn run_arm_channel(
     // unread 250 Hz samples. See `rollio_bus::STATE_BUFFER` for rationale.
     let joint_position_service = node
         .service_builder(&joint_position_topic)
-        .publish_subscribe::<JointVector15>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -775,7 +776,8 @@ fn run_arm_channel(
         .open_or_create()?;
     let joint_velocity_service = node
         .service_builder(&joint_velocity_topic)
-        .publish_subscribe::<JointVector15>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -784,7 +786,8 @@ fn run_arm_channel(
         .open_or_create()?;
     let joint_effort_service = node
         .service_builder(&joint_effort_topic)
-        .publish_subscribe::<JointVector15>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -793,20 +796,34 @@ fn run_arm_channel(
         .open_or_create()?;
     let ee_pose_service = node
         .service_builder(&ee_pose_topic)
-        .publish_subscribe::<Pose7>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
         .max_subscribers(STATE_MAX_SUBSCRIBERS)
         .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
-    let joint_position_publisher = joint_position_service.publisher_builder().create()?;
-    let joint_velocity_publisher = joint_velocity_service.publisher_builder().create()?;
-    let joint_effort_publisher = joint_effort_service.publisher_builder().create()?;
-    let ee_pose_publisher = ee_pose_service.publisher_builder().create()?;
+    let joint_position_publisher = joint_position_service
+        .publisher_builder()
+        .initial_max_slice_len(config.dof.min(ARM_DOF))
+        .create()?;
+    let joint_velocity_publisher = joint_velocity_service
+        .publisher_builder()
+        .initial_max_slice_len(config.dof.min(ARM_DOF))
+        .create()?;
+    let joint_effort_publisher = joint_effort_service
+        .publisher_builder()
+        .initial_max_slice_len(config.dof.min(ARM_DOF))
+        .create()?;
+    let ee_pose_publisher = ee_pose_service
+        .publisher_builder()
+        .initial_max_slice_len(7)
+        .create()?;
     let joint_position_command_service = node
         .service_builder(&joint_position_command_topic)
-        .publish_subscribe::<JointVector15>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -815,7 +832,8 @@ fn run_arm_channel(
         .open_or_create()?;
     let joint_mit_command_service = node
         .service_builder(&joint_mit_command_topic)
-        .publish_subscribe::<JointMitCommand15>()
+        .publish_subscribe::<[MitCommandElement]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -824,7 +842,8 @@ fn run_arm_channel(
         .open_or_create()?;
     let end_pose_command_service = node
         .service_builder(&end_pose_command_topic)
-        .publish_subscribe::<Pose7>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -1031,16 +1050,23 @@ fn drain_shutdown_events(subscriber: &ShutdownSubscriber) -> Result<bool, Box<dy
 }
 
 fn drain_joint_position_command(
-    subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>,
+    subscriber: &F64VectorSubscriber,
 ) -> Result<Option<[f64; ARM_DOF]>, Box<dyn Error>> {
     let mut latest = None;
     loop {
         match subscriber.receive()? {
             Some(sample) => {
                 let payload = sample.payload();
+                if payload.len() > ARM_DOF {
+                    eprintln!(
+                        "rollio-device-airbot-play: skipping joint_position command: payload length {} > ARM_DOF {}",
+                        payload.len(),
+                        ARM_DOF
+                    );
+                    continue;
+                }
                 let mut targets = [0.0; ARM_DOF];
-                let active = (payload.len as usize).min(ARM_DOF);
-                targets[..active].copy_from_slice(&payload.values[..active]);
+                targets[..payload.len()].copy_from_slice(payload);
                 latest = Some(targets);
             }
             None => return Ok(latest),
@@ -1049,16 +1075,25 @@ fn drain_joint_position_command(
 }
 
 fn drain_joint_mit_command(
-    subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>,
+    subscriber: &MitCommandSubscriber,
 ) -> Result<Option<[f64; ARM_DOF]>, Box<dyn Error>> {
     let mut latest = None;
     loop {
         match subscriber.receive()? {
             Some(sample) => {
                 let payload = sample.payload();
+                if payload.len() > ARM_DOF {
+                    eprintln!(
+                        "rollio-device-airbot-play: skipping joint_mit command: payload length {} > ARM_DOF {}",
+                        payload.len(),
+                        ARM_DOF
+                    );
+                    continue;
+                }
                 let mut targets = [0.0; ARM_DOF];
-                let active = (payload.len as usize).min(ARM_DOF);
-                targets[..active].copy_from_slice(&payload.position[..active]);
+                for (target, element) in targets.iter_mut().zip(payload.iter()) {
+                    *target = element.position;
+                }
                 latest = Some(targets);
             }
             None => return Ok(latest),
@@ -1067,13 +1102,21 @@ fn drain_joint_mit_command(
 }
 
 fn drain_end_pose_command(
-    subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>,
+    subscriber: &F64VectorSubscriber,
 ) -> Result<Option<Pose>, Box<dyn Error>> {
     let mut latest = None;
     loop {
         match subscriber.receive()? {
             Some(sample) => {
-                latest = Some(Pose::from_slice(&sample.payload().values)?);
+                let payload = sample.payload();
+                if payload.len() != 7 {
+                    eprintln!(
+                        "rollio-device-airbot-play: skipping end_pose command: payload length {} != expected 7",
+                        payload.len()
+                    );
+                    continue;
+                }
+                latest = Some(Pose::from_slice(payload)?);
             }
             None => return Ok(latest),
         }
@@ -1084,18 +1127,10 @@ fn publish_states(
     config: &ArmChannelRuntime,
     feedback: &ArmJointFeedback,
     pose: Option<Pose>,
-    joint_position_publisher: &iceoryx2::port::publisher::Publisher<
-        ipc::Service,
-        JointVector15,
-        (),
-    >,
-    joint_velocity_publisher: &iceoryx2::port::publisher::Publisher<
-        ipc::Service,
-        JointVector15,
-        (),
-    >,
-    joint_effort_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>,
-    ee_pose_publisher: &iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>,
+    joint_position_publisher: &F64VectorPublisher,
+    joint_velocity_publisher: &F64VectorPublisher,
+    joint_effort_publisher: &F64VectorPublisher,
+    ee_pose_publisher: &F64VectorPublisher,
 ) -> Result<(), Box<dyn Error>> {
     if !feedback.valid {
         return Ok(());
@@ -1111,25 +1146,28 @@ fn publish_states(
         .publish_states
         .contains(&RobotStateKind::JointPosition)
     {
-        joint_position_publisher.send_copy(JointVector15::from_slice(
+        publish_f64_vector(
+            joint_position_publisher,
             timestamp_us,
             &feedback.positions[..config.dof.min(ARM_DOF)],
-        ))?;
+        )?;
     }
     if config
         .publish_states
         .contains(&RobotStateKind::JointVelocity)
     {
-        joint_velocity_publisher.send_copy(JointVector15::from_slice(
+        publish_f64_vector(
+            joint_velocity_publisher,
             timestamp_us,
             &feedback.velocities[..config.dof.min(ARM_DOF)],
-        ))?;
+        )?;
     }
     if config.publish_states.contains(&RobotStateKind::JointEffort) {
-        joint_effort_publisher.send_copy(JointVector15::from_slice(
+        publish_f64_vector(
+            joint_effort_publisher,
             timestamp_us,
             &feedback.torques[..config.dof.min(ARM_DOF)],
-        ))?;
+        )?;
     }
     if config
         .publish_states
@@ -1140,12 +1178,20 @@ fn publish_states(
                 .as_vec()
                 .try_into()
                 .map_err(|_| "AIRBOT pose did not contain 7 values")?;
-            ee_pose_publisher.send_copy(Pose7 {
-                timestamp_us,
-                values: pose_values,
-            })?;
+            publish_f64_vector(ee_pose_publisher, timestamp_us, &pose_values)?;
         }
     }
+    Ok(())
+}
+
+fn publish_f64_vector(
+    publisher: &F64VectorPublisher,
+    timestamp_us: u64,
+    values: &[f64],
+) -> Result<(), Box<dyn Error>> {
+    let mut sample = publisher.loan_slice_uninit(values.len())?;
+    *sample.user_header_mut() = SampleHeader { timestamp_us };
+    sample.write_from_slice(values).send()?;
     Ok(())
 }
 
@@ -1156,8 +1202,16 @@ fn drain_eef_command(
 ) -> Result<Option<SingleEefCommand>, Box<dyn Error>> {
     let mut latest = None;
     while let Some(sample) = position_subscriber.receive()? {
+        let payload = sample.payload();
+        if payload.len() != 1 {
+            eprintln!(
+                "rollio-device-airbot-play: skipping parallel_position command: payload length {} != expected 1",
+                payload.len()
+            );
+            continue;
+        }
         latest = Some(SingleEefCommand {
-            position: sample.payload().values[0],
+            position: payload[0],
             velocity: 0.0,
             effort: 0.0,
             mit_kp: config
@@ -1176,11 +1230,20 @@ fn drain_eef_command(
         });
     }
     while let Some(sample) = mit_subscriber.receive()? {
+        let payload = sample.payload();
+        if payload.len() != 1 {
+            eprintln!(
+                "rollio-device-airbot-play: skipping parallel_mit command: payload length {} != expected 1",
+                payload.len()
+            );
+            continue;
+        }
+        let element = payload[0];
         latest = Some(SingleEefCommand {
-            position: sample.payload().position[0],
-            velocity: sample.payload().velocity[0],
-            effort: sample.payload().effort[0],
-            mit_kp: if sample.payload().kp[0] == 0.0 {
+            position: element.position,
+            velocity: element.velocity,
+            effort: element.effort,
+            mit_kp: if element.kp == 0.0 {
                 config
                     .command_defaults
                     .parallel_mit_kp
@@ -1188,9 +1251,9 @@ fn drain_eef_command(
                     .copied()
                     .unwrap_or(0.0)
             } else {
-                sample.payload().kp[0]
+                element.kp
             },
-            mit_kd: if sample.payload().kd[0] == 0.0 {
+            mit_kd: if element.kd == 0.0 {
                 config
                     .command_defaults
                     .parallel_mit_kd
@@ -1198,7 +1261,7 @@ fn drain_eef_command(
                     .copied()
                     .unwrap_or(0.0)
             } else {
-                sample.payload().kd[0]
+                element.kd
             },
             current_threshold: 0.0,
         });
@@ -1218,26 +1281,17 @@ fn publish_eef_state(
     let timestamp_us = feedback_timestamp_us(feedback.timestamp_micros);
     if publish_states.contains(&RobotStateKind::ParallelPosition) {
         if let Some(publisher) = &publishers.position {
-            publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_us,
-                &[feedback.position],
-            ))?;
+            publish_f64_vector(publisher, timestamp_us, &[feedback.position])?;
         }
     }
     if publish_states.contains(&RobotStateKind::ParallelVelocity) {
         if let Some(publisher) = &publishers.velocity {
-            publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_us,
-                &[feedback.velocity],
-            ))?;
+            publish_f64_vector(publisher, timestamp_us, &[feedback.velocity])?;
         }
     }
     if publish_states.contains(&RobotStateKind::ParallelEffort) {
         if let Some(publisher) = &publishers.effort {
-            publisher.send_copy(ParallelVector2::from_slice(
-                timestamp_us,
-                &[feedback.effort],
-            ))?;
+            publish_f64_vector(publisher, timestamp_us, &[feedback.effort])?;
         }
     }
     Ok(())
@@ -1379,14 +1433,18 @@ fn open_parallel_publisher(
             .try_into()?;
     let service = node
         .service_builder(&topic)
-        .publish_subscribe::<ParallelVector2>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
         .max_subscribers(STATE_MAX_SUBSCRIBERS)
         .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
-    Ok(service.publisher_builder().create()?)
+    Ok(service
+        .publisher_builder()
+        .initial_max_slice_len(1)
+        .create()?)
 }
 
 fn open_parallel_position_subscriber(
@@ -1403,7 +1461,8 @@ fn open_parallel_position_subscriber(
     .try_into()?;
     let service = node
         .service_builder(&topic)
-        .publish_subscribe::<ParallelVector2>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -1427,7 +1486,8 @@ fn open_parallel_mit_subscriber(
     .try_into()?;
     let service = node
         .service_builder(&topic)
-        .publish_subscribe::<ParallelMitCommand2>()
+        .publish_subscribe::<[MitCommandElement]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)

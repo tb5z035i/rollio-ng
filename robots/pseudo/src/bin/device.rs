@@ -12,8 +12,8 @@ use rollio_types::config::{
     StateValueLimitsEntry,
 };
 use rollio_types::messages::{
-    CameraFrameHeader, ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15,
-    PixelFormat, Pose7,
+    CameraFrameHeader, ControlEvent, DeviceChannelMode, MitCommandElement, PixelFormat,
+    SampleHeader,
 };
 use serde_json::json;
 use std::error::Error;
@@ -258,17 +258,22 @@ struct RobotRuntime {
 }
 
 enum StatePublisher {
-    JointPosition(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
-    JointVelocity(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
-    JointEffort(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
-    EndEffectorPose(iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>),
+    JointPosition(F64VectorPublisher),
+    JointVelocity(F64VectorPublisher),
+    JointEffort(F64VectorPublisher),
+    EndEffectorPose(F64VectorPublisher),
 }
 
 enum CommandSubscriber {
-    JointPosition(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    JointMit(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>),
+    JointPosition(F64VectorSubscriber),
+    JointMit(MitCommandSubscriber),
 }
 
+type F64VectorPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [f64], SampleHeader>;
+type F64VectorSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>;
+type MitCommandSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [MitCommandElement], SampleHeader>;
 type ShutdownSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
 type ChannelModeSubscriber =
     iceoryx2::port::subscriber::Subscriber<ipc::Service, DeviceChannelMode, ()>;
@@ -816,39 +821,47 @@ fn publish_robot_states(robot: &mut RobotRuntime) -> Result<(), Box<dyn Error>> 
     }
     robot.previous_positions = positions;
 
-    let joint_positions = JointVector15::from_slice(timestamp_us, &positions[..robot.dof]);
-    let joint_velocities = JointVector15::from_slice(timestamp_us, &velocities[..robot.dof]);
-    let joint_efforts = JointVector15::from_slice(timestamp_us, &efforts[..robot.dof]);
-    let ee_pose = Pose7 {
-        timestamp_us,
-        values: [
-            positions[0],
-            positions.get(1).copied().unwrap_or_default(),
-            positions.get(2).copied().unwrap_or_default(),
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ],
-    };
+    let joint_positions = &positions[..robot.dof];
+    let joint_velocities = &velocities[..robot.dof];
+    let joint_efforts = &efforts[..robot.dof];
+    let ee_pose = [
+        positions[0],
+        positions.get(1).copied().unwrap_or_default(),
+        positions.get(2).copied().unwrap_or_default(),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
 
     for publisher in &robot.state_publishers {
         match publisher {
             StatePublisher::JointPosition(publisher) => {
-                publisher.send_copy(joint_positions)?;
+                publish_f64_vector(publisher, timestamp_us, joint_positions)?;
             }
             StatePublisher::JointVelocity(publisher) => {
-                publisher.send_copy(joint_velocities)?;
+                publish_f64_vector(publisher, timestamp_us, joint_velocities)?;
             }
             StatePublisher::JointEffort(publisher) => {
-                publisher.send_copy(joint_efforts)?;
+                publish_f64_vector(publisher, timestamp_us, joint_efforts)?;
             }
             StatePublisher::EndEffectorPose(publisher) => {
-                publisher.send_copy(ee_pose)?;
+                publish_f64_vector(publisher, timestamp_us, &ee_pose)?;
             }
         }
     }
 
+    Ok(())
+}
+
+fn publish_f64_vector(
+    publisher: &F64VectorPublisher,
+    timestamp_us: u64,
+    values: &[f64],
+) -> Result<(), Box<dyn Error>> {
+    let mut sample = publisher.loan_slice_uninit(values.len())?;
+    *sample.user_header_mut() = SampleHeader { timestamp_us };
+    sample.write_from_slice(values).send()?;
     Ok(())
 }
 
@@ -876,7 +889,8 @@ fn run_robot_channel(
             RobotStateKind::JointPosition => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<JointVector15>()
+                    .publish_subscribe::<[f64]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -884,13 +898,17 @@ fn run_robot_channel(
                     .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointPosition(
-                    service.publisher_builder().create()?,
+                    service
+                        .publisher_builder()
+                        .initial_max_slice_len(dof)
+                        .create()?,
                 ));
             }
             RobotStateKind::JointVelocity => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<JointVector15>()
+                    .publish_subscribe::<[f64]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -898,13 +916,17 @@ fn run_robot_channel(
                     .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointVelocity(
-                    service.publisher_builder().create()?,
+                    service
+                        .publisher_builder()
+                        .initial_max_slice_len(dof)
+                        .create()?,
                 ));
             }
             RobotStateKind::JointEffort => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<JointVector15>()
+                    .publish_subscribe::<[f64]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -912,13 +934,17 @@ fn run_robot_channel(
                     .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::JointEffort(
-                    service.publisher_builder().create()?,
+                    service
+                        .publisher_builder()
+                        .initial_max_slice_len(dof)
+                        .create()?,
                 ));
             }
             RobotStateKind::EndEffectorPose => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<Pose7>()
+                    .publish_subscribe::<[f64]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -926,7 +952,10 @@ fn run_robot_channel(
                     .max_nodes(STATE_MAX_NODES)
                     .open_or_create()?;
                 state_publishers.push(StatePublisher::EndEffectorPose(
-                    service.publisher_builder().create()?,
+                    service
+                        .publisher_builder()
+                        .initial_max_slice_len(7)
+                        .create()?,
                 ));
             }
             _ => {}
@@ -946,7 +975,8 @@ fn run_robot_channel(
             RobotCommandKind::JointPosition => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<JointVector15>()
+                    .publish_subscribe::<[f64]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -960,7 +990,8 @@ fn run_robot_channel(
             RobotCommandKind::JointMit => {
                 let service = node
                     .service_builder(&topic)
-                    .publish_subscribe::<JointMitCommand15>()
+                    .publish_subscribe::<[MitCommandElement]>()
+                    .user_header::<SampleHeader>()
                     .subscriber_max_buffer_size(STATE_BUFFER)
                     .history_size(STATE_BUFFER)
                     .max_publishers(STATE_MAX_PUBLISHERS)
@@ -1019,16 +1050,35 @@ fn drain_commands(robot: &mut RobotRuntime) -> Result<(), Box<dyn Error>> {
                     break;
                 };
                 let payload = sample.payload();
-                let active = robot.dof.min(payload.len as usize);
-                robot.target_positions[..active].copy_from_slice(&payload.values[..active]);
+                if payload.len() != robot.dof {
+                    eprintln!(
+                        "rollio-device-pseudo: skipping joint_position command: payload length {} != expected {}",
+                        payload.len(),
+                        robot.dof
+                    );
+                    continue;
+                }
+                robot.target_positions[..robot.dof].copy_from_slice(payload);
             },
             CommandSubscriber::JointMit(subscriber) => loop {
                 let Some(sample) = subscriber.receive()? else {
                     break;
                 };
                 let payload = sample.payload();
-                let active = robot.dof.min(payload.len as usize);
-                robot.target_positions[..active].copy_from_slice(&payload.position[..active]);
+                if payload.len() != robot.dof {
+                    eprintln!(
+                        "rollio-device-pseudo: skipping joint_mit command: payload length {} != expected {}",
+                        payload.len(),
+                        robot.dof
+                    );
+                    continue;
+                }
+                for (target, element) in robot.target_positions[..robot.dof]
+                    .iter_mut()
+                    .zip(payload.iter())
+                {
+                    *target = element.position;
+                }
             },
         }
     }

@@ -48,6 +48,40 @@ CONTROL_EVENT_MODE_SWITCH: int = 5
 # ---------------------------------------------------------------------------
 
 
+class SampleHeader(ctypes.Structure):
+    """Mirror of Rust `SampleHeader` user header (`repr(C)`)."""
+
+    _fields_: ClassVar[list[tuple[str, type]]] = [
+        ("timestamp_us", ctypes.c_uint64),
+    ]
+
+    @classmethod
+    def type_name(cls) -> str:
+        return "SampleHeader"
+
+    @classmethod
+    def of(cls, timestamp_us: int) -> SampleHeader:
+        msg = cls()
+        msg.timestamp_us = int(timestamp_us) & 0xFFFFFFFFFFFFFFFF
+        return msg
+
+
+class MitCommandElement(ctypes.Structure):
+    """Mirror of Rust `MitCommandElement` dynamic-slice element (`repr(C)`)."""
+
+    _fields_: ClassVar[list[tuple[str, type]]] = [
+        ("position", ctypes.c_double),
+        ("velocity", ctypes.c_double),
+        ("effort", ctypes.c_double),
+        ("kp", ctypes.c_double),
+        ("kd", ctypes.c_double),
+    ]
+
+    @classmethod
+    def type_name(cls) -> str:
+        return "MitCommandElement"
+
+
 class JointVector15(ctypes.Structure):
     """Mirror of Rust `JointVector15` (`repr(C)`).
 
@@ -287,9 +321,11 @@ __all__ = [
     "MAX_POSE",
     "ControlEvent",
     "DeviceChannelMode",
+    "MitCommandElement",
     "JointMitCommand15",
     "JointVector15",
     "ParallelMitCommand2",
     "ParallelVector2",
     "Pose7",
+    "SampleHeader",
 ]

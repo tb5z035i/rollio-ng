@@ -20,6 +20,8 @@ from rollio_device_nero.ipc import types as t
 # Captured 2026-04-19 from rollio-types HEAD via:
 #     std::mem::{size_of, align_of}::<T>(), std::mem::offset_of!(T, field)
 _RUST_LAYOUTS: dict[type, tuple[int, int]] = {
+    t.SampleHeader: (8, 8),
+    t.MitCommandElement: (40, 8),
     t.JointVector15: (136, 8),
     t.JointMitCommand15: (616, 8),
     t.Pose7: (64, 8),
@@ -45,6 +47,15 @@ def test_joint_vector_15_field_offsets() -> None:
     assert t.JointVector15.len.offset == 8
     # 4 bytes of natural alignment padding after `len`.
     assert t.JointVector15.values.offset == 16
+
+
+def test_sample_header_and_mit_element_field_offsets() -> None:
+    assert t.SampleHeader.timestamp_us.offset == 0
+    assert t.MitCommandElement.position.offset == 0
+    assert t.MitCommandElement.velocity.offset == 8
+    assert t.MitCommandElement.effort.offset == 16
+    assert t.MitCommandElement.kp.offset == 24
+    assert t.MitCommandElement.kd.offset == 32
 
 
 def test_joint_mit_command_15_field_offsets() -> None:
@@ -99,6 +110,8 @@ def test_control_event_recording_start_payload_layout() -> None:
         (t.Pose7, "Pose7"),
         (t.ParallelVector2, "ParallelVector2"),
         (t.ParallelMitCommand2, "ParallelMitCommand2"),
+        (t.SampleHeader, "SampleHeader"),
+        (t.MitCommandElement, "MitCommandElement"),
         (t.DeviceChannelMode, "DeviceChannelMode"),
         (t.ControlEvent, "ControlEvent"),
     ],

@@ -10,8 +10,8 @@ use crate::runtime_paths::{
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE,
-    EPISODE_DROPPED_SERVICE, EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_DROPPED_SERVICE,
+    EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
 use rollio_types::messages::{
@@ -486,10 +486,13 @@ mod tests {
             follower_channel_id: "robot/follower_arm/arm".into(),
             leader_state_kind: RobotStateKind::JointPosition,
             leader_state_topic: "robot/leader_arm/state".into(),
+            leader_state_value_len: 6,
             follower_command_kind: RobotCommandKind::JointPosition,
             follower_command_topic: "robot/follower_arm/command".into(),
+            follower_command_value_len: 6,
             follower_state_kind: None,
             follower_state_topic: None,
+            follower_state_value_len: None,
             sync_max_step_rad: None,
             sync_complete_threshold_rad: None,
             mapping: MappingStrategy::DirectJoint,

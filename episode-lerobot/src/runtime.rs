@@ -28,12 +28,11 @@ use rollio_bus::{
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
-    EpisodeFormat, RobotCommandKind, RobotStateKind,
+    EpisodeFormat, RobotCommandKind, RobotStateKind, RobotTransportPayloadKind,
 };
 use rollio_types::messages::{
     BackpressureEvent, ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeDropped,
-    EpisodeReady, EpisodeStored, FixedString256, FixedString64, JointMitCommand15, JointVector15,
-    ParallelMitCommand2, ParallelVector2, Pose7,
+    EpisodeReady, EpisodeStored, FixedString256, FixedString64, MitCommandElement, SampleHeader,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -56,6 +55,10 @@ pub struct RunArgs {
 
 type PacketSubscriber =
     iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], EncodedPacketHeader>;
+type F64VectorSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>;
+type MitCommandSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [MitCommandElement], SampleHeader>;
 
 struct CameraSubscriber {
     channel_id: String,
@@ -74,9 +77,7 @@ struct ObservationSubscriber {
 }
 
 enum ObservationSubscriberKind {
-    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
-    Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
+    F64Vector(F64VectorSubscriber),
 }
 
 struct ActionSubscriber {
@@ -85,13 +86,8 @@ struct ActionSubscriber {
 }
 
 enum ActionSubscriberKind {
-    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    JointMitCommand15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointMitCommand15, ()>),
-    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
-    ParallelMitCommand2(
-        iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelMitCommand2, ()>,
-    ),
-    Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
+    F64Vector(F64VectorSubscriber),
+    MitCommandElementVector(MitCommandSubscriber),
 }
 
 // ---------------------------------------------------------------------------
@@ -178,8 +174,7 @@ impl EpisodeManager {
             .map(|c| c.channel_id.clone())
             .collect();
         let staging_slots = config.staging_slots as usize;
-        let stale_after =
-            Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
+        let stale_after = Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
         Self {
             config,
             active_episode_index: None,
@@ -677,10 +672,8 @@ fn create_episode_ready_publisher(
 
 fn create_backpressure_publisher(
     node: &Node<ipc::Service>,
-) -> Result<
-    iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>,
-    Box<dyn Error>,
-> {
+) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>, Box<dyn Error>>
+{
     let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
     let service = node
         .service_builder(&service_name)
@@ -763,46 +756,22 @@ fn create_observation_subscribers(
         .iter()
         .map(|observation| {
             let service_name: ServiceName = observation.state_topic.as_str().try_into()?;
-            let subscriber = match observation.state_kind {
-                RobotStateKind::EndEffectorPose => {
+            let subscriber = match observation.transport_payload_kind {
+                RobotTransportPayloadKind::F64Vector => {
                     let service = node
                         .service_builder(&service_name)
-                        .publish_subscribe::<Pose7>()
+                        .publish_subscribe::<[f64]>()
+                        .user_header::<SampleHeader>()
                         .subscriber_max_buffer_size(STATE_BUFFER)
                         .history_size(STATE_BUFFER)
                         .max_publishers(STATE_MAX_PUBLISHERS)
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ObservationSubscriberKind::Pose7(service.subscriber_builder().create()?)
+                    ObservationSubscriberKind::F64Vector(service.subscriber_builder().create()?)
                 }
-                RobotStateKind::ParallelPosition
-                | RobotStateKind::ParallelVelocity
-                | RobotStateKind::ParallelEffort => {
-                    let service = node
-                        .service_builder(&service_name)
-                        .publish_subscribe::<ParallelVector2>()
-                        .subscriber_max_buffer_size(STATE_BUFFER)
-                        .history_size(STATE_BUFFER)
-                        .max_publishers(STATE_MAX_PUBLISHERS)
-                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                        .max_nodes(STATE_MAX_NODES)
-                        .open_or_create()?;
-                    ObservationSubscriberKind::ParallelVector2(
-                        service.subscriber_builder().create()?,
-                    )
-                }
-                _ => {
-                    let service = node
-                        .service_builder(&service_name)
-                        .publish_subscribe::<JointVector15>()
-                        .subscriber_max_buffer_size(STATE_BUFFER)
-                        .history_size(STATE_BUFFER)
-                        .max_publishers(STATE_MAX_PUBLISHERS)
-                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                        .max_nodes(STATE_MAX_NODES)
-                        .open_or_create()?;
-                    ObservationSubscriberKind::JointVector15(service.subscriber_builder().create()?)
+                RobotTransportPayloadKind::MitCommandElementVector => {
+                    return Err("observation streams cannot use MIT command payloads".into());
                 }
             };
             Ok(ObservationSubscriber {
@@ -822,68 +791,34 @@ fn create_action_subscribers(
         .iter()
         .map(|action| {
             let service_name: ServiceName = action.command_topic.as_str().try_into()?;
-            let subscriber = match action.command_kind {
-                RobotCommandKind::JointPosition => {
+            let subscriber = match action.transport_payload_kind {
+                RobotTransportPayloadKind::F64Vector => {
                     let service = node
                         .service_builder(&service_name)
-                        .publish_subscribe::<JointVector15>()
+                        .publish_subscribe::<[f64]>()
+                        .user_header::<SampleHeader>()
                         .subscriber_max_buffer_size(STATE_BUFFER)
                         .history_size(STATE_BUFFER)
                         .max_publishers(STATE_MAX_PUBLISHERS)
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ActionSubscriberKind::JointVector15(service.subscriber_builder().create()?)
+                    ActionSubscriberKind::F64Vector(service.subscriber_builder().create()?)
                 }
-                RobotCommandKind::JointMit => {
+                RobotTransportPayloadKind::MitCommandElementVector => {
                     let service = node
                         .service_builder(&service_name)
-                        .publish_subscribe::<JointMitCommand15>()
+                        .publish_subscribe::<[MitCommandElement]>()
+                        .user_header::<SampleHeader>()
                         .subscriber_max_buffer_size(STATE_BUFFER)
                         .history_size(STATE_BUFFER)
                         .max_publishers(STATE_MAX_PUBLISHERS)
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ActionSubscriberKind::JointMitCommand15(service.subscriber_builder().create()?)
-                }
-                RobotCommandKind::ParallelPosition => {
-                    let service = node
-                        .service_builder(&service_name)
-                        .publish_subscribe::<ParallelVector2>()
-                        .subscriber_max_buffer_size(STATE_BUFFER)
-                        .history_size(STATE_BUFFER)
-                        .max_publishers(STATE_MAX_PUBLISHERS)
-                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                        .max_nodes(STATE_MAX_NODES)
-                        .open_or_create()?;
-                    ActionSubscriberKind::ParallelVector2(service.subscriber_builder().create()?)
-                }
-                RobotCommandKind::ParallelMit => {
-                    let service = node
-                        .service_builder(&service_name)
-                        .publish_subscribe::<ParallelMitCommand2>()
-                        .subscriber_max_buffer_size(STATE_BUFFER)
-                        .history_size(STATE_BUFFER)
-                        .max_publishers(STATE_MAX_PUBLISHERS)
-                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                        .max_nodes(STATE_MAX_NODES)
-                        .open_or_create()?;
-                    ActionSubscriberKind::ParallelMitCommand2(
+                    ActionSubscriberKind::MitCommandElementVector(
                         service.subscriber_builder().create()?,
                     )
-                }
-                RobotCommandKind::EndPose => {
-                    let service = node
-                        .service_builder(&service_name)
-                        .publish_subscribe::<Pose7>()
-                        .subscriber_max_buffer_size(STATE_BUFFER)
-                        .history_size(STATE_BUFFER)
-                        .max_publishers(STATE_MAX_PUBLISHERS)
-                        .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                        .max_nodes(STATE_MAX_NODES)
-                        .open_or_create()?;
-                    ActionSubscriberKind::Pose7(service.subscriber_builder().create()?)
                 }
             };
             Ok(ActionSubscriber {
@@ -943,42 +878,26 @@ fn drain_observations(
     let mut changed = false;
     for observation in subscribers {
         match &observation.subscriber {
-            ObservationSubscriberKind::JointVector15(subscriber) => loop {
+            ObservationSubscriberKind::F64Vector(subscriber) => loop {
                 let Some(sample) = subscriber.receive()? else {
                     break;
                 };
-                let payload = *sample.payload();
+                let payload = sample.payload();
+                if !sample_len_matches(
+                    "observation",
+                    &observation.config.channel_id,
+                    observation.config.state_kind.topic_suffix(),
+                    payload.len(),
+                    observation.config.value_len as usize,
+                ) {
+                    changed = true;
+                    continue;
+                }
                 manager.on_observation(
                     &observation.config.channel_id,
                     observation.config.state_kind,
-                    payload.timestamp_us,
-                    payload.values[..payload.len as usize].to_vec(),
-                );
-                changed = true;
-            },
-            ObservationSubscriberKind::ParallelVector2(subscriber) => loop {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                let payload = *sample.payload();
-                manager.on_observation(
-                    &observation.config.channel_id,
-                    observation.config.state_kind,
-                    payload.timestamp_us,
-                    payload.values[..payload.len as usize].to_vec(),
-                );
-                changed = true;
-            },
-            ObservationSubscriberKind::Pose7(subscriber) => loop {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                let payload = *sample.payload();
-                manager.on_observation(
-                    &observation.config.channel_id,
-                    observation.config.state_kind,
-                    payload.timestamp_us,
-                    payload.values.to_vec(),
+                    sample.user_header().timestamp_us,
+                    payload.to_vec(),
                 );
                 changed = true;
             },
@@ -994,74 +913,72 @@ fn drain_actions(
     let mut changed = false;
     for action in subscribers {
         match &action.subscriber {
-            ActionSubscriberKind::JointVector15(subscriber) => loop {
+            ActionSubscriberKind::F64Vector(subscriber) => loop {
                 let Some(sample) = subscriber.receive()? else {
                     break;
                 };
-                let payload = *sample.payload();
+                let payload = sample.payload();
+                if !sample_len_matches(
+                    "action",
+                    &action.config.channel_id,
+                    action.config.command_kind.topic_suffix(),
+                    payload.len(),
+                    action.config.value_len as usize,
+                ) {
+                    changed = true;
+                    continue;
+                }
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_us,
-                    payload.values[..payload.len as usize].to_vec(),
+                    sample.user_header().timestamp_us,
+                    payload.to_vec(),
                 );
                 changed = true;
             },
-            ActionSubscriberKind::JointMitCommand15(subscriber) => loop {
+            ActionSubscriberKind::MitCommandElementVector(subscriber) => loop {
                 let Some(sample) = subscriber.receive()? else {
                     break;
                 };
-                let payload = *sample.payload();
+                let payload = sample.payload();
+                if !sample_len_matches(
+                    "action",
+                    &action.config.channel_id,
+                    action.config.command_kind.topic_suffix(),
+                    payload.len(),
+                    action.config.value_len as usize,
+                ) {
+                    changed = true;
+                    continue;
+                }
                 manager.on_action(
                     &action.config.channel_id,
                     action.config.command_kind,
-                    payload.timestamp_us,
-                    payload.position[..payload.len as usize].to_vec(),
-                );
-                changed = true;
-            },
-            ActionSubscriberKind::ParallelVector2(subscriber) => loop {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                let payload = *sample.payload();
-                manager.on_action(
-                    &action.config.channel_id,
-                    action.config.command_kind,
-                    payload.timestamp_us,
-                    payload.values[..payload.len as usize].to_vec(),
-                );
-                changed = true;
-            },
-            ActionSubscriberKind::ParallelMitCommand2(subscriber) => loop {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                let payload = *sample.payload();
-                manager.on_action(
-                    &action.config.channel_id,
-                    action.config.command_kind,
-                    payload.timestamp_us,
-                    payload.position[..payload.len as usize].to_vec(),
-                );
-                changed = true;
-            },
-            ActionSubscriberKind::Pose7(subscriber) => loop {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                let payload = *sample.payload();
-                manager.on_action(
-                    &action.config.channel_id,
-                    action.config.command_kind,
-                    payload.timestamp_us,
-                    payload.values.to_vec(),
+                    sample.user_header().timestamp_us,
+                    payload.iter().map(|element| element.position).collect(),
                 );
                 changed = true;
             },
         }
     }
     Ok(changed)
+}
+
+fn sample_len_matches(
+    label: &str,
+    channel_id: &str,
+    kind: &str,
+    actual: usize,
+    expected: usize,
+) -> bool {
+    if actual == expected {
+        true
+    } else {
+        log::warn!(
+            "rollio-episode-lerobot: skipping {label} sample for {channel_id}/{kind}: payload length {actual} != expected {expected}"
+        );
+        false
+    }
 }
 
 fn unix_timestamp_us() -> u64 {
@@ -1129,11 +1046,18 @@ mod tests {
         );
         assert!(matches!(staged[0], WorkerCommand::Stage(_)));
 
-        assert_eq!(outcome.dropped.len(), 1, "the second episode must be dropped");
+        assert_eq!(
+            outcome.dropped.len(),
+            1,
+            "the second episode must be dropped"
+        );
         let drop = outcome.dropped[0];
         assert_eq!(drop.episode_index, 1);
         assert_eq!(drop.reason, "staging_slots_full");
-        assert!(drop.backpressure, "slot-full drop must also raise backpressure");
+        assert!(
+            drop.backpressure,
+            "slot-full drop must also raise backpressure"
+        );
 
         assert_eq!(manager.in_flight.len(), 1);
         assert!(manager.in_flight.contains_key(&0));

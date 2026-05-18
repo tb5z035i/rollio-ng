@@ -1,10 +1,13 @@
 use iceoryx2::prelude::*;
-use rollio_bus::CONTROL_EVENTS_SERVICE;
+use rollio_bus::{
+    CONTROL_EVENTS_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
+};
 use rollio_types::config::{
     ChannelCommandDefaults, MappingStrategy, RobotCommandKind, RobotStateKind,
     TeleopRuntimeConfigV2,
 };
-use rollio_types::messages::{ControlEvent, Pose7};
+use rollio_types::messages::{ControlEvent, Pose7, SampleHeader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -13,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ---------------------------------------------------------------------------
 // Cartesian initial-syncing ramp end-to-end test.
 //
-// Drives the v2 router binary against `Pose7` topics: publishes a fixed
+// Drives the v2 router binary against dynamic pose slice topics: publishes a fixed
 // follower EE pose far from the leader, asserts the first forwarded
 // command lands within one cartesian sync step of the follower (proving
 // the ramp engaged), then drives the follower toward the leader until
@@ -21,8 +24,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // verbatim.
 // ---------------------------------------------------------------------------
 
-type PosePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>;
-type PoseSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>;
+type PosePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [f64], SampleHeader>;
+type PoseSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>;
 type ControlPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, ControlEvent, ()>;
 
 struct PoseTestPorts {
@@ -214,10 +217,13 @@ fn cartesian_sync_config(id: &str) -> TeleopRuntimeConfigV2 {
         follower_channel_id: format!("follower_{id}"),
         leader_state_kind: RobotStateKind::EndEffectorPose,
         leader_state_topic: format!("robot/{id}/leader/end_effector_pose"),
+        leader_state_value_len: 7,
         follower_command_kind: RobotCommandKind::EndPose,
         follower_command_topic: format!("robot/{id}/follower/end_pose"),
+        follower_command_value_len: 7,
         follower_state_kind: Some(RobotStateKind::EndEffectorPose),
         follower_state_topic: Some(format!("robot/{id}/follower/end_effector_pose")),
+        follower_state_value_len: Some(7),
         sync_max_step_rad: None,
         sync_complete_threshold_rad: None,
         mapping: MappingStrategy::Cartesian,
@@ -237,9 +243,18 @@ fn create_pose_test_ports(
     let leader_service_name: ServiceName = config.leader_state_topic.as_str().try_into()?;
     let leader_service = node
         .service_builder(&leader_service_name)
-        .publish_subscribe::<Pose7>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
-    let leader_state_publisher = leader_service.publisher_builder().create()?;
+    let leader_state_publisher = leader_service
+        .publisher_builder()
+        .initial_max_slice_len(7)
+        .create()?;
 
     let follower_topic = config
         .follower_state_topic
@@ -248,14 +263,29 @@ fn create_pose_test_ports(
     let follower_service_name: ServiceName = follower_topic.try_into()?;
     let follower_service = node
         .service_builder(&follower_service_name)
-        .publish_subscribe::<Pose7>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
-    let follower_state_publisher = follower_service.publisher_builder().create()?;
+    let follower_state_publisher = follower_service
+        .publisher_builder()
+        .initial_max_slice_len(7)
+        .create()?;
 
     let command_service_name: ServiceName = config.follower_command_topic.as_str().try_into()?;
     let command_service = node
         .service_builder(&command_service_name)
-        .publish_subscribe::<Pose7>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     let command_subscriber = command_service.subscriber_builder().create()?;
 
@@ -288,7 +318,11 @@ fn spawn_router_v2(config: &TeleopRuntimeConfigV2) -> Child {
 }
 
 fn publish_pose(publisher: &PosePublisher, pose: Pose7) -> Result<(), Box<dyn std::error::Error>> {
-    publisher.send_copy(pose)?;
+    let mut sample = publisher.loan_slice_uninit(pose.values.len())?;
+    *sample.user_header_mut() = SampleHeader {
+        timestamp_us: pose.timestamp_us,
+    };
+    sample.write_from_slice(&pose.values).send()?;
     Ok(())
 }
 
@@ -299,7 +333,14 @@ fn wait_for_pose_command(
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Some(sample) = subscriber.receive()? {
-            return Ok(*sample.payload());
+            let values: [f64; 7] = sample
+                .payload()
+                .try_into()
+                .map_err(|_| "pose command payload did not contain 7 values")?;
+            return Ok(Pose7 {
+                timestamp_us: sample.user_header().timestamp_us,
+                values,
+            });
         }
         thread::sleep(Duration::from_micros(50));
     }

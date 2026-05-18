@@ -15,6 +15,21 @@ unsafe fn roundtrip<T: Clone + Sized>(val: &T) -> T {
 }
 
 #[test]
+fn dynamic_robot_wire_types_match_repr_c_layout() {
+    assert_eq!(core::mem::size_of::<SampleHeader>(), 8);
+    assert_eq!(core::mem::align_of::<SampleHeader>(), 8);
+    assert_eq!(core::mem::offset_of!(SampleHeader, timestamp_us), 0);
+
+    assert_eq!(core::mem::size_of::<MitCommandElement>(), 40);
+    assert_eq!(core::mem::align_of::<MitCommandElement>(), 8);
+    assert_eq!(core::mem::offset_of!(MitCommandElement, position), 0);
+    assert_eq!(core::mem::offset_of!(MitCommandElement, velocity), 8);
+    assert_eq!(core::mem::offset_of!(MitCommandElement, effort), 16);
+    assert_eq!(core::mem::offset_of!(MitCommandElement, kp), 24);
+    assert_eq!(core::mem::offset_of!(MitCommandElement, kd), 32);
+}
+
+#[test]
 fn camera_frame_header_roundtrip() {
     let hdr = CameraFrameHeader {
         timestamp_us: 123_456_789,

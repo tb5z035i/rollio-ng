@@ -14,10 +14,14 @@ fn parse_example_project_config() {
     assert_eq!(config.episode.fps, 30);
     assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
     // Per-channel record config: first camera channel should have H264 video codec
-    let first_cam = config.devices[0].channels.iter()
+    let first_cam = config.devices[0]
+        .channels
+        .iter()
         .find(|c| c.kind == DeviceType::Camera)
         .expect("should have a camera channel");
-    let record_cfg = first_cam.record.as_ref()
+    let record_cfg = first_cam
+        .record
+        .as_ref()
         .map(|r| r.resolve())
         .unwrap_or_default();
     assert_eq!(record_cfg.video_codec, EncoderCodec::H264);
@@ -929,11 +933,38 @@ fn direct_joint_requires_two_sided_whitelist() {
 #[test]
 fn parse_mcap_flatbuffer_smoke_config() {
     let toml_text = include_str!("../../config/mcap-flatbuffer-smoke.toml");
-    let config = ProjectConfig::from_str(toml_text)
-        .expect("mcap-flatbuffer-smoke.toml should parse");
+    let config =
+        ProjectConfig::from_str(toml_text).expect("mcap-flatbuffer-smoke.toml should parse");
     assert_eq!(config.project_name, "mcap-flatbuffer-smoke");
     assert_eq!(config.episode.format, EpisodeFormat::Mcap);
     assert_eq!(config.devices.len(), 4);
     assert_eq!(config.pairings.len(), 1);
     assert_eq!(config.mode, CollectionMode::Teleop);
+}
+
+#[test]
+fn robot_stream_contracts_resolve_dynamic_payloads() {
+    assert_eq!(
+        RobotStateKind::JointPosition
+            .runtime_contract(6)
+            .expect("joint position supported")
+            .transport_payload_kind,
+        RobotTransportPayloadKind::F64Vector
+    );
+    assert_eq!(
+        RobotStateKind::EndEffectorPose
+            .runtime_contract(6)
+            .expect("pose supported")
+            .value_len,
+        7
+    );
+    assert_eq!(
+        RobotCommandKind::JointMit
+            .runtime_contract(6)
+            .transport_payload_kind,
+        RobotTransportPayloadKind::MitCommandElementVector
+    );
+    assert!(RobotStateKind::EndEffectorTwist
+        .runtime_contract(6)
+        .is_none());
 }

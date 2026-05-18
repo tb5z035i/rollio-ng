@@ -252,7 +252,7 @@ impl PixelFormat {
             Self::Depth16 => 2,
             Self::Gray8 => 1,
             Self::H264AnnexB => 0, // variable-length compressed
-            Self::Nv12 => 0, // planar: 1.5 bytes/pixel average, not per-pixel addressable
+            Self::Nv12 => 0,       // planar: 1.5 bytes/pixel average, not per-pixel addressable
         }
     }
 }
@@ -298,6 +298,31 @@ impl DeviceChannelMode {
 }
 
 #[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
+#[type_name("SampleHeader")]
+#[repr(C)]
+pub struct SampleHeader {
+    pub timestamp_us: u64,
+}
+
+impl Default for SampleHeader {
+    fn default() -> Self {
+        Self { timestamp_us: 0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend, Serialize, Deserialize, PartialEq)]
+#[type_name("MitCommandElement")]
+#[repr(C)]
+pub struct MitCommandElement {
+    pub position: f64,
+    pub velocity: f64,
+    pub effort: f64,
+    pub kp: f64,
+    pub kd: f64,
+}
+
+/// Legacy fixed-size joint vector retained for old tools and tests.
+#[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
 #[type_name("JointVector15")]
 #[repr(C)]
 pub struct JointVector15 {
@@ -328,6 +353,7 @@ impl JointVector15 {
     }
 }
 
+/// Legacy fixed-size parallel vector retained for old tools and tests.
 #[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
 #[type_name("ParallelVector2")]
 #[repr(C)]
@@ -359,6 +385,7 @@ impl ParallelVector2 {
     }
 }
 
+/// Legacy fixed-size pose vector retained for old tools and tests.
 #[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
 #[type_name("Pose7")]
 #[repr(C)]
@@ -376,6 +403,7 @@ impl Default for Pose7 {
     }
 }
 
+/// Legacy fixed-size MIT command retained for old tools and tests.
 #[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
 #[type_name("JointMitCommand15")]
 #[repr(C)]
@@ -403,6 +431,7 @@ impl Default for JointMitCommand15 {
     }
 }
 
+/// Legacy fixed-size parallel MIT command retained for old tools and tests.
 #[derive(Debug, Clone, Copy, ZeroCopySend, Serialize, Deserialize)]
 #[type_name("ParallelMitCommand2")]
 #[repr(C)]

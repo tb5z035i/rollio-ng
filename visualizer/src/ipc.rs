@@ -25,8 +25,7 @@ use rollio_types::config::{
     PreviewOutputMode, RobotStateKind, VisualizerCameraSourceConfig, VisualizerRobotSourceConfig,
 };
 use rollio_types::messages::{
-    CameraFrameHeader, ControlEvent, EncodedPacketHeader, JointVector15, ParallelVector2, Pose7,
-    PreviewControl,
+    CameraFrameHeader, ControlEvent, EncodedPacketHeader, PreviewControl, SampleHeader,
 };
 
 pub enum IpcMessage {
@@ -87,15 +86,14 @@ enum CameraKind {
 struct RobotSubscriber {
     name: String,
     state_kind: RobotStateKind,
+    value_len: usize,
     value_min: Vec<f64>,
     value_max: Vec<f64>,
     subscriber: RobotStateSubscriber,
 }
 
 enum RobotStateSubscriber {
-    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
-    Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
+    F64Vector(iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>),
 }
 
 impl IpcPoller {
@@ -180,48 +178,22 @@ impl IpcPoller {
         let mut robot_subs = Vec::with_capacity(robot_sources.len());
         for source in robot_sources {
             let service_name: ServiceName = source.state_topic.as_str().try_into()?;
-            let subscriber = if source.state_kind.uses_pose_payload() {
-                let service = node
-                    .service_builder(&service_name)
-                    .publish_subscribe::<Pose7>()
-                    .subscriber_max_buffer_size(STATE_BUFFER)
-                    .history_size(STATE_BUFFER)
-                    .max_publishers(STATE_MAX_PUBLISHERS)
-                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                    .max_nodes(STATE_MAX_NODES)
-                    .open_or_create()?;
-                RobotStateSubscriber::Pose7(service.subscriber_builder().create()?)
-            } else if matches!(
-                source.state_kind,
-                RobotStateKind::ParallelPosition
-                    | RobotStateKind::ParallelVelocity
-                    | RobotStateKind::ParallelEffort
-            ) {
-                let service = node
-                    .service_builder(&service_name)
-                    .publish_subscribe::<ParallelVector2>()
-                    .subscriber_max_buffer_size(STATE_BUFFER)
-                    .history_size(STATE_BUFFER)
-                    .max_publishers(STATE_MAX_PUBLISHERS)
-                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                    .max_nodes(STATE_MAX_NODES)
-                    .open_or_create()?;
-                RobotStateSubscriber::ParallelVector2(service.subscriber_builder().create()?)
-            } else {
-                let service = node
-                    .service_builder(&service_name)
-                    .publish_subscribe::<JointVector15>()
-                    .subscriber_max_buffer_size(STATE_BUFFER)
-                    .history_size(STATE_BUFFER)
-                    .max_publishers(STATE_MAX_PUBLISHERS)
-                    .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                    .max_nodes(STATE_MAX_NODES)
-                    .open_or_create()?;
-                RobotStateSubscriber::JointVector15(service.subscriber_builder().create()?)
-            };
+            let service = node
+                .service_builder(&service_name)
+                .publish_subscribe::<[f64]>()
+                .user_header::<SampleHeader>()
+                .subscriber_max_buffer_size(STATE_BUFFER)
+                .history_size(STATE_BUFFER)
+                .max_publishers(STATE_MAX_PUBLISHERS)
+                .max_subscribers(STATE_MAX_SUBSCRIBERS)
+                .max_nodes(STATE_MAX_NODES)
+                .open_or_create()?;
+            let subscriber =
+                RobotStateSubscriber::F64Vector(service.subscriber_builder().create()?);
             robot_subs.push(RobotSubscriber {
                 name: source.channel_id.clone(),
                 state_kind: source.state_kind,
+                value_len: source.value_len as usize,
                 value_min: source.value_min.clone(),
                 value_max: source.value_max.clone(),
                 subscriber,
@@ -289,40 +261,24 @@ impl IpcPoller {
         for robot in &self.robot_subs {
             let mut latest: Option<IpcMessage> = None;
             match &robot.subscriber {
-                RobotStateSubscriber::JointVector15(subscriber) => {
+                RobotStateSubscriber::F64Vector(subscriber) => {
                     while let Ok(Some(sample)) = subscriber.receive() {
-                        let payload = *sample.payload();
+                        let payload = sample.payload();
+                        if robot.value_len != 0 && payload.len() != robot.value_len {
+                            log::warn!(
+                                "rollio-visualizer: skipping state sample for {}/{}: payload length {} != expected {}",
+                                robot.name,
+                                robot.state_kind.topic_suffix(),
+                                payload.len(),
+                                robot.value_len
+                            );
+                            continue;
+                        }
                         latest = Some(IpcMessage::RobotStateMsg {
                             name: robot.name.clone(),
                             state_kind: robot.state_kind,
-                            timestamp_us: payload.timestamp_us,
-                            values: payload.values[..payload.len as usize].to_vec(),
-                            value_min: robot.value_min.clone(),
-                            value_max: robot.value_max.clone(),
-                        });
-                    }
-                }
-                RobotStateSubscriber::ParallelVector2(subscriber) => {
-                    while let Ok(Some(sample)) = subscriber.receive() {
-                        let payload = *sample.payload();
-                        latest = Some(IpcMessage::RobotStateMsg {
-                            name: robot.name.clone(),
-                            state_kind: robot.state_kind,
-                            timestamp_us: payload.timestamp_us,
-                            values: payload.values[..payload.len as usize].to_vec(),
-                            value_min: robot.value_min.clone(),
-                            value_max: robot.value_max.clone(),
-                        });
-                    }
-                }
-                RobotStateSubscriber::Pose7(subscriber) => {
-                    while let Ok(Some(sample)) = subscriber.receive() {
-                        let payload = *sample.payload();
-                        latest = Some(IpcMessage::RobotStateMsg {
-                            name: robot.name.clone(),
-                            state_kind: robot.state_kind,
-                            timestamp_us: payload.timestamp_us,
-                            values: payload.values.to_vec(),
+                            timestamp_us: sample.user_header().timestamp_us,
+                            values: payload.to_vec(),
                             value_min: robot.value_min.clone(),
                             value_max: robot.value_max.clone(),
                         });

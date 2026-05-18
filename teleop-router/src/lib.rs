@@ -8,9 +8,7 @@ use rollio_bus::{
 use rollio_types::config::{
     MappingStrategy, RobotCommandKind, RobotStateKind, TeleopRuntimeConfigV2,
 };
-use rollio_types::messages::{
-    ControlEvent, JointMitCommand15, JointVector15, ParallelMitCommand2, ParallelVector2, Pose7,
-};
+use rollio_types::messages::{ControlEvent, MitCommandElement, Pose7, SampleHeader};
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -80,6 +78,11 @@ const SYNC_COMPLETE_THRESHOLD_ROT_RAD: f64 = 0.1;
 const SYNC_HOLD_DURATION: Duration = Duration::from_secs(1);
 
 type ControlSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
+type F64VectorSubscriber =
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, [f64], SampleHeader>;
+type F64VectorPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [f64], SampleHeader>;
+type MitCommandPublisher =
+    iceoryx2::port::publisher::Publisher<ipc::Service, [MitCommandElement], SampleHeader>;
 
 #[derive(Debug, Error)]
 pub enum TeleopRouterError {
@@ -111,19 +114,16 @@ struct RunArgs {
 }
 
 enum LeaderStateSubscriber {
-    JointVector15(iceoryx2::port::subscriber::Subscriber<ipc::Service, JointVector15, ()>),
-    ParallelVector2(iceoryx2::port::subscriber::Subscriber<ipc::Service, ParallelVector2, ()>),
-    Pose7(iceoryx2::port::subscriber::Subscriber<ipc::Service, Pose7, ()>),
+    F64Vector {
+        subscriber: F64VectorSubscriber,
+        kind: RobotStateKind,
+        expected_len: usize,
+    },
 }
 
 enum FollowerCommandPublisher {
-    JointVector15(iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>),
-    JointMitCommand15(iceoryx2::port::publisher::Publisher<ipc::Service, JointMitCommand15, ()>),
-    ParallelVector2(iceoryx2::port::publisher::Publisher<ipc::Service, ParallelVector2, ()>),
-    ParallelMitCommand2(
-        iceoryx2::port::publisher::Publisher<ipc::Service, ParallelMitCommand2, ()>,
-    ),
-    Pose7(iceoryx2::port::publisher::Publisher<ipc::Service, Pose7, ()>),
+    F64Vector(F64VectorPublisher),
+    MitCommandElementVector(MitCommandPublisher),
 }
 
 enum LeaderState {
@@ -480,22 +480,8 @@ fn follower_pose(state: Option<&LeaderState>) -> Option<Pose7> {
 /// `command_pose_mut` instead.
 fn command_joint_target_mut(command: &mut ForwardedCommand) -> Option<&mut [f64]> {
     match command {
-        ForwardedCommand::JointPosition(payload) => {
-            let len = payload.len as usize;
-            Some(&mut payload.values[..len])
-        }
-        ForwardedCommand::JointMit(payload) => {
-            let len = payload.len as usize;
-            Some(&mut payload.position[..len])
-        }
-        ForwardedCommand::ParallelPosition(payload) => {
-            let len = payload.len as usize;
-            Some(&mut payload.values[..len])
-        }
-        ForwardedCommand::ParallelMit(payload) => {
-            let len = payload.len as usize;
-            Some(&mut payload.position[..len])
-        }
+        ForwardedCommand::Vector(payload) => Some(payload.values.as_mut_slice()),
+        ForwardedCommand::Mit(payload) => Some(payload.position.as_mut_slice()),
         ForwardedCommand::EndPose(_) => None,
     }
 }
@@ -668,19 +654,32 @@ pub fn run_router(config: TeleopRuntimeConfigV2) -> Result<(), Box<dyn Error>> {
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()?;
 
-    let leader_state_subscriber =
-        create_state_subscriber(&node, &config.leader_state_topic, config.leader_state_kind)?;
+    let leader_state_subscriber = create_state_subscriber(
+        &node,
+        &config.leader_state_topic,
+        config.leader_state_kind,
+        teleop_state_len(config.leader_state_kind, config.leader_state_value_len),
+    )?;
     let follower_state_subscriber = match (
         config.follower_state_kind,
         config.follower_state_topic.as_deref(),
     ) {
-        (Some(kind), Some(topic)) => Some(create_state_subscriber(&node, topic, kind)?),
+        (Some(kind), Some(topic)) => Some(create_state_subscriber(
+            &node,
+            topic,
+            kind,
+            teleop_state_len(kind, config.follower_state_value_len.unwrap_or_default()),
+        )?),
         _ => None,
     };
     let follower_command_publisher = create_command_publisher(
         &node,
         &config.follower_command_topic,
         config.follower_command_kind,
+        teleop_command_len(
+            config.follower_command_kind,
+            config.follower_command_value_len,
+        ),
     )?;
     let control_subscriber = create_control_subscriber(&node)?;
     let mut last_forwarded_timestamp_us = None;
@@ -755,120 +754,103 @@ fn create_state_subscriber(
     node: &Node<ipc::Service>,
     topic: &str,
     kind: RobotStateKind,
+    expected_len: usize,
 ) -> Result<LeaderStateSubscriber, Box<dyn Error>> {
     let service_name: ServiceName = topic.try_into()?;
     // See `rollio_bus::STATE_BUFFER`. The teleop router is a state subscriber
     // (and a command publisher) and must request the same caps as the
     // device-side producers so `open_or_create` does not reject the
     // subscription.
-    Ok(match kind {
-        RobotStateKind::EndEffectorPose => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<Pose7>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            LeaderStateSubscriber::Pose7(service.subscriber_builder().create()?)
-        }
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
+        .subscriber_max_buffer_size(STATE_BUFFER)
+        .history_size(STATE_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
+        .open_or_create()?;
+    Ok(LeaderStateSubscriber::F64Vector {
+        subscriber: service.subscriber_builder().create()?,
+        kind,
+        expected_len,
+    })
+}
+
+fn teleop_state_len(kind: RobotStateKind, configured: u32) -> usize {
+    if configured != 0 {
+        return configured as usize;
+    }
+    match kind {
+        RobotStateKind::EndEffectorPose => 7,
         RobotStateKind::ParallelPosition
         | RobotStateKind::ParallelVelocity
-        | RobotStateKind::ParallelEffort => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<ParallelVector2>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            LeaderStateSubscriber::ParallelVector2(service.subscriber_builder().create()?)
+        | RobotStateKind::ParallelEffort => rollio_types::messages::MAX_PARALLEL,
+        _ => rollio_types::messages::MAX_DOF,
+    }
+}
+
+fn teleop_command_len(kind: RobotCommandKind, configured: u32) -> usize {
+    if configured != 0 {
+        return configured as usize;
+    }
+    match kind {
+        RobotCommandKind::EndPose => 7,
+        RobotCommandKind::ParallelPosition | RobotCommandKind::ParallelMit => {
+            rollio_types::messages::MAX_PARALLEL
         }
-        _ => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<JointVector15>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            LeaderStateSubscriber::JointVector15(service.subscriber_builder().create()?)
+        RobotCommandKind::JointPosition | RobotCommandKind::JointMit => {
+            rollio_types::messages::MAX_DOF
         }
-    })
+    }
 }
 
 fn create_command_publisher(
     node: &Node<ipc::Service>,
     topic: &str,
     kind: RobotCommandKind,
+    expected_len: usize,
 ) -> Result<FollowerCommandPublisher, Box<dyn Error>> {
     let service_name: ServiceName = topic.try_into()?;
     Ok(match kind {
-        RobotCommandKind::JointPosition => {
+        RobotCommandKind::JointPosition
+        | RobotCommandKind::ParallelPosition
+        | RobotCommandKind::EndPose => {
             let service = node
                 .service_builder(&service_name)
-                .publish_subscribe::<JointVector15>()
+                .publish_subscribe::<[f64]>()
+                .user_header::<SampleHeader>()
                 .subscriber_max_buffer_size(STATE_BUFFER)
                 .history_size(STATE_BUFFER)
                 .max_publishers(STATE_MAX_PUBLISHERS)
                 .max_subscribers(STATE_MAX_SUBSCRIBERS)
                 .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
-            FollowerCommandPublisher::JointVector15(service.publisher_builder().create()?)
+            FollowerCommandPublisher::F64Vector(
+                service
+                    .publisher_builder()
+                    .initial_max_slice_len(expected_len)
+                    .create()?,
+            )
         }
-        RobotCommandKind::JointMit => {
+        RobotCommandKind::JointMit | RobotCommandKind::ParallelMit => {
             let service = node
                 .service_builder(&service_name)
-                .publish_subscribe::<JointMitCommand15>()
+                .publish_subscribe::<[MitCommandElement]>()
+                .user_header::<SampleHeader>()
                 .subscriber_max_buffer_size(STATE_BUFFER)
                 .history_size(STATE_BUFFER)
                 .max_publishers(STATE_MAX_PUBLISHERS)
                 .max_subscribers(STATE_MAX_SUBSCRIBERS)
                 .max_nodes(STATE_MAX_NODES)
                 .open_or_create()?;
-            FollowerCommandPublisher::JointMitCommand15(service.publisher_builder().create()?)
-        }
-        RobotCommandKind::ParallelPosition => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<ParallelVector2>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            FollowerCommandPublisher::ParallelVector2(service.publisher_builder().create()?)
-        }
-        RobotCommandKind::ParallelMit => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<ParallelMitCommand2>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            FollowerCommandPublisher::ParallelMitCommand2(service.publisher_builder().create()?)
-        }
-        RobotCommandKind::EndPose => {
-            let service = node
-                .service_builder(&service_name)
-                .publish_subscribe::<Pose7>()
-                .subscriber_max_buffer_size(STATE_BUFFER)
-                .history_size(STATE_BUFFER)
-                .max_publishers(STATE_MAX_PUBLISHERS)
-                .max_subscribers(STATE_MAX_SUBSCRIBERS)
-                .max_nodes(STATE_MAX_NODES)
-                .open_or_create()?;
-            FollowerCommandPublisher::Pose7(service.publisher_builder().create()?)
+            FollowerCommandPublisher::MitCommandElementVector(
+                service
+                    .publisher_builder()
+                    .initial_max_slice_len(expected_len)
+                    .create()?,
+            )
         }
     })
 }
@@ -902,33 +884,47 @@ fn drain_latest_state(
 ) -> Result<Option<LeaderState>, Box<dyn Error>> {
     let mut latest = None;
     match subscriber {
-        LeaderStateSubscriber::JointVector15(subscriber) => loop {
+        LeaderStateSubscriber::F64Vector {
+            subscriber,
+            kind,
+            expected_len,
+        } => loop {
             let Some(sample) = subscriber.receive()? else {
                 return Ok(latest);
             };
-            let payload = *sample.payload();
-            latest = Some(LeaderState::Vector {
-                timestamp_us: payload.timestamp_us,
-                values: payload.values[..payload.len as usize].to_vec(),
-            });
-        },
-        LeaderStateSubscriber::ParallelVector2(subscriber) => loop {
-            let Some(sample) = subscriber.receive()? else {
-                return Ok(latest);
+            let payload = sample.payload();
+            if *expected_len != 0 && payload.len() != *expected_len {
+                eprintln!(
+                    "rollio-teleop-router: skipping state sample for {}: payload length {} != expected {}",
+                    kind.topic_suffix(),
+                    payload.len(),
+                    expected_len
+                );
+                continue;
+            }
+            latest = if kind.uses_pose_payload() {
+                Some(LeaderState::Pose(pose_from_slice(
+                    sample.user_header().timestamp_us,
+                    payload,
+                )?))
+            } else {
+                Some(LeaderState::Vector {
+                    timestamp_us: sample.user_header().timestamp_us,
+                    values: payload.to_vec(),
+                })
             };
-            let payload = *sample.payload();
-            latest = Some(LeaderState::Vector {
-                timestamp_us: payload.timestamp_us,
-                values: payload.values[..payload.len as usize].to_vec(),
-            });
-        },
-        LeaderStateSubscriber::Pose7(subscriber) => loop {
-            let Some(sample) = subscriber.receive()? else {
-                return Ok(latest);
-            };
-            latest = Some(LeaderState::Pose(*sample.payload()));
         },
     }
+}
+
+fn pose_from_slice(timestamp_us: u64, values: &[f64]) -> Result<Pose7, Box<dyn Error>> {
+    let values: [f64; 7] = values
+        .try_into()
+        .map_err(|_| format!("pose payload must contain 7 values, got {}", values.len()))?;
+    Ok(Pose7 {
+        timestamp_us,
+        values,
+    })
 }
 
 fn state_timestamp_us(state: &LeaderState) -> u64 {
@@ -940,11 +936,23 @@ fn state_timestamp_us(state: &LeaderState) -> u64 {
 
 #[allow(clippy::large_enum_variant)]
 enum ForwardedCommand {
-    JointPosition(JointVector15),
-    JointMit(JointMitCommand15),
-    ParallelPosition(ParallelVector2),
-    ParallelMit(ParallelMitCommand2),
+    Vector(VectorCommand),
+    Mit(MitCommand),
     EndPose(Pose7),
+}
+
+struct VectorCommand {
+    timestamp_us: u64,
+    values: Vec<f64>,
+}
+
+struct MitCommand {
+    timestamp_us: u64,
+    position: Vec<f64>,
+    velocity: Vec<f64>,
+    effort: Vec<f64>,
+    kp: Vec<f64>,
+    kd: Vec<f64>,
 }
 
 fn map_leader_state(
@@ -974,10 +982,11 @@ fn map_leader_state(
             let mapped =
                 apply_joint_mapping(values, &config.joint_index_map, &config.joint_scales)?;
             Ok(Some(match config.follower_command_kind {
-                RobotCommandKind::JointPosition => ForwardedCommand::JointPosition(
-                    JointVector15::from_slice(*timestamp_us, &mapped),
-                ),
-                RobotCommandKind::JointMit => ForwardedCommand::JointMit(joint_mit_command(
+                RobotCommandKind::JointPosition => ForwardedCommand::Vector(VectorCommand {
+                    timestamp_us: *timestamp_us,
+                    values: mapped,
+                }),
+                RobotCommandKind::JointMit => ForwardedCommand::Mit(joint_mit_command(
                     *timestamp_us,
                     &mapped,
                     &config.command_defaults.joint_mit_kp,
@@ -1006,17 +1015,16 @@ fn map_leader_state(
             let ratio = config.joint_scales.first().copied().unwrap_or(1.0);
             let mapped: Vec<f64> = values.iter().map(|value| value * ratio).collect();
             Ok(Some(match config.follower_command_kind {
-                RobotCommandKind::ParallelPosition => ForwardedCommand::ParallelPosition(
-                    ParallelVector2::from_slice(*timestamp_us, &mapped),
-                ),
-                RobotCommandKind::ParallelMit => {
-                    ForwardedCommand::ParallelMit(parallel_mit_command(
-                        *timestamp_us,
-                        &mapped,
-                        &config.command_defaults.parallel_mit_kp,
-                        &config.command_defaults.parallel_mit_kd,
-                    ))
-                }
+                RobotCommandKind::ParallelPosition => ForwardedCommand::Vector(VectorCommand {
+                    timestamp_us: *timestamp_us,
+                    values: mapped,
+                }),
+                RobotCommandKind::ParallelMit => ForwardedCommand::Mit(parallel_mit_command(
+                    *timestamp_us,
+                    &mapped,
+                    &config.command_defaults.parallel_mit_kp,
+                    &config.command_defaults.parallel_mit_kd,
+                )),
                 RobotCommandKind::JointPosition
                 | RobotCommandKind::JointMit
                 | RobotCommandKind::EndPose => {
@@ -1057,44 +1065,36 @@ fn apply_joint_mapping(
     Ok(mapped)
 }
 
-fn joint_mit_command(
-    timestamp_us: u64,
-    values: &[f64],
-    kp: &[f64],
-    kd: &[f64],
-) -> JointMitCommand15 {
-    let len = values.len().min(rollio_types::messages::MAX_DOF);
-    let mut command = JointMitCommand15 {
+fn joint_mit_command(timestamp_us: u64, values: &[f64], kp: &[f64], kd: &[f64]) -> MitCommand {
+    let len = values.len();
+    MitCommand {
         timestamp_us,
-        len: len as u32,
-        ..JointMitCommand15::default()
-    };
-    command.position[..len].copy_from_slice(&values[..len]);
-    for index in 0..len {
-        command.kp[index] = kp.get(index).copied().unwrap_or(0.0);
-        command.kd[index] = kd.get(index).copied().unwrap_or(0.0);
+        position: values.to_vec(),
+        velocity: vec![0.0; len],
+        effort: vec![0.0; len],
+        kp: (0..len)
+            .map(|index| kp.get(index).copied().unwrap_or(0.0))
+            .collect(),
+        kd: (0..len)
+            .map(|index| kd.get(index).copied().unwrap_or(0.0))
+            .collect(),
     }
-    command
 }
 
-fn parallel_mit_command(
-    timestamp_us: u64,
-    values: &[f64],
-    kp: &[f64],
-    kd: &[f64],
-) -> ParallelMitCommand2 {
-    let len = values.len().min(rollio_types::messages::MAX_PARALLEL);
-    let mut command = ParallelMitCommand2 {
+fn parallel_mit_command(timestamp_us: u64, values: &[f64], kp: &[f64], kd: &[f64]) -> MitCommand {
+    let len = values.len();
+    MitCommand {
         timestamp_us,
-        len: len as u32,
-        ..ParallelMitCommand2::default()
-    };
-    command.position[..len].copy_from_slice(&values[..len]);
-    for index in 0..len {
-        command.kp[index] = kp.get(index).copied().unwrap_or(0.0);
-        command.kd[index] = kd.get(index).copied().unwrap_or(0.0);
+        position: values.to_vec(),
+        velocity: vec![0.0; len],
+        effort: vec![0.0; len],
+        kp: (0..len)
+            .map(|index| kp.get(index).copied().unwrap_or(0.0))
+            .collect(),
+        kd: (0..len)
+            .map(|index| kd.get(index).copied().unwrap_or(0.0))
+            .collect(),
     }
-    command
 }
 
 fn publish_command(
@@ -1102,38 +1102,58 @@ fn publish_command(
     command: ForwardedCommand,
 ) -> Result<(), Box<dyn Error>> {
     match (publisher, command) {
-        (
-            FollowerCommandPublisher::JointVector15(publisher),
-            ForwardedCommand::JointPosition(command),
-        ) => {
-            publisher.send_copy(command)?;
+        (FollowerCommandPublisher::F64Vector(publisher), ForwardedCommand::Vector(command)) => {
+            publish_f64_vector(publisher, command.timestamp_us, &command.values)?;
+        }
+        (FollowerCommandPublisher::F64Vector(publisher), ForwardedCommand::EndPose(command)) => {
+            publish_f64_vector(publisher, command.timestamp_us, &command.values)?;
         }
         (
-            FollowerCommandPublisher::JointMitCommand15(publisher),
-            ForwardedCommand::JointMit(command),
+            FollowerCommandPublisher::MitCommandElementVector(publisher),
+            ForwardedCommand::Mit(command),
         ) => {
-            publisher.send_copy(command)?;
-        }
-        (
-            FollowerCommandPublisher::ParallelVector2(publisher),
-            ForwardedCommand::ParallelPosition(command),
-        ) => {
-            publisher.send_copy(command)?;
-        }
-        (
-            FollowerCommandPublisher::ParallelMitCommand2(publisher),
-            ForwardedCommand::ParallelMit(command),
-        ) => {
-            publisher.send_copy(command)?;
-        }
-        (FollowerCommandPublisher::Pose7(publisher), ForwardedCommand::EndPose(command)) => {
-            publisher.send_copy(command)?;
+            publish_mit_command(publisher, command)?;
         }
         _ => return Err(
             "teleop router produced a command type that does not match the configured publisher"
                 .into(),
         ),
     }
+    Ok(())
+}
+
+fn publish_f64_vector(
+    publisher: &F64VectorPublisher,
+    timestamp_us: u64,
+    values: &[f64],
+) -> Result<(), Box<dyn Error>> {
+    let mut sample = publisher.loan_slice_uninit(values.len())?;
+    *sample.user_header_mut() = SampleHeader { timestamp_us };
+    sample.write_from_slice(values).send()?;
+    Ok(())
+}
+
+fn publish_mit_command(
+    publisher: &MitCommandPublisher,
+    command: MitCommand,
+) -> Result<(), Box<dyn Error>> {
+    let elements: Vec<_> = command
+        .position
+        .iter()
+        .enumerate()
+        .map(|(index, &position)| MitCommandElement {
+            position,
+            velocity: command.velocity.get(index).copied().unwrap_or(0.0),
+            effort: command.effort.get(index).copied().unwrap_or(0.0),
+            kp: command.kp.get(index).copied().unwrap_or(0.0),
+            kd: command.kd.get(index).copied().unwrap_or(0.0),
+        })
+        .collect();
+    let mut sample = publisher.loan_slice_uninit(elements.len())?;
+    *sample.user_header_mut() = SampleHeader {
+        timestamp_us: command.timestamp_us,
+    };
+    sample.write_from_slice(&elements).send()?;
     Ok(())
 }
 
@@ -1149,10 +1169,13 @@ mod tests {
             follower_channel_id: "follower/arm".into(),
             leader_state_kind: RobotStateKind::JointPosition,
             leader_state_topic: "leader/arm/states/joint_position".into(),
+            leader_state_value_len: 6,
             follower_command_kind: RobotCommandKind::JointPosition,
             follower_command_topic: "follower/arm/commands/joint_position".into(),
+            follower_command_value_len: 6,
             follower_state_kind: None,
             follower_state_topic: None,
+            follower_state_value_len: None,
             sync_max_step_rad: None,
             sync_complete_threshold_rad: None,
             mapping: MappingStrategy::DirectJoint,
@@ -1170,10 +1193,10 @@ mod tests {
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::JointPosition(command)) = command else {
+        let Some(ForwardedCommand::Vector(command)) = command else {
             panic!("expected joint-position command");
         };
-        assert_eq!(&command.values[..3], &[0.1, 0.2, 0.3]);
+        assert_eq!(command.values, [0.1, 0.2, 0.3]);
     }
 
     #[test]
@@ -1185,10 +1208,10 @@ mod tests {
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::JointPosition(command)) = command else {
+        let Some(ForwardedCommand::Vector(command)) = command else {
             panic!("expected joint-position command");
         };
-        assert_eq!(&command.values[..3], &[0.3, 0.2, 0.1]);
+        assert_eq!(command.values, [0.3, 0.2, 0.1]);
     }
 
     #[test]
@@ -1200,7 +1223,7 @@ mod tests {
             values: vec![0.1, 0.2, 0.6],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::JointPosition(command)) = command else {
+        let Some(ForwardedCommand::Vector(command)) = command else {
             panic!("expected joint-position command");
         };
         assert_eq!(command.values[0], 0.2);
@@ -1222,7 +1245,7 @@ mod tests {
             values: vec![0.1, 0.2, 0.3],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::JointMit(command)) = command else {
+        let Some(ForwardedCommand::Mit(command)) = command else {
             panic!("expected joint-mit command");
         };
         assert_eq!(&command.position[..3], &[0.1, 0.2, 0.3]);
@@ -1237,10 +1260,13 @@ mod tests {
             follower_channel_id: "follower/gripper".into(),
             leader_state_kind: RobotStateKind::ParallelPosition,
             leader_state_topic: "leader/gripper/states/parallel_position".into(),
+            leader_state_value_len: 1,
             follower_command_kind: follower_kind,
             follower_command_topic: "follower/gripper/commands/parallel_position".into(),
+            follower_command_value_len: 1,
             follower_state_kind: None,
             follower_state_topic: None,
+            follower_state_value_len: None,
             sync_max_step_rad: None,
             sync_complete_threshold_rad: None,
             mapping: MappingStrategy::Parallel,
@@ -1258,7 +1284,7 @@ mod tests {
             values: vec![0.04],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::ParallelPosition(command)) = command else {
+        let Some(ForwardedCommand::Vector(command)) = command else {
             panic!("expected ParallelPosition command");
         };
         // ratio * leader_value = 2.5 * 0.04 = 0.1
@@ -1283,7 +1309,7 @@ mod tests {
             values: vec![0.05],
         };
         let command = map_leader_state(&config, &state).expect("mapping should work");
-        let Some(ForwardedCommand::ParallelMit(command)) = command else {
+        let Some(ForwardedCommand::Mit(command)) = command else {
             panic!("expected ParallelMit command");
         };
         assert!((command.position[0] - 0.05).abs() < 1e-9);
@@ -1313,6 +1339,7 @@ mod tests {
         let mut config = direct_config();
         config.follower_state_kind = Some(RobotStateKind::JointPosition);
         config.follower_state_topic = Some("follower/arm/states/joint_position".into());
+        config.follower_state_value_len = Some(6);
         config
     }
 
@@ -1321,10 +1348,13 @@ mod tests {
         config.mapping = MappingStrategy::Cartesian;
         config.leader_state_kind = RobotStateKind::EndEffectorPose;
         config.leader_state_topic = "leader/arm/states/end_effector_pose".into();
+        config.leader_state_value_len = 7;
         config.follower_command_kind = RobotCommandKind::EndPose;
         config.follower_command_topic = "follower/arm/commands/end_pose".into();
+        config.follower_command_value_len = 7;
         config.follower_state_kind = Some(RobotStateKind::EndEffectorPose);
         config.follower_state_topic = Some("follower/arm/states/end_effector_pose".into());
+        config.follower_state_value_len = Some(7);
         config
     }
 
@@ -1348,17 +1378,17 @@ mod tests {
     fn sync_clamps_command_to_max_step_when_far_from_target() {
         let config = sync_config();
         let mut sync_state = SyncState::new(&config);
-        let mut command = ForwardedCommand::JointPosition(JointVector15::from_slice(
-            123,
-            &[0.5, -0.4, 0.3, 0.2, 0.1, 0.0],
-        ));
+        let mut command = ForwardedCommand::Vector(VectorCommand {
+            timestamp_us: 123,
+            values: vec![0.5, -0.4, 0.3, 0.2, 0.1, 0.0],
+        });
         let follower = LeaderState::Vector {
             timestamp_us: 100,
             values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         let outcome = sync_state.apply(&mut command, Some(&follower));
         assert_eq!(outcome, SyncOutcome::Publish);
-        let ForwardedCommand::JointPosition(command) = command else {
+        let ForwardedCommand::Vector(command) = command else {
             panic!("expected joint-position command");
         };
         // Each joint should be at most SYNC_MAX_STEP_RAD away from the
@@ -1385,10 +1415,10 @@ mod tests {
         let mut sync_state = SyncState::new(&config);
         // Use values strictly inside SYNC_COMPLETE_THRESHOLD_RAD (0.05
         // rad) so a single apply finishes the ramp.
-        let mut command = ForwardedCommand::JointPosition(JointVector15::from_slice(
-            123,
-            &[0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
-        ));
+        let mut command = ForwardedCommand::Vector(VectorCommand {
+            timestamp_us: 123,
+            values: vec![0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
+        });
         let follower = LeaderState::Vector {
             timestamp_us: 100,
             values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -1407,18 +1437,18 @@ mod tests {
         // unclamped. Stays in syncing mode so the next cycle can retry.
         let config = sync_config();
         let mut sync_state = SyncState::new(&config);
-        let mut command = ForwardedCommand::JointPosition(JointVector15::from_slice(
-            123,
-            &[0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-        ));
+        let mut command = ForwardedCommand::Vector(VectorCommand {
+            timestamp_us: 123,
+            values: vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        });
         let outcome = sync_state.apply(&mut command, None);
         assert_eq!(outcome, SyncOutcome::Hold);
-        let ForwardedCommand::JointPosition(command) = command else {
+        let ForwardedCommand::Vector(command) = command else {
             panic!("expected joint-position command");
         };
         // Command was left untouched so the caller can re-evaluate it
         // next iteration once follower feedback lands.
-        assert_eq!(&command.values[..6], &[0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(command.values, [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
         assert!(sync_state.enabled());
     }
 

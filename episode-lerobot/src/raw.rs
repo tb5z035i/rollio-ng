@@ -192,6 +192,7 @@ mod tests {
     use arrow_array::Array;
     use rollio_types::config::{
         AssemblerObservationRuntimeConfigV2, EpisodeFormat, RobotStateKind,
+        RobotTransportPayloadKind,
     };
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -218,9 +219,12 @@ mod tests {
             cameras: Vec::new(),
             observations: vec![AssemblerObservationRuntimeConfigV2 {
                 channel_id: "robot_a/arm".into(),
+                device_name: "robot_a".into(),
+                channel_type: "arm".into(),
                 state_kind: RobotStateKind::JointPosition,
                 state_topic: "robot_a/arm/states/joint_position".into(),
                 value_len: 6,
+                transport_payload_kind: RobotTransportPayloadKind::F64Vector,
             }],
             actions: Vec::new(),
             embedded_config_toml: String::new(),

@@ -4,7 +4,7 @@
 //! This is the integration-level proof that Phase 6a + Phase 6b together
 //! eliminate the silent-overwrite window we measured before the fix:
 //!
-//! * Producer publishes ~250 samples back-to-back into a `JointVector15`
+//! * Producer publishes ~250 samples back-to-back into a dynamic `[f64]`
 //!   service opened with `STATE_BUFFER = 1024` (matching the helpers used
 //!   by every robot driver and LeRobot staging).
 //! * Consumer, running in another thread, sleeps for 1 second to mimic
@@ -20,7 +20,7 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS};
-use rollio_types::messages::JointVector15;
+use rollio_types::messages::SampleHeader;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -58,7 +58,8 @@ fn state_buffer_absorbs_250_hz_burst_while_consumer_sleeps_one_second() {
                 .expect("service name should validate");
             let service = node
                 .service_builder(&service_name)
-                .publish_subscribe::<JointVector15>()
+                .publish_subscribe::<[f64]>()
+                .user_header::<SampleHeader>()
                 .subscriber_max_buffer_size(STATE_BUFFER)
                 .history_size(STATE_BUFFER)
                 .max_publishers(STATE_MAX_PUBLISHERS)
@@ -120,7 +121,8 @@ fn state_buffer_absorbs_250_hz_burst_while_consumer_sleeps_one_second() {
         .expect("service name should validate");
     let producer_service = producer_node
         .service_builder(&producer_service_name)
-        .publish_subscribe::<JointVector15>()
+        .publish_subscribe::<[f64]>()
+        .user_header::<SampleHeader>()
         .subscriber_max_buffer_size(STATE_BUFFER)
         .history_size(STATE_BUFFER)
         .max_publishers(STATE_MAX_PUBLISHERS)
@@ -130,14 +132,22 @@ fn state_buffer_absorbs_250_hz_burst_while_consumer_sleeps_one_second() {
         .expect("producer service should open or create");
     let publisher = producer_service
         .publisher_builder()
+        .initial_max_slice_len(1)
         .create()
         .expect("publisher should create");
 
     for index in 0..TARGET_SAMPLES {
-        let sample = JointVector15::from_slice(index as u64, &[index as f64]);
-        publisher
-            .send_copy(sample)
-            .expect("publisher send_copy should succeed");
+        let payload = [index as f64];
+        let mut sample = publisher
+            .loan_slice_uninit(payload.len())
+            .expect("loan slice");
+        *sample.user_header_mut() = SampleHeader {
+            timestamp_us: index as u64,
+        };
+        sample
+            .write_from_slice(&payload)
+            .send()
+            .expect("publisher send should succeed");
     }
 
     // Wait for the consumer to report its drained count, then join.

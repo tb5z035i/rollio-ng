@@ -624,7 +624,9 @@ fn chunk_index(episode_index: u32, chunk_size: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rollio_types::config::{AssemblerObservationRuntimeConfigV2, EpisodeFormat};
+    use rollio_types::config::{
+        AssemblerObservationRuntimeConfigV2, EpisodeFormat, RobotTransportPayloadKind,
+    };
 
     fn config_with_one_observation() -> AssemblerRuntimeConfigV2 {
         AssemblerRuntimeConfigV2 {
@@ -638,9 +640,12 @@ mod tests {
             cameras: Vec::new(),
             observations: vec![AssemblerObservationRuntimeConfigV2 {
                 channel_id: "robot_a/arm".into(),
+                device_name: "robot_a".into(),
+                channel_type: "arm".into(),
                 state_kind: RobotStateKind::JointPosition,
                 state_topic: "robot_a/arm/states/joint_position".into(),
                 value_len: 6,
+                transport_payload_kind: RobotTransportPayloadKind::F64Vector,
             }],
             actions: Vec::new(),
             embedded_config_toml: String::new(),

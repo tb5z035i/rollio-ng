@@ -102,6 +102,8 @@ def open_or_create_pubsub(
     service_name: str,
     payload_type: type,
     *,
+    user_header_type: type | None = None,
+    initial_max_slice_len: int | None = None,
     max_publishers: int | None = None,
     max_subscribers: int | None = None,
     max_nodes: int | None = None,
@@ -125,6 +127,10 @@ def open_or_create_pubsub(
     builder = node.service_builder(iox2.ServiceName.new(service_name)).publish_subscribe(
         payload_type
     )
+    if user_header_type is not None:
+        builder = builder.user_header(user_header_type)
+    if initial_max_slice_len is not None:
+        builder = builder.initial_max_slice_len(initial_max_slice_len)
     if max_publishers is not None:
         builder = builder.max_publishers(max_publishers)
     if max_subscribers is not None:
