@@ -569,6 +569,7 @@ pub(super) fn build_setup_ui_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: true,
     })
 }

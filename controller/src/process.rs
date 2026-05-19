@@ -21,6 +21,7 @@ pub struct ChildSpec {
     pub id: String,
     pub command: ResolvedCommand,
     pub working_directory: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
     pub inherit_stdio: bool,
 }
 
@@ -45,6 +46,9 @@ pub fn spawn_child(spec: &ChildSpec, log_dir: &Path) -> io::Result<ManagedChild>
     command.args(&spec.command.args);
     command.current_dir(&spec.working_directory);
     command.env("ROLLIO_LOG_DIR", &log_dir);
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
 
     let log_path = if spec.inherit_stdio {
         None
@@ -206,6 +210,7 @@ mod tests {
             id: "crasher".into(),
             command: shell_command("exit 42"),
             working_directory: PathBuf::from("."),
+            env: Vec::new(),
             inherit_stdio: false,
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
@@ -234,6 +239,7 @@ mod tests {
             id: "sleeper".into(),
             command: shell_command("sleep 30"),
             working_directory: PathBuf::from("."),
+            env: Vec::new(),
             inherit_stdio: false,
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
@@ -262,6 +268,7 @@ mod tests {
             id: "term_handler".into(),
             command: shell_command("trap 'exit 0' TERM; while :; do sleep 1; done"),
             working_directory: PathBuf::from("."),
+            env: Vec::new(),
             inherit_stdio: false,
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
@@ -297,6 +304,7 @@ mod tests {
             id: "signal_wait".into(),
             command: shell_command("sleep 30"),
             working_directory: PathBuf::from("."),
+            env: Vec::new(),
             inherit_stdio: false,
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
@@ -332,6 +340,7 @@ mod tests {
                 "test -d \"$ROLLIO_LOG_DIR\" && case \"$ROLLIO_LOG_DIR\" in /*) exit 0;; *) exit 2;; esac",
             ),
             working_directory: PathBuf::from("."),
+            env: Vec::new(),
             inherit_stdio: false,
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");

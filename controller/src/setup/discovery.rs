@@ -1,9 +1,7 @@
+use super::devices::select_supported_mode;
 use super::overview::camera_channel_type_for_profile;
 use super::pairings::{build_default_channel_pairings, default_publish_states_for_meta};
-use super::devices::select_supported_mode;
-use super::state::{
-    AvailableDevice, CameraProfile, DiscoveredChannelMeta, DiscoveredDevice,
-};
+use super::state::{AvailableDevice, CameraProfile, DiscoveredChannelMeta, DiscoveredDevice};
 use crate::discovery::{discover_probe_entries, run_driver_json, DiscoveryOptions};
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
@@ -20,6 +18,8 @@ use std::time::Duration;
 
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2_000);
 pub(super) const VALIDATION_TIMEOUT: Duration = Duration::from_millis(1_000);
+const CORACAM_DEFAULT_DDS_SHM_SEGMENT_SIZE: u32 = 2 * 1024 * 1024;
+const CORACAM_DEFAULT_DDS_CALLBACK_THREADS: u32 = 4;
 
 /// One channel + chosen profile + final user-visible name for a camera
 /// discovery row. Built by `build_discovery_config` so multi-stream cameras
@@ -72,6 +72,7 @@ pub(super) fn binary_device_from_discovery(
             build_channel_config_from_meta(channel_type, meta, preferred_mode, channel_name)
         })
         .collect();
+    let is_coracam = discovery.driver.starts_with("coracam-");
     BinaryDeviceConfig {
         name: name.clone(),
         executable: Some(default_device_executable_name(&discovery.driver)),
@@ -79,6 +80,8 @@ pub(super) fn binary_device_from_discovery(
         id: discovery.id.clone(),
         bus_root: name,
         dds_domain_id: None,
+        dds_shm_segment_size: is_coracam.then_some(CORACAM_DEFAULT_DDS_SHM_SEGMENT_SIZE),
+        dds_callback_threads: is_coracam.then_some(CORACAM_DEFAULT_DDS_CALLBACK_THREADS),
         channels,
         extra,
     }
@@ -114,7 +117,7 @@ pub(super) fn build_channel_config_from_meta(
                 recorded_states: Vec::new(),
                 control_frequency_hz: None,
                 profile,
-                preview_enabled: true,
+                preview_enabled,
                 record_enabled: true,
                 record: None,
                 preview_settings: None,
@@ -183,7 +186,9 @@ pub(super) fn robot_publish_states_fallback(channel_type: &str) -> Vec<RobotStat
     }
 }
 
-pub(super) fn pick_default_camera_profile(profiles: &[CameraProfile]) -> Option<CameraChannelProfile> {
+pub(super) fn pick_default_camera_profile(
+    profiles: &[CameraProfile],
+) -> Option<CameraChannelProfile> {
     profiles
         .iter()
         .max_by_key(|profile| camera_profile_quality_key(profile))
@@ -1116,4 +1121,3 @@ pub(super) fn group_default_mode(index: usize) -> RobotMode {
         _ => RobotMode::FreeDrive,
     }
 }
-

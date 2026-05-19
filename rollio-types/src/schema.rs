@@ -101,12 +101,20 @@ pub fn config_schema() -> ConfigSchema {
                 name: "runtime",
                 kind: SchemaSectionKind::Table,
                 description: "Project-wide runtime knobs injected into child process configs.",
-                fields: vec![int_field(
-                    "dds_domain_id",
-                    "DDS/Cora domain id shared by every device process that uses DDS.",
-                    false,
-                    0,
-                )],
+                fields: vec![
+                    int_field(
+                        "dds_domain_id",
+                        "DDS/Cora domain id shared by every device process that uses DDS.",
+                        false,
+                        0,
+                    ),
+                    bool_field(
+                        "advanced_pipeline_logs",
+                        "Enable full per-process pipeline statistics logs. When false, children emit concise low-frequency summaries.",
+                        false,
+                        false,
+                    ),
+                ],
                 notes: vec![
                     "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
                 ],
@@ -183,6 +191,14 @@ pub fn config_schema() -> ConfigSchema {
                     ),
                     string_field("driver", "Driver family used to launch the device process.", true),
                     string_field("id", "Driver-specific device identifier discovered during setup.", true),
+                    optional_int_field(
+                        "dds_shm_segment_size",
+                        "Optional Cora/Fast-DDS shared-memory segment size in bytes for DDS-backed devices. Coracam setup defaults to 2 MiB; set 67108864 or higher for larger SHM segments.",
+                    ),
+                    optional_int_field(
+                        "dds_callback_threads",
+                        "Optional Cora DDS callback thread count; 0 keeps the SDK default.",
+                    ),
                     scoped_int_field("width", "Camera capture width.", false, None, &["camera"]),
                     scoped_int_field("height", "Camera capture height.", false, None, &["camera"]),
                     scoped_int_field("fps", "Per-device frame rate override.", false, None, &["camera"]),
@@ -618,6 +634,35 @@ fn int_field(
     }
 }
 
+fn bool_field(
+    name: &'static str,
+    description: &'static str,
+    required: bool,
+    default: bool,
+) -> SchemaField {
+    SchemaField {
+        name,
+        type_name: "boolean",
+        description,
+        required,
+        default: Some(Value::Boolean(default)),
+        enum_values: None,
+        applies_to: None,
+    }
+}
+
+fn optional_int_field(name: &'static str, description: &'static str) -> SchemaField {
+    SchemaField {
+        name,
+        type_name: "integer",
+        description,
+        required: false,
+        default: None,
+        enum_values: None,
+        applies_to: None,
+    }
+}
+
 fn scoped_int_field(
     name: &'static str,
     description: &'static str,
@@ -781,12 +826,20 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                 name: "runtime",
                 kind: SchemaSectionKind::Table,
                 description: "Project-wide runtime knobs injected into child process configs.",
-                fields: vec![int_field(
-                    "dds_domain_id",
-                    "DDS/Cora domain id shared by every device process that uses DDS.",
-                    false,
-                    0,
-                )],
+                fields: vec![
+                    int_field(
+                        "dds_domain_id",
+                        "DDS/Cora domain id shared by every device process that uses DDS.",
+                        false,
+                        0,
+                    ),
+                    bool_field(
+                        "advanced_pipeline_logs",
+                        "Enable full per-process pipeline statistics logs. When false, children emit concise low-frequency summaries.",
+                        false,
+                        false,
+                    ),
+                ],
                 notes: vec![
                     "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
                 ],
@@ -822,6 +875,14 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                     string_field("driver", "Executable driver family name.", true),
                     string_field("id", "Vendor-defined device identifier.", true),
                     string_field("bus_root", "Topic namespace root used by this device process.", true),
+                    optional_int_field(
+                        "dds_shm_segment_size",
+                        "Optional Cora/Fast-DDS shared-memory segment size in bytes for DDS-backed devices. Coracam setup defaults to 2 MiB; set 67108864 or higher for larger SHM segments.",
+                    ),
+                    optional_int_field(
+                        "dds_callback_threads",
+                        "Optional Cora DDS callback thread count; 0 keeps the SDK default.",
+                    ),
                 ],
                 notes: vec![
                     "Additional driver-specific fields may be stored on the device table via extra TOML keys.",

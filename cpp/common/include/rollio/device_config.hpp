@@ -43,6 +43,8 @@ struct BinaryDeviceConfig {
     std::string id;
     std::string bus_root;
     std::optional<uint32_t> dds_domain_id;
+    std::optional<uint32_t> dds_shm_segment_size;
+    std::optional<uint32_t> dds_callback_threads;
     std::vector<DeviceChannelConfigV2> channels;
 };
 
@@ -332,6 +334,10 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
                 device.bus_root = strip_quotes(raw_value);
             } else if (key == "dds_domain_id") {
                 device.dds_domain_id = parse_u32_value(raw_value);
+            } else if (key == "dds_shm_segment_size") {
+                device.dds_shm_segment_size = parse_u32_value(raw_value);
+            } else if (key == "dds_callback_threads") {
+                device.dds_callback_threads = parse_u32_value(raw_value);
             } else {
                 // Forward-compatible: ignore unknown root keys (matches serde flatten/extra usage).
             }

@@ -1471,6 +1471,8 @@ impl From<ProjectConfigSerde> for ProjectConfig {
 pub struct RuntimeConfig {
     #[serde(default)]
     pub dds_domain_id: u32,
+    #[serde(default)]
+    pub advanced_pipeline_logs: bool,
 }
 
 impl RuntimeConfig {
@@ -1478,6 +1480,7 @@ impl RuntimeConfig {
         // Fast-DDS/Cora use a 32-bit domain id in their public API, so every
         // TOML u32 value accepted by serde is valid here.
         let _ = self.dds_domain_id;
+        let _ = self.advanced_pipeline_logs;
         Ok(())
     }
 }
@@ -1500,6 +1503,10 @@ pub struct BinaryDeviceConfig {
     pub bus_root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dds_domain_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_shm_segment_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_callback_threads: Option<u32>,
     #[serde(default)]
     pub channels: Vec<DeviceChannelConfigV2>,
     #[serde(flatten, default)]
@@ -1543,6 +1550,12 @@ impl BinaryDeviceConfig {
         if self.bus_root.trim().is_empty() {
             return Err(ConfigError::Validation(format!(
                 "device \"{}\": bus_root must not be empty",
+                self.name
+            )));
+        }
+        if self.dds_shm_segment_size == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "device \"{}\": dds_shm_segment_size must be > 0 when set",
                 self.name
             )));
         }

@@ -1,4 +1,6 @@
-use super::runtime::{spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT};
+use super::runtime::{
+    spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT,
+};
 use super::state::{AvailableDevice, CameraProfile, SetupSession, SetupStep};
 use crate::process::{terminate_children, ChildSpec};
 use crate::runtime_plan::build_preview_specs;
@@ -29,7 +31,9 @@ pub(super) fn robot_mode_to_channel_mode(mode: RobotMode) -> DeviceChannelMode {
     }
 }
 
-pub(super) fn available_primary_channel(available: &AvailableDevice) -> Option<&DeviceChannelConfigV2> {
+pub(super) fn available_primary_channel(
+    available: &AvailableDevice,
+) -> Option<&DeviceChannelConfigV2> {
     available.current.channels.first()
 }
 
@@ -259,7 +263,13 @@ pub(super) fn build_setup_preview_specs(
     current_exe_dir: &Path,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let invocation_cwd = std::env::current_dir()?;
-    build_preview_specs(project, workspace_root, child_working_dir, current_exe_dir)
+    build_preview_specs(
+        project,
+        workspace_root,
+        child_working_dir,
+        current_exe_dir,
+        &invocation_cwd,
+    )
 }
 
 pub(super) fn camera_channel_type_for_profile(profile: &CameraProfile) -> String {

@@ -1,5 +1,7 @@
 #include "device_main.hpp"
 
+#include <cora/dds/dds_participant.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -13,8 +15,6 @@
 #include <string_view>
 #include <thread>
 #include <vector>
-
-#include <cora/dds/dds_participant.h>
 
 #include "channel_worker.hpp"
 #include "cora_mapping.hpp"
@@ -117,6 +117,7 @@ constexpr std::size_t kChannelCount = sizeof(kChannels) / sizeof(kChannels[0]);
 constexpr uint32_t kDefaultWidth = 640;
 constexpr uint32_t kDefaultHeight = 480;
 constexpr uint32_t kDefaultFps = 25;
+constexpr uint32_t kDefaultDdsShmSegmentSize = 2U * 1024U * 1024U;
 
 // Forward declaration so cmd_validate (defined earlier in the file) can call
 // the strict channel-config builder, which is the canonical place schema
@@ -318,7 +319,7 @@ auto find_mapping_topic(const CoraMapping& mapping, std::string_view channel_typ
 // Strict checks (target方案 §4.1):
 //   - driver == descriptor.driver
 //   - every channel in config has kind = camera
-//   - the 4 fixed channel_types are all present and enabled
+//   - any enabled fixed channel has the expected camera kind / pixel format
 //   - raw channels have pixel_format = bgr24
 //   - h264 channels have pixel_format = h264-annex-b
 //   - 640 x 480 @ 25 Hz (warn-only for now; preserved via defaults)
@@ -370,16 +371,12 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
                                                   : 16U;
 
     for (const auto& kch : kChannels) {
-        // Required-channel-present check.
         const auto* found = find_channel_cfg(config, kch.channel_type);
         if (found == nullptr) {
-            throw std::runtime_error(std::string(desc.program_name) +
-                                     ": missing required channel '" + kch.channel_type +
-                                     "' (coracam requires the 4 fixed channels)");
+            continue;
         }
         if (!found->enabled) {
-            throw std::runtime_error(std::string(desc.program_name) + ": required channel '" +
-                                     kch.channel_type + "' is disabled (coracam requires all 4)");
+            continue;
         }
         // Profile must be present and match the channel kind.
         if (!found->profile.has_value()) {
@@ -450,7 +447,12 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
         out.push_back(std::move(wcfg));
     }
 
-    // Topic uniqueness across the 4 channels (DDS topic + iceoryx2 service).
+    if (out.empty()) {
+        throw std::runtime_error(std::string(desc.program_name) +
+                                 ": at least one fixed coracam channel must be enabled");
+    }
+
+    // Topic uniqueness across enabled channels (DDS topic + iceoryx2 service).
     for (std::size_t i = 0; i < out.size(); ++i) {
         for (std::size_t j = i + 1; j < out.size(); ++j) {
             if (!out[i].dds_topic_name.empty() && out[i].dds_topic_name == out[j].dds_topic_name) {
@@ -477,20 +479,31 @@ auto initialize_cora_participant(const rollio::BinaryDeviceConfig& config,
                                  const std::optional<CoraMapping>& mapping,
                                  const DeviceDescriptor& desc) -> void {
     framework::dds::DDSConfig dds_cfg;
-    dds_cfg.domain_id = static_cast<int>(
-        mapping && mapping->domain_id
-            ? *mapping->domain_id
-            : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId));
+    dds_cfg.domain_id =
+        static_cast<int>(mapping && mapping->domain_id
+                             ? *mapping->domain_id
+                             : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId));
     dds_cfg.participant_name = (mapping && mapping->participant_name)
                                    ? *mapping->participant_name
                                    : std::string(desc.default_name);
     dds_cfg.use_shared_memory = true;
     dds_cfg.use_udp = true;
+    if (config.dds_shm_segment_size && *config.dds_shm_segment_size == 0U) {
+        throw std::runtime_error("dds_shm_segment_size must be > 0 when set");
+    }
+    dds_cfg.shm_segment_size =
+        config.dds_shm_segment_size ? *config.dds_shm_segment_size : kDefaultDdsShmSegmentSize;
+    if (config.dds_callback_threads) {
+        dds_cfg.callback_threads = static_cast<std::size_t>(*config.dds_callback_threads);
+    }
 
     auto& participant = framework::dds::DDSParticipant::instance();
     if (participant.isInitialized()) {
         return;
     }
+    std::cerr << desc.program_name << ": Cora DDS participant config domain=" << dds_cfg.domain_id
+              << " shm_segment_size=" << dds_cfg.shm_segment_size
+              << " callback_threads=" << dds_cfg.callback_threads << '\n';
     if (!participant.initialize(dds_cfg)) {
         throw std::runtime_error("failed to initialize Cora DDSParticipant");
     }
@@ -570,9 +583,9 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
     // Initialize the Cora SDK DDS participant exactly once before any
     // ChannelReader is constructed by a worker thread. Skipped in the
     // mock path (ROLLIO_CORACAM_NO_DDS=1) where no real reader is created.
-    const bool any_dds_channel = std::any_of(
-        channel_configs.begin(), channel_configs.end(),
-        [](const ChannelWorkerConfig& wc) { return !wc.dds_topic_name.empty(); });
+    const bool any_dds_channel =
+        std::any_of(channel_configs.begin(), channel_configs.end(),
+                    [](const ChannelWorkerConfig& wc) { return !wc.dds_topic_name.empty(); });
     if (any_dds_channel) {
         initialize_cora_participant(config, mapping, desc);
     }

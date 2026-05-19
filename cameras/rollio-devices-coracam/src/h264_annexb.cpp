@@ -16,18 +16,119 @@ void append_start(std::vector<uint8_t>& out) {
     out.push_back(0x01);
 }
 
-// Append a minimal NAL unit: header byte + a few non-emulation-prevention
-// payload bytes so the unit is non-empty and NAL scanners can parse it.
-void append_nal(std::vector<uint8_t>& out, uint8_t header, uint64_t seed, uint8_t extra_len = 4) {
+void append_slice_nal(std::vector<uint8_t>& out, uint8_t header, uint8_t slice_header,
+                      uint64_t seed, uint8_t extra_len = 4) {
     append_start(out);
     out.push_back(header);
-    // Fill payload bytes derived from seed so each AU is unique and tests
-    // can verify the payload changes between frames.
+    out.push_back(slice_header);
     for (uint8_t i = 0; i < extra_len; ++i) {
         const uint8_t b = static_cast<uint8_t>((seed >> (i * 8U)) & 0xFFU);
-        // Avoid 0x00 runs that could look like emulation-prevention bytes.
         out.push_back(b != 0 ? b : 0x01U);
     }
+}
+
+auto find_next_start_code(const uint8_t* data, std::size_t size, std::size_t offset) noexcept
+    -> std::size_t {
+    if (offset >= size) {
+        return size;
+    }
+    for (std::size_t i = offset; i + 3U <= size; ++i) {
+        if (data[i] == 0x00 && data[i + 1U] == 0x00 && data[i + 2U] == 0x01) {
+            return i;
+        }
+        if (i + 4U <= size && data[i] == 0x00 && data[i + 1U] == 0x00 && data[i + 2U] == 0x00 &&
+            data[i + 3U] == 0x01) {
+            return i;
+        }
+    }
+    return size;
+}
+
+auto rbsp_from_ebsp(const uint8_t* data, std::size_t size) -> std::vector<uint8_t> {
+    std::vector<uint8_t> rbsp;
+    rbsp.reserve(size);
+    uint32_t zero_run = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        const uint8_t byte = data[i];
+        if (zero_run >= 2U && byte == 0x03) {
+            zero_run = 0;
+            continue;
+        }
+        rbsp.push_back(byte);
+        if (byte == 0x00) {
+            zero_run += 1U;
+        } else {
+            zero_run = 0;
+        }
+    }
+    return rbsp;
+}
+
+class BitReader {
+public:
+    explicit BitReader(const std::vector<uint8_t>& bytes) : bytes_(bytes) {}
+
+    auto read_bit(uint32_t& bit) noexcept -> bool {
+        if (bit_pos_ >= bytes_.size() * 8U) {
+            return false;
+        }
+        const auto byte_index = bit_pos_ / 8U;
+        const auto bit_index = 7U - (bit_pos_ % 8U);
+        bit = (bytes_[byte_index] >> bit_index) & 0x01U;
+        ++bit_pos_;
+        return true;
+    }
+
+    auto read_ue(uint32_t& value) noexcept -> bool {
+        uint32_t leading_zero_bits = 0;
+        uint32_t bit = 0;
+        while (true) {
+            if (!read_bit(bit)) {
+                return false;
+            }
+            if (bit == 1U) {
+                break;
+            }
+            ++leading_zero_bits;
+            if (leading_zero_bits > 31U) {
+                return false;
+            }
+        }
+
+        uint32_t suffix = 0;
+        for (uint32_t i = 0; i < leading_zero_bits; ++i) {
+            if (!read_bit(bit)) {
+                return false;
+            }
+            suffix = (suffix << 1U) | bit;
+        }
+        value = ((1U << leading_zero_bits) - 1U) + suffix;
+        return true;
+    }
+
+private:
+    const std::vector<uint8_t>& bytes_;
+    std::size_t bit_pos_{0};
+};
+
+auto parse_slice_type(const uint8_t* ebsp, std::size_t size, uint32_t& slice_type) -> bool {
+    if (size == 0U) {
+        return false;
+    }
+    const auto rbsp = rbsp_from_ebsp(ebsp, size);
+    BitReader reader(rbsp);
+    uint32_t first_mb_in_slice = 0;
+    if (!reader.read_ue(first_mb_in_slice)) {
+        return false;
+    }
+    return reader.read_ue(slice_type);
+}
+
+auto normalized_slice_type(uint32_t slice_type) noexcept -> int {
+    if (slice_type > 9U) {
+        return -1;
+    }
+    return static_cast<int>(slice_type % 5U);
 }
 
 }  // namespace
@@ -52,12 +153,11 @@ auto make_mock_annexb_au(bool keyframe, uint64_t frame_index) -> std::vector<uin
         const uint8_t pps_rbsp[] = {0xEE, 0x01, 0x60};
         au.insert(au.end(), pps_rbsp, pps_rbsp + sizeof(pps_rbsp));
 
-        // IDR slice header placeholder. Real decoders would reject this,
-        // but the coracam passthrough only inspects NAL type bytes.
-        append_nal(au, kNalHeaderIdr, frame_index, 8U);
+        // first_mb_in_slice=0, slice_type=2 (I): bit pattern "1 011".
+        append_slice_nal(au, kNalHeaderIdr, 0xB0, frame_index, 8U);
     } else {
-        // Delta frame: single non-IDR slice.
-        append_nal(au, kNalHeaderSlice, frame_index, 6U);
+        // first_mb_in_slice=0, slice_type=0 (P): bit pattern "1 1".
+        append_slice_nal(au, kNalHeaderSlice, 0xC0, frame_index, 6U);
     }
 
     return au;
@@ -246,6 +346,93 @@ auto scan_sps_pps(const uint8_t* data, std::size_t size, bool& has_sps, bool& ha
     }
 
     return true;
+}
+
+auto scan_h264_slice_types(const uint8_t* data, std::size_t size) -> H264SliceTypeStats {
+    H264SliceTypeStats stats;
+    if (!has_annexb_start_code(data, size)) {
+        return stats;
+    }
+
+    const auto offsets = find_nal_offsets(data, size);
+    for (const auto nal_offset : offsets) {
+        if (nal_offset >= size) {
+            continue;
+        }
+        const uint8_t nal_type = data[nal_offset] & 0x1FU;
+        if (nal_type != kNalTypeNonIdr && nal_type != kNalTypeIdr) {
+            continue;
+        }
+
+        ++stats.vcl_nalus;
+        if (nal_type == kNalTypeIdr) {
+            ++stats.idr_nalus;
+        }
+
+        const auto payload_start = nal_offset + 1U;
+        const auto payload_end = find_next_start_code(data, size, payload_start);
+        if (payload_start >= payload_end || payload_end > size) {
+            ++stats.unknown_slices;
+            continue;
+        }
+
+        uint32_t slice_type = 0;
+        if (!parse_slice_type(data + payload_start, payload_end - payload_start, slice_type)) {
+            ++stats.unknown_slices;
+            continue;
+        }
+
+        switch (normalized_slice_type(slice_type)) {
+            case 0:
+                ++stats.p_slices;
+                break;
+            case 1:
+                ++stats.b_slices;
+                break;
+            case 2:
+                ++stats.i_slices;
+                break;
+            case 3:
+                ++stats.sp_slices;
+                break;
+            case 4:
+                ++stats.si_slices;
+                break;
+            default:
+                ++stats.unknown_slices;
+                break;
+        }
+    }
+    return stats;
+}
+
+auto h264_picture_type_label(const H264SliceTypeStats& stats) noexcept -> char {
+    uint32_t categories = 0;
+    categories += stats.p_slices > 0U ? 1U : 0U;
+    categories += stats.b_slices > 0U ? 1U : 0U;
+    categories += stats.i_slices > 0U ? 1U : 0U;
+    categories += stats.sp_slices > 0U ? 1U : 0U;
+    categories += stats.si_slices > 0U ? 1U : 0U;
+
+    if (categories > 1U) {
+        return 'M';
+    }
+    if (stats.b_slices > 0U) {
+        return 'B';
+    }
+    if (stats.p_slices > 0U) {
+        return 'P';
+    }
+    if (stats.i_slices > 0U || stats.idr_nalus > 0U) {
+        return 'I';
+    }
+    if (stats.sp_slices > 0U) {
+        return 'S';
+    }
+    if (stats.si_slices > 0U) {
+        return 'T';
+    }
+    return '?';
 }
 
 }  // namespace rollio::coracam

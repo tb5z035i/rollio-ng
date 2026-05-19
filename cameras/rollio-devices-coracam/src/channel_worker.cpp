@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -37,15 +38,256 @@ using H264Reader = framework::ChannelReader<foxglove_msgs::msg::CompressedVideo,
 
 namespace {
 
+constexpr auto kStatusLogInterval = std::chrono::seconds(10);
+constexpr uint64_t kFirstIdleLogSeconds = 10;
+
 auto unix_timestamp_us() -> uint64_t {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(SystemClock::now().time_since_epoch())
             .count());
 }
 
+auto steady_elapsed_us(SteadyClock::time_point start, SteadyClock::time_point end) -> uint64_t {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+}
+
+auto steady_elapsed_ms(SteadyClock::time_point start, SteadyClock::time_point end) -> double {
+    return static_cast<double>(steady_elapsed_us(start, end)) / 1000.0;
+}
+
 // Convert sec/nanosec (ROS2 Time-style) to UNIX microseconds.
 auto stamp_to_us(int32_t sec, uint32_t nanosec) -> uint64_t {
     return static_cast<uint64_t>(sec) * 1'000'000ULL + static_cast<uint64_t>(nanosec) / 1'000ULL;
+}
+
+auto source_age_ms(uint64_t now_us, uint64_t source_ts_us) -> double {
+    return (static_cast<double>(now_us) - static_cast<double>(source_ts_us)) / 1000.0;
+}
+
+auto positive_source_age_us(uint64_t now_us, uint64_t source_ts_us) -> uint64_t {
+    return now_us > source_ts_us ? now_us - source_ts_us : 0U;
+}
+
+struct PublishResult {
+    bool ok{false};
+    uint64_t elapsed_us{0};
+};
+
+struct MetricStats {
+    uint64_t count{0};
+    double sum{0.0};
+    double min{0.0};
+    double max{0.0};
+
+    void observe(double value) {
+        if (count == 0U) {
+            min = value;
+            max = value;
+        } else {
+            min = std::min(min, value);
+            max = std::max(max, value);
+        }
+        sum += value;
+        ++count;
+    }
+
+    [[nodiscard]] auto avg() const -> double {
+        return count == 0U ? 0.0 : sum / static_cast<double>(count);
+    }
+};
+
+struct PipelineWindowStats {
+    MetricStats payload_in_bytes;
+    MetricStats payload_out_bytes;
+    MetricStats dds_wait_ms;
+    MetricStats recv_gap_ms;
+    MetricStats source_gap_ms;
+    MetricStats source_age_ms;
+    MetricStats callback_to_publish_ms;
+    MetricStats publish_ms;
+    MetricStats raw_convert_ms;
+    uint64_t h264_i_frames{0};
+    uint64_t h264_p_frames{0};
+    uint64_t h264_b_frames{0};
+    uint64_t h264_sp_frames{0};
+    uint64_t h264_si_frames{0};
+    uint64_t h264_mixed_frames{0};
+    uint64_t h264_unknown_frames{0};
+    uint64_t h264_idr_frames{0};
+    uint64_t h264_pattern_total{0};
+    std::string h264_pattern;
+
+    void reset() {
+        *this = PipelineWindowStats{};
+    }
+};
+
+auto metric_summary(const char* name, const MetricStats& metric) -> std::string {
+    std::ostringstream out;
+    out << name << '=';
+    if (metric.count == 0U) {
+        out << "n/a";
+        return out.str();
+    }
+    out << std::fixed << std::setprecision(1) << metric.avg() << '/' << metric.min << '/'
+        << metric.max;
+    return out.str();
+}
+
+auto metric_avg_max(const char* name, const MetricStats& metric) -> std::string {
+    std::ostringstream out;
+    out << name << '=';
+    if (metric.count == 0U) {
+        out << "n/a";
+        return out.str();
+    }
+    out << std::fixed << std::setprecision(1) << metric.avg() << '/' << metric.max;
+    return out.str();
+}
+
+auto h264_slice_summary(const H264SliceTypeStats& stats) -> std::string {
+    std::ostringstream out;
+    out << "slices=vcl:" << stats.vcl_nalus << "/idr:" << stats.idr_nalus << "/I:" << stats.i_slices
+        << "/P:" << stats.p_slices << "/B:" << stats.b_slices << "/SP:" << stats.sp_slices
+        << "/SI:" << stats.si_slices << "/?:" << stats.unknown_slices;
+    return out.str();
+}
+
+auto update_h264_type_stats(ChannelStatus& status, PipelineWindowStats& window,
+                            const H264SliceTypeStats& slice_stats) -> char {
+    const char label = h264_picture_type_label(slice_stats);
+    switch (label) {
+        case 'I':
+            ++status.h264_frames_i;
+            ++window.h264_i_frames;
+            break;
+        case 'P':
+            ++status.h264_frames_p;
+            ++window.h264_p_frames;
+            break;
+        case 'B':
+            ++status.h264_frames_b;
+            ++window.h264_b_frames;
+            break;
+        case 'S':
+            ++status.h264_frames_sp;
+            ++window.h264_sp_frames;
+            break;
+        case 'T':
+            ++status.h264_frames_si;
+            ++window.h264_si_frames;
+            break;
+        case 'M':
+            ++status.h264_frames_mixed;
+            ++window.h264_mixed_frames;
+            break;
+        default:
+            ++status.h264_frames_unknown;
+            ++window.h264_unknown_frames;
+            break;
+    }
+    if (slice_stats.idr_nalus > 0U) {
+        ++status.h264_idr_frames;
+        ++window.h264_idr_frames;
+    }
+    if (window.h264_pattern.size() < 120U) {
+        window.h264_pattern.push_back(label);
+    }
+    ++window.h264_pattern_total;
+    return label;
+}
+
+auto fps(uint64_t frames, double elapsed_sec) -> double {
+    return elapsed_sec > 0.0 ? static_cast<double>(frames) / elapsed_sec : 0.0;
+}
+
+auto log_pipeline_status(const std::string& prog, const ChannelStatus& status,
+                         const ChannelStatus& previous, const PipelineWindowStats& window,
+                         double elapsed_sec, bool is_h264) -> void {
+    const auto received = status.frames_received - previous.frames_received;
+    const auto published = status.frames_published - previous.frames_published;
+    const auto dropped = status.frames_dropped - previous.frames_dropped;
+    std::ostringstream out;
+    out << prog << ": pipeline interval_s=" << std::fixed << std::setprecision(1) << elapsed_sec
+        << " recv=" << received << " pub=" << published << " drop=" << dropped
+        << " recv_fps=" << fps(received, elapsed_sec) << " pub_fps=" << fps(published, elapsed_sec)
+        << " total_recv=" << status.frames_received << " total_pub=" << status.frames_published
+        << " total_drop=" << status.frames_dropped
+        << " fallback_ts=" << (status.timestamp_fallbacks - previous.timestamp_fallbacks) << " "
+        << metric_summary("reader_wait_ms", window.dds_wait_ms) << " "
+        << metric_summary("recv_gap_ms", window.recv_gap_ms) << " "
+        << metric_summary("source_gap_ms", window.source_gap_ms) << " "
+        << metric_summary("source_age_ms", window.source_age_ms) << " "
+        << metric_summary("callback_to_publish_ms", window.callback_to_publish_ms) << " "
+        << metric_summary("publish_ms", window.publish_ms) << " "
+        << metric_summary("payload_in_bytes", window.payload_in_bytes) << " "
+        << metric_summary("payload_out_bytes", window.payload_out_bytes);
+    if (window.raw_convert_ms.count > 0U) {
+        out << " " << metric_summary("raw_convert_ms", window.raw_convert_ms);
+    }
+    if (status.discontinuities > previous.discontinuities) {
+        out << " ts_regr=" << (status.timestamp_regressions - previous.timestamp_regressions)
+            << " ts_gaps=" << (status.timestamp_gaps - previous.timestamp_gaps);
+    }
+    if (status.encoding_mismatches > previous.encoding_mismatches ||
+        status.stride_repacks > previous.stride_repacks ||
+        status.dimension_drifts > previous.dimension_drifts) {
+        out << " enc_mism=" << (status.encoding_mismatches - previous.encoding_mismatches)
+            << " stride_repacks=" << (status.stride_repacks - previous.stride_repacks)
+            << " dim_drifts=" << (status.dimension_drifts - previous.dimension_drifts);
+    }
+    if (is_h264) {
+        out << " keyframes=" << (status.keyframes - previous.keyframes)
+            << " sps_pps=" << (status.sps_pps_seen - previous.sps_pps_seen)
+            << " pre_codec_drops=" << (status.pre_codec_drops - previous.pre_codec_drops)
+            << " codec_ready=" << (status.codec_ready ? 1 : 0)
+            << " frame_types=I:" << window.h264_i_frames << "/P:" << window.h264_p_frames
+            << "/B:" << window.h264_b_frames << "/SP:" << window.h264_sp_frames
+            << "/SI:" << window.h264_si_frames << "/M:" << window.h264_mixed_frames
+            << "/?:" << window.h264_unknown_frames << " idr=" << window.h264_idr_frames
+            << " gop=" << (window.h264_pattern.empty() ? "n/a" : window.h264_pattern);
+        if (window.h264_pattern_total > window.h264_pattern.size()) {
+            out << "(+" << (window.h264_pattern_total - window.h264_pattern.size()) << ")";
+        }
+    }
+    out << " max_source_age_ms=" << static_cast<double>(status.max_source_age_us) / 1000.0
+        << " max_callback_to_publish_ms="
+        << static_cast<double>(status.max_callback_to_publish_us) / 1000.0
+        << " max_publish_ms=" << static_cast<double>(status.max_publish_us) / 1000.0;
+    std::cerr << out.str() << '\n';
+}
+
+auto log_pipeline_summary(const std::string& prog, const ChannelStatus& status,
+                          const ChannelStatus& previous, const PipelineWindowStats& window,
+                          double elapsed_sec, bool is_h264) -> void {
+    const auto received = status.frames_received - previous.frames_received;
+    const auto published = status.frames_published - previous.frames_published;
+    const auto dropped = status.frames_dropped - previous.frames_dropped;
+    std::ostringstream out;
+    out << prog << ": pipeline summary interval_s=" << std::fixed << std::setprecision(1)
+        << elapsed_sec << " recv=" << received << " pub=" << published << " drop=" << dropped
+        << " recv_fps=" << fps(received, elapsed_sec)
+        << " pub_fps=" << fps(published, elapsed_sec)
+        << " total_drop=" << status.frames_dropped << " "
+        << metric_avg_max("source_age_ms", window.source_age_ms) << " "
+        << metric_avg_max("callback_to_publish_ms", window.callback_to_publish_ms) << " "
+        << metric_avg_max("publish_ms", window.publish_ms);
+    if (is_h264) {
+        out << " keyframes=" << (status.keyframes - previous.keyframes)
+            << " sps_pps=" << (status.sps_pps_seen - previous.sps_pps_seen)
+            << " pre_codec_drops=" << (status.pre_codec_drops - previous.pre_codec_drops)
+            << " codec_ready=" << (status.codec_ready ? 1 : 0);
+    } else {
+        const auto enc_mism = status.encoding_mismatches - previous.encoding_mismatches;
+        const auto stride_repacks = status.stride_repacks - previous.stride_repacks;
+        const auto dim_drifts = status.dimension_drifts - previous.dimension_drifts;
+        if (enc_mism > 0U || stride_repacks > 0U || dim_drifts > 0U) {
+            out << " enc_mism=" << enc_mism << " stride_repacks=" << stride_repacks
+                << " dim_drifts=" << dim_drifts;
+        }
+    }
+    std::cerr << out.str() << '\n';
 }
 
 auto env_is_enabled(const char* name) -> bool {
@@ -56,6 +298,10 @@ auto env_is_enabled(const char* name) -> bool {
     return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
            std::strcmp(value, "FALSE") != 0 && std::strcmp(value, "off") != 0 &&
            std::strcmp(value, "OFF") != 0;
+}
+
+auto advanced_pipeline_logs_enabled() -> bool {
+    return env_is_enabled("ROLLIO_ADVANCED_PIPELINE_LOGS");
 }
 
 auto h264_dump_dir() -> std::filesystem::path {
@@ -86,7 +332,7 @@ auto h264_nal_type_list(const uint8_t* data, std::size_t size) -> std::string {
 }
 
 auto append_h264_dump(const std::filesystem::path& dir, const std::string& channel_type,
-                     const std::vector<uint8_t>& data) -> void {
+                      const std::vector<uint8_t>& data) -> void {
     if (dir.empty()) {
         return;
     }
@@ -110,14 +356,16 @@ auto append_h264_dump(const std::filesystem::path& dir, const std::string& chann
 
 auto log_h264_sample_debug(const std::string& channel_type, uint64_t frame_index,
                            const std::vector<uint8_t>& data, bool has_sps, bool has_pps,
-                           bool has_idr) -> void {
+                           bool has_idr, char picture_type, const H264SliceTypeStats& slice_stats)
+    -> void {
     if (frame_index >= 20U && !has_sps && !has_pps && !has_idr) {
         return;
     }
     std::cerr << "[coracam] " << channel_type << ": h264 sample idx=" << frame_index
               << " bytes=" << data.size() << " nals=["
               << h264_nal_type_list(data.data(), data.size()) << "] sps=" << has_sps
-              << " pps=" << has_pps << " idr=" << has_idr << '\n';
+              << " pps=" << has_pps << " idr=" << has_idr << " type=" << picture_type << " "
+              << h264_slice_summary(slice_stats) << '\n';
 }
 
 // Generate a simple BGR24 test pattern for the mock path.
@@ -182,8 +430,8 @@ auto nv12_to_bgr24(const std::vector<uint8_t>& src, uint32_t width, uint32_t hei
     return true;
 }
 
-auto mono8_to_bgr24(const std::vector<uint8_t>& src, uint32_t width, uint32_t height,
-                    uint32_t step, std::vector<uint8_t>& out) -> bool {
+auto mono8_to_bgr24(const std::vector<uint8_t>& src, uint32_t width, uint32_t height, uint32_t step,
+                    std::vector<uint8_t>& out) -> bool {
     if (width == 0 || height == 0) {
         return false;
     }
@@ -216,12 +464,13 @@ auto publish_frame(iox2::Publisher<iox2::ServiceType::Ipc, iox2::bb::Slice<uint8
                    uint64_t timestamp_us, uint32_t width, uint32_t height,
                    rollio::PixelFormat pixel_format, uint64_t frame_index,
                    const uint8_t* payload_ptr, uint64_t payload_len,
-                   const std::string& channel_type) -> bool {
+                   const std::string& channel_type) -> PublishResult {
+    const auto publish_start = SteadyClock::now();
     auto sample_result = publisher.loan_slice_uninit(payload_len);
     if (!sample_result.has_value()) {
         std::cerr << "[coracam] loan failed, dropping frame"
                   << " channel=" << channel_type << " frame_index=" << frame_index << '\n';
-        return false;
+        return PublishResult{false, steady_elapsed_us(publish_start, SteadyClock::now())};
     }
     auto& sample = *sample_result;
     auto& header = sample.user_header_mut();
@@ -234,18 +483,18 @@ auto publish_frame(iox2::Publisher<iox2::ServiceType::Ipc, iox2::bb::Slice<uint8
     auto frame_slice = iox2::bb::ImmutableSlice<uint8_t>(payload_ptr, payload_len);
     auto initialized = sample.write_from_slice(frame_slice);
     send(std::move(initialized)).value();
-    return true;
+    return PublishResult{true, steady_elapsed_us(publish_start, SteadyClock::now())};
 }
 
 // Update the idle_seconds counter when no sample arrived during the last
-// reader.receive() call. Emits a periodic log at 5s / 30s / minute marks.
+// reader.receive() call. Emits a periodic log at 10s / 30s / minute marks.
 auto update_idle_seconds(const std::string& prog, ChannelStatus& status,
                          SteadyClock::time_point last_sample) -> void {
     const auto idle =
         std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - last_sample).count();
     if (idle > 0 && static_cast<uint64_t>(idle) != status.idle_seconds) {
         status.idle_seconds = static_cast<uint64_t>(idle);
-        if (status.idle_seconds == 5 || status.idle_seconds == 30 ||
+        if (status.idle_seconds == kFirstIdleLogSeconds || status.idle_seconds == 30 ||
             (status.idle_seconds % 60) == 0) {
             std::cerr << prog << ": no Cora samples for " << status.idle_seconds << "s\n";
         }
@@ -333,11 +582,19 @@ void ChannelWorker::worker_loop_cora_h264() {
                   << " size=" << cfg_.width << "x" << cfg_.height << '\n';
 
         auto last_status = SteadyClock::now();
+        ChannelStatus last_logged_status;
+        PipelineWindowStats window_stats;
         auto last_sample = SteadyClock::now();
+        auto last_arrival = SteadyClock::now();
+        bool have_last_arrival = false;
+        const bool advanced_logs = advanced_pipeline_logs_enabled();
+        const auto dump_dir = h264_dump_dir();
         uint64_t frame_index = 0;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
+            const auto receive_started = SteadyClock::now();
             auto msg = reader.receive(200);
+            const auto receive_finished = SteadyClock::now();
             if (stop_requested_.load(std::memory_order_acquire)) {
                 break;
             }
@@ -345,12 +602,20 @@ void ChannelWorker::worker_loop_cora_h264() {
                 update_idle_seconds(prog, status_, last_sample);
                 continue;
             }
-            last_sample = SteadyClock::now();
+            window_stats.dds_wait_ms.observe(steady_elapsed_ms(receive_started, receive_finished));
+            if (have_last_arrival) {
+                window_stats.recv_gap_ms.observe(steady_elapsed_ms(last_arrival, receive_finished));
+            }
+            last_arrival = receive_finished;
+            have_last_arrival = true;
+            last_sample = receive_finished;
             status_.idle_seconds = 0;
             status_.frames_received += 1;
 
             const auto& pkt = msg->data();
             const auto& data = pkt.data();
+            status_.payload_bytes_received += static_cast<uint64_t>(data.size());
+            window_stats.payload_in_bytes.observe(static_cast<double>(data.size()));
 
             if (data.empty()) {
                 std::cerr << prog << ": empty payload, dropping\n";
@@ -371,8 +636,8 @@ void ChannelWorker::worker_loop_cora_h264() {
             // Diagnostic: foxglove `format` should be "h264".
             if (!pkt.format().empty()) {
                 const auto& f = pkt.format();
-                bool is_h264 = (f.size() == 4) && (f[0] == 'h' || f[0] == 'H') &&
-                               (f[1] == '2') && (f[2] == '6') && (f[3] == '4');
+                bool is_h264 = (f.size() == 4) && (f[0] == 'h' || f[0] == 'H') && (f[1] == '2') &&
+                               (f[2] == '6') && (f[3] == '4');
                 if (!is_h264) {
                     status_.encoding_mismatches += 1;
                 }
@@ -380,10 +645,17 @@ void ChannelWorker::worker_loop_cora_h264() {
 
             bool has_sps = false, has_pps = false, has_idr = false;
             scan_sps_pps(data.data(), data.size(), has_sps, has_pps, has_idr);
-            if (const auto dir = h264_dump_dir(); !dir.empty()) {
-                append_h264_dump(dir, cfg_.channel_type, data);
-                log_h264_sample_debug(cfg_.channel_type, frame_index, data, has_sps, has_pps,
-                                      has_idr);
+            if (advanced_logs || !dump_dir.empty()) {
+                const auto slice_stats = scan_h264_slice_types(data.data(), data.size());
+                const char picture_type = update_h264_type_stats(status_, window_stats, slice_stats);
+                if (!dump_dir.empty()) {
+                    append_h264_dump(dump_dir, cfg_.channel_type, data);
+                    log_h264_sample_debug(cfg_.channel_type, frame_index, data, has_sps, has_pps,
+                                          has_idr, picture_type, slice_stats);
+                }
+            } else if (has_idr) {
+                ++status_.h264_idr_frames;
+                ++window_stats.h264_idr_frames;
             }
 
             if (has_idr) {
@@ -406,8 +678,14 @@ void ChannelWorker::worker_loop_cora_h264() {
             if (pkt.timestamp().sec() > 0 || pkt.timestamp().nanosec() > 0) {
                 ts_us = stamp_to_us(pkt.timestamp().sec(), pkt.timestamp().nanosec());
             }
+            const auto now_us = unix_timestamp_us();
             if (ts_us == 0) {
-                ts_us = unix_timestamp_us();
+                ts_us = now_us;
+                status_.timestamp_fallbacks += 1;
+            } else {
+                const auto source_age = positive_source_age_us(now_us, ts_us);
+                status_.max_source_age_us = std::max(status_.max_source_age_us, source_age);
+                window_stats.source_age_ms.observe(source_age_ms(now_us, ts_us));
             }
 
             if (have_last_ts) {
@@ -416,44 +694,66 @@ void ChannelWorker::worker_loop_cora_h264() {
                               << '\n';
                     status_.timestamp_regressions += 1;
                     status_.discontinuities += 1;
-                } else if (frame_period_us > 0.0 &&
-                           static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
-                    std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
-                              << "us > 3 frame periods\n";
-                    status_.timestamp_gaps += 1;
-                    status_.discontinuities += 1;
+                } else {
+                    window_stats.source_gap_ms.observe(static_cast<double>(ts_us - last_ts_us) /
+                                                       1000.0);
+                    if (frame_period_us > 0.0 &&
+                        static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
+                        std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
+                                  << "us > 3 frame periods\n";
+                        status_.timestamp_gaps += 1;
+                        status_.discontinuities += 1;
+                    }
                 }
             }
             last_ts_us = ts_us;
             have_last_ts = true;
 
-            if (!publish_frame(publisher, ts_us, cfg_.width, cfg_.height, pf, frame_index,
-                               data.data(), data.size(), cfg_.channel_type)) {
+            const auto callback_started = receive_finished;
+            const auto publish_result =
+                publish_frame(publisher, ts_us, cfg_.width, cfg_.height, pf, frame_index,
+                              data.data(), data.size(), cfg_.channel_type);
+            status_.max_publish_us = std::max(status_.max_publish_us, publish_result.elapsed_us);
+            window_stats.publish_ms.observe(static_cast<double>(publish_result.elapsed_us) /
+                                            1000.0);
+            const auto callback_to_publish_us =
+                steady_elapsed_us(callback_started, SteadyClock::now());
+            status_.max_callback_to_publish_us =
+                std::max(status_.max_callback_to_publish_us, callback_to_publish_us);
+            window_stats.callback_to_publish_ms.observe(
+                static_cast<double>(callback_to_publish_us) / 1000.0);
+            if (!publish_result.ok) {
                 status_.frames_dropped += 1;
             } else {
                 status_.frames_published += 1;
+                status_.payload_bytes_published += static_cast<uint64_t>(data.size());
+                window_stats.payload_out_bytes.observe(static_cast<double>(data.size()));
             }
 
             ++frame_index;
 
-            if (SteadyClock::now() - last_status >= std::chrono::seconds(5)) {
-                std::cerr << prog << ": status received=" << status_.frames_received
-                          << " published=" << status_.frames_published
-                          << " dropped=" << status_.frames_dropped
-                          << " keyframes=" << status_.keyframes
-                          << " sps_pps=" << status_.sps_pps_seen
-                          << " pre_codec_drops=" << status_.pre_codec_drops;
-                if (status_.discontinuities > 0) {
-                    std::cerr << " ts_regr=" << status_.timestamp_regressions
-                              << " ts_gaps=" << status_.timestamp_gaps;
+            const auto now = SteadyClock::now();
+            if (now - last_status >= kStatusLogInterval) {
+                const auto elapsed_sec = steady_elapsed_ms(last_status, now) / 1000.0;
+                if (advanced_logs) {
+                    log_pipeline_status(prog, status_, last_logged_status, window_stats, elapsed_sec,
+                                        true);
+                } else {
+                    log_pipeline_summary(prog, status_, last_logged_status, window_stats,
+                                         elapsed_sec, true);
                 }
-                std::cerr << '\n';
-                last_status = SteadyClock::now();
+                last_logged_status = status_;
+                window_stats.reset();
+                last_status = now;
             }
         }
 
         std::cerr << prog << ": cora h264 worker stopped"
-                  << " published=" << status_.frames_published << '\n';
+                  << " received=" << status_.frames_received
+                  << " published=" << status_.frames_published
+                  << " dropped=" << status_.frames_dropped
+                  << " bytes_in=" << status_.payload_bytes_received
+                  << " bytes_out=" << status_.payload_bytes_published << '\n';
 
     } catch (const std::exception& ex) {
         std::cerr << "[coracam] " << cfg_.channel_type << ": cora h264 worker error: " << ex.what()
@@ -496,11 +796,18 @@ void ChannelWorker::worker_loop_cora_raw() {
                   << " size=" << cfg_.width << "x" << cfg_.height << '\n';
 
         auto last_status = SteadyClock::now();
+        ChannelStatus last_logged_status;
+        PipelineWindowStats window_stats;
         auto last_sample = SteadyClock::now();
+        auto last_arrival = SteadyClock::now();
+        bool have_last_arrival = false;
+        const bool advanced_logs = advanced_pipeline_logs_enabled();
         uint64_t frame_index = 0;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
+            const auto receive_started = SteadyClock::now();
             auto msg = reader.receive(200);
+            const auto receive_finished = SteadyClock::now();
             if (stop_requested_.load(std::memory_order_acquire)) {
                 break;
             }
@@ -508,7 +815,13 @@ void ChannelWorker::worker_loop_cora_raw() {
                 update_idle_seconds(prog, status_, last_sample);
                 continue;
             }
-            last_sample = SteadyClock::now();
+            window_stats.dds_wait_ms.observe(steady_elapsed_ms(receive_started, receive_finished));
+            if (have_last_arrival) {
+                window_stats.recv_gap_ms.observe(steady_elapsed_ms(last_arrival, receive_finished));
+            }
+            last_arrival = receive_finished;
+            have_last_arrival = true;
+            last_sample = receive_finished;
             status_.idle_seconds = 0;
             status_.frames_received += 1;
 
@@ -524,6 +837,8 @@ void ChannelWorker::worker_loop_cora_raw() {
             uint32_t width = img.width() != 0 ? img.width() : cfg_.width;
             uint32_t height = img.height() != 0 ? img.height() : cfg_.height;
             const uint32_t step = img.step();
+            status_.payload_bytes_received += payload_len;
+            window_stats.payload_in_bytes.observe(static_cast<double>(payload_len));
 
             if (payload_len == 0) {
                 std::cerr << prog << ": empty raw payload, dropping\n";
@@ -554,6 +869,7 @@ void ChannelWorker::worker_loop_cora_raw() {
             }
 
             if (encoding == "nv12") {
+                const auto convert_started = SteadyClock::now();
                 if (!nv12_to_bgr24(src_data, width, height, step, raw_convert_buf)) {
                     std::cerr << prog << ": nv12 conversion failed (payload=" << src_data.size()
                               << " w=" << width << " h=" << height << " step=" << step
@@ -561,10 +877,13 @@ void ChannelWorker::worker_loop_cora_raw() {
                     status_.frames_dropped += 1;
                     continue;
                 }
+                window_stats.raw_convert_ms.observe(
+                    steady_elapsed_ms(convert_started, SteadyClock::now()));
                 payload_ptr = raw_convert_buf.data();
                 payload_len = raw_convert_buf.size();
                 status_.stride_repacks += 1;
             } else if (encoding == "mono8") {
+                const auto convert_started = SteadyClock::now();
                 if (!mono8_to_bgr24(src_data, width, height, step, raw_convert_buf)) {
                     std::cerr << prog << ": mono8 conversion failed (payload=" << src_data.size()
                               << " w=" << width << " h=" << height << " step=" << step
@@ -572,6 +891,8 @@ void ChannelWorker::worker_loop_cora_raw() {
                     status_.frames_dropped += 1;
                     continue;
                 }
+                window_stats.raw_convert_ms.observe(
+                    steady_elapsed_ms(convert_started, SteadyClock::now()));
                 payload_ptr = raw_convert_buf.data();
                 payload_len = raw_convert_buf.size();
                 status_.stride_repacks += 1;
@@ -588,13 +909,16 @@ void ChannelWorker::worker_loop_cora_raw() {
                     continue;
                 }
                 if (actual_step != natural_step) {
+                    const auto convert_started = SteadyClock::now();
                     raw_convert_buf.resize(static_cast<std::size_t>(height) * natural_step);
                     for (uint32_t y = 0; y < height; ++y) {
-                        std::memcpy(raw_convert_buf.data() +
-                                        static_cast<std::size_t>(y) * natural_step,
-                                    src_data.data() + static_cast<std::size_t>(y) * actual_step,
-                                    natural_step);
+                        std::memcpy(
+                            raw_convert_buf.data() + static_cast<std::size_t>(y) * natural_step,
+                            src_data.data() + static_cast<std::size_t>(y) * actual_step,
+                            natural_step);
                     }
+                    window_stats.raw_convert_ms.observe(
+                        steady_elapsed_ms(convert_started, SteadyClock::now()));
                     payload_ptr = raw_convert_buf.data();
                     payload_len = raw_convert_buf.size();
                     status_.stride_repacks += 1;
@@ -611,8 +935,14 @@ void ChannelWorker::worker_loop_cora_raw() {
             if (stamp.sec() > 0 || stamp.nanosec() > 0) {
                 ts_us = stamp_to_us(stamp.sec(), stamp.nanosec());
             }
+            const auto now_us = unix_timestamp_us();
             if (ts_us == 0) {
-                ts_us = unix_timestamp_us();
+                ts_us = now_us;
+                status_.timestamp_fallbacks += 1;
+            } else {
+                const auto source_age = positive_source_age_us(now_us, ts_us);
+                status_.max_source_age_us = std::max(status_.max_source_age_us, source_age);
+                window_stats.source_age_ms.observe(source_age_ms(now_us, ts_us));
             }
 
             if (have_last_ts) {
@@ -621,47 +951,66 @@ void ChannelWorker::worker_loop_cora_raw() {
                               << '\n';
                     status_.timestamp_regressions += 1;
                     status_.discontinuities += 1;
-                } else if (frame_period_us > 0.0 &&
-                           static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
-                    std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
-                              << "us > 3 frame periods\n";
-                    status_.timestamp_gaps += 1;
-                    status_.discontinuities += 1;
+                } else {
+                    window_stats.source_gap_ms.observe(static_cast<double>(ts_us - last_ts_us) /
+                                                       1000.0);
+                    if (frame_period_us > 0.0 &&
+                        static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
+                        std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
+                                  << "us > 3 frame periods\n";
+                        status_.timestamp_gaps += 1;
+                        status_.discontinuities += 1;
+                    }
                 }
             }
             last_ts_us = ts_us;
             have_last_ts = true;
 
-            if (!publish_frame(publisher, ts_us, width, height, pf, frame_index, payload_ptr,
-                               payload_len, cfg_.channel_type)) {
+            const auto callback_started = receive_finished;
+            const auto publish_result =
+                publish_frame(publisher, ts_us, width, height, pf, frame_index, payload_ptr,
+                              payload_len, cfg_.channel_type);
+            status_.max_publish_us = std::max(status_.max_publish_us, publish_result.elapsed_us);
+            window_stats.publish_ms.observe(static_cast<double>(publish_result.elapsed_us) /
+                                            1000.0);
+            const auto callback_to_publish_us =
+                steady_elapsed_us(callback_started, SteadyClock::now());
+            status_.max_callback_to_publish_us =
+                std::max(status_.max_callback_to_publish_us, callback_to_publish_us);
+            window_stats.callback_to_publish_ms.observe(
+                static_cast<double>(callback_to_publish_us) / 1000.0);
+            if (!publish_result.ok) {
                 status_.frames_dropped += 1;
             } else {
                 status_.frames_published += 1;
+                status_.payload_bytes_published += payload_len;
+                window_stats.payload_out_bytes.observe(static_cast<double>(payload_len));
             }
 
             ++frame_index;
 
-            if (SteadyClock::now() - last_status >= std::chrono::seconds(5)) {
-                std::cerr << prog << ": status received=" << status_.frames_received
-                          << " published=" << status_.frames_published
-                          << " dropped=" << status_.frames_dropped;
-                if (status_.discontinuities > 0) {
-                    std::cerr << " ts_regr=" << status_.timestamp_regressions
-                              << " ts_gaps=" << status_.timestamp_gaps;
+            const auto now = SteadyClock::now();
+            if (now - last_status >= kStatusLogInterval) {
+                const auto elapsed_sec = steady_elapsed_ms(last_status, now) / 1000.0;
+                if (advanced_logs) {
+                    log_pipeline_status(prog, status_, last_logged_status, window_stats, elapsed_sec,
+                                        false);
+                } else {
+                    log_pipeline_summary(prog, status_, last_logged_status, window_stats,
+                                         elapsed_sec, false);
                 }
-                if (status_.encoding_mismatches > 0 || status_.stride_repacks > 0 ||
-                    status_.dimension_drifts > 0) {
-                    std::cerr << " enc_mism=" << status_.encoding_mismatches
-                              << " stride_repacks=" << status_.stride_repacks
-                              << " dim_drifts=" << status_.dimension_drifts;
-                }
-                std::cerr << '\n';
-                last_status = SteadyClock::now();
+                last_logged_status = status_;
+                window_stats.reset();
+                last_status = now;
             }
         }
 
         std::cerr << prog << ": cora raw worker stopped"
-                  << " published=" << status_.frames_published << '\n';
+                  << " received=" << status_.frames_received
+                  << " published=" << status_.frames_published
+                  << " dropped=" << status_.frames_dropped
+                  << " bytes_in=" << status_.payload_bytes_received
+                  << " bytes_out=" << status_.payload_bytes_published << '\n';
 
     } catch (const std::exception& ex) {
         std::cerr << "[coracam] " << cfg_.channel_type << ": cora raw worker error: " << ex.what()
@@ -706,6 +1055,7 @@ void ChannelWorker::worker_loop_mock() {
         const auto frame_period = std::chrono::duration<double>(1.0 / std::max(1U, cfg_.fps));
         auto next_frame = SteadyClock::now();
         auto last_status = SteadyClock::now();
+        const bool advanced_logs = advanced_pipeline_logs_enabled();
         uint64_t frame_index = 0;
         constexpr uint64_t kKeyframeInterval = 25;
 
@@ -731,10 +1081,11 @@ void ChannelWorker::worker_loop_mock() {
                 payload_ptr = raw_buf.data();
             }
 
-            if (!publish_frame(
-                    publisher, unix_timestamp_us(), cfg_.width, cfg_.height,
-                    is_h264 ? rollio::PixelFormat::H264AnnexB : rollio::PixelFormat::Bgr24,
-                    frame_index, payload_ptr, payload_len, cfg_.channel_type)) {
+            const auto publish_result = publish_frame(
+                publisher, unix_timestamp_us(), cfg_.width, cfg_.height,
+                is_h264 ? rollio::PixelFormat::H264AnnexB : rollio::PixelFormat::Bgr24, frame_index,
+                payload_ptr, payload_len, cfg_.channel_type);
+            if (!publish_result.ok) {
                 status_.frames_dropped += 1;
             } else {
                 status_.frames_published += 1;
@@ -742,11 +1093,12 @@ void ChannelWorker::worker_loop_mock() {
 
             ++frame_index;
 
-            if (SteadyClock::now() - last_status >= std::chrono::seconds(5)) {
+            if (SteadyClock::now() - last_status >= kStatusLogInterval) {
                 std::cerr << prog << ": status"
+                          << (advanced_logs ? "" : " summary")
                           << " published=" << status_.frames_published
                           << " dropped=" << status_.frames_dropped;
-                if (is_h264) {
+                if (advanced_logs && is_h264) {
                     std::cerr << " keyframes=" << status_.keyframes
                               << " sps_pps=" << status_.sps_pps_seen;
                 }

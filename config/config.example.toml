@@ -56,6 +56,12 @@ chunk_size = 1000
 # (default: 0)
 dds_domain_id = 0
 
+# Keep concise 10s pipeline summaries by default. Set true only while debugging
+# camera/encoder/visualizer latency, payload size, frame type, or GOP issues.
+# H.264 dump is controlled separately by ROLLIO_*_H264_DUMP.
+# (default: false)
+advanced_pipeline_logs = false
+
 # -----------------------------------------------------------------------------
 # Controller process supervisor
 # -----------------------------------------------------------------------------
@@ -108,6 +114,12 @@ id = "pseudo_camera_0"
 # Iceoryx2 topic prefix. Every channel's frame / state / command service name
 # is derived as "{bus_root}/{channel_type}/...". Must be unique per device.
 bus_root = "camera_top"
+
+# Optional DDS participant knobs used by Cora/Fast-DDS-backed devices. Coracam
+# setup writes 2 MiB by default. Set 67108864 (64 MiB) or higher when raw
+# layouts or vendor-side SHM pressure need a larger Fast-DDS segment.
+# dds_shm_segment_size = 67108864
+# dds_callback_threads = 4
 
 # Optional per-device extra keys for driver-specific knobs (transport,
 # interface, end-effector model, …). These are deserialized flat at the

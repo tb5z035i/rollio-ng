@@ -12,6 +12,8 @@ use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+const ADVANCED_PIPELINE_LOGS_ENV: &str = "ROLLIO_ADVANCED_PIPELINE_LOGS";
+
 /// Resolve a user-facing path string from the project config against the
 /// invocation cwd of the controller. Absolute paths are returned unchanged;
 /// relative paths are joined onto `invocation_cwd` and lexically normalized
@@ -144,6 +146,7 @@ pub(crate) fn build_collect_specs(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     });
 
@@ -159,22 +162,27 @@ pub(crate) fn build_preview_specs(
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs = Vec::new();
 
-    specs.push(build_visualizer_spec(
-        config,
-        workspace_root,
-        child_working_dir,
-        current_exe_dir,
-    )?);
+    specs.push(with_pipeline_log_env(
+        build_visualizer_spec(config, workspace_root, child_working_dir, current_exe_dir)?,
+        config.runtime.advanced_pipeline_logs,
+    ));
 
-    for device in &config.devices {
-        specs.push(build_device_spec(
-            device,
-            config.runtime.dds_domain_id,
-            workspace_root,
-            child_working_dir,
-            current_exe_dir,
-            invocation_cwd,
-        )?);
+    for device in config
+        .devices
+        .iter()
+        .filter(|device| device.channels.iter().any(|channel| channel.enabled))
+    {
+        specs.push(with_pipeline_log_env(
+            build_device_spec(
+                device,
+                config.runtime.dds_domain_id,
+                workspace_root,
+                child_working_dir,
+                current_exe_dir,
+                invocation_cwd,
+            )?,
+            config.runtime.advanced_pipeline_logs,
+        ));
     }
 
     // The visualizer subscribes to each camera's preview tap, which is
@@ -183,12 +191,15 @@ pub(crate) fn build_preview_specs(
     // but it still produces the always-on RGB24 preview tap. Spawning it
     // here means setup/identifying mode also gets live camera previews.
     for encoder_config in config.encoder_runtime_configs_v2() {
-        specs.push(build_encoder_spec(
-            &encoder_config,
-            workspace_root,
-            child_working_dir,
-            current_exe_dir,
-        )?);
+        specs.push(with_pipeline_log_env(
+            build_encoder_spec(
+                &encoder_config,
+                workspace_root,
+                child_working_dir,
+                current_exe_dir,
+            )?,
+            config.runtime.advanced_pipeline_logs,
+        ));
     }
 
     if config.mode == CollectionMode::Teleop {
@@ -203,6 +214,14 @@ pub(crate) fn build_preview_specs(
     }
 
     Ok(specs)
+}
+
+fn with_pipeline_log_env(mut spec: ChildSpec, advanced_pipeline_logs: bool) -> ChildSpec {
+    spec.env.push((
+        OsString::from(ADVANCED_PIPELINE_LOGS_ENV),
+        OsString::from(if advanced_pipeline_logs { "1" } else { "0" }),
+    ));
+    spec
 }
 
 pub(crate) fn build_visualizer_spec(
@@ -225,6 +244,7 @@ pub(crate) fn build_visualizer_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -270,6 +290,7 @@ pub(crate) fn build_control_server_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -307,6 +328,7 @@ pub(crate) fn build_device_spec(
             args: common_args,
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -393,6 +415,7 @@ pub(crate) fn build_teleop_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -420,6 +443,7 @@ pub(crate) fn build_encoder_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -509,6 +533,7 @@ pub(crate) fn build_assembler_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -557,6 +582,7 @@ pub(crate) fn build_storage_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -591,6 +617,7 @@ pub(crate) fn ui_browser_url(host: &str, port: u16) -> String {
 mod tests {
     use super::*;
     use rollio_types::config::{EpisodeFormat, StorageBackend, StorageRuntimeConfig};
+    use std::str::FromStr;
 
     #[test]
     fn resolve_invocation_relative_path_keeps_absolute_paths() {
@@ -656,6 +683,8 @@ mod tests {
             id: "cora-righthand".into(),
             bus_root: "coracam_righthand".into(),
             dds_domain_id: None,
+            dds_shm_segment_size: None,
+            dds_callback_threads: None,
             channels: Vec::new(),
             extra,
         };
@@ -685,6 +714,115 @@ mod tests {
             inline.contains("dds_domain_id = 31"),
             "global DDS domain should be injected into device inline config, got: {inline}"
         );
+    }
+
+    #[test]
+    fn build_preview_specs_skips_devices_with_no_enabled_channels() {
+        let config = ProjectConfig::from_str(
+            r#"
+project_name = "disabled-coracam"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "coracam_head"
+executable = "rollio-device-coracam-head"
+driver = "coracam-head"
+id = "cora-head"
+bus_root = "coracam_head"
+
+[[devices.channels]]
+channel_type = "left_h264"
+kind = "camera"
+enabled = false
+profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#,
+        )
+        .expect("config should parse");
+
+        let specs = build_preview_specs(
+            &config,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+        )
+        .expect("preview specs should build");
+
+        assert!(specs.iter().any(|spec| spec.id == "visualizer"));
+        assert!(
+            specs.iter().all(|spec| spec.id != "device-coracam_head"),
+            "device with no enabled channels should not be spawned: {specs:?}"
+        );
+    }
+
+    #[test]
+    fn build_preview_specs_passes_advanced_pipeline_log_env_to_pipeline_children() {
+        let config = ProjectConfig::from_str(
+            r#"
+project_name = "advanced-logs"
+mode = "intervention"
+
+[runtime]
+advanced_pipeline_logs = true
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "cam"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#,
+        )
+        .expect("config should parse");
+
+        let specs = build_preview_specs(
+            &config,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+        )
+        .expect("preview specs should build");
+
+        for id in ["visualizer", "device-cam", "encoder-preview-cam-color"] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("missing spec {id}: {specs:?}"));
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|(key, value)| { key == ADVANCED_PIPELINE_LOGS_ENV && value == "1" }),
+                "expected {id} to receive {ADVANCED_PIPELINE_LOGS_ENV}=1, got {:?}",
+                spec.env
+            );
+        }
     }
 
     #[test]

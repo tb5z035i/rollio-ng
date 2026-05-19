@@ -62,6 +62,22 @@ auto unique_bus_root() -> std::string {
     return "test/coracam_" + std::to_string(ns);
 }
 
+auto run_coracam_dry_run_from_config(const std::string& config_inline) -> std::string {
+    char tmp_path[] = "/tmp/coracam_test_XXXXXX.toml";
+    const int fd = mkstemps(tmp_path, 5);
+    if (fd < 0) {
+        throw std::runtime_error("mkstemps failed");
+    }
+    (void)write(fd, config_inline.data(), config_inline.size());
+    close(fd);
+
+    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_HEAD_BIN + "\" run --config \"" +
+                     tmp_path + "\" --dry-run 2>&1";
+    const auto out = capture_stdout(cmd);
+    unlink(tmp_path);
+    return out;
+}
+
 auto spawn_device(const std::string& config_inline) -> pid_t {
     const auto pid = fork();
     if (pid < 0) {
@@ -208,25 +224,38 @@ auto run_dry_run_test() -> void {
         "fps = 25\n"
         "pixel_format = \"h264-annex-b\"\n";
 
-    // Write config to temp file and run with --config
-    char tmp_path[] = "/tmp/coracam_test_XXXXXX.toml";
-    const int fd = mkstemps(tmp_path, 5);
-    if (fd < 0) {
-        throw std::runtime_error("mkstemps failed");
-    }
-    (void)write(fd, config_inline.data(), config_inline.size());
-    close(fd);
-
-    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_HEAD_BIN + "\" run --config \"" +
-                     tmp_path + "\" --dry-run 2>&1";
-    const auto out = capture_stdout(cmd);
-    unlink(tmp_path);
+    const auto out = run_coracam_dry_run_from_config(config_inline);
 
     if (out.find("dry-run ok") == std::string::npos) {
         throw std::runtime_error("dry-run: missing 'dry-run ok'\noutput: " + out);
     }
     if (out.find("left_h264") == std::string::npos) {
         throw std::runtime_error("dry-run: missing 'left_h264' channel\noutput: " + out);
+    }
+
+    const auto subset_config =
+        "name = \"coracam_head\"\n"
+        "driver = \"coracam-head\"\n"
+        "id = \"cora-head\"\n"
+        "bus_root = \"" +
+        bus_root +
+        "_subset\"\n"
+        "\n"
+        "[[channels]]\n"
+        "channel_type = \"left_h264\"\n"
+        "kind = \"camera\"\n"
+        "enabled = true\n"
+        "[channels.profile]\n"
+        "width = 640\n"
+        "height = 480\n"
+        "fps = 25\n"
+        "pixel_format = \"h264-annex-b\"\n";
+    const auto subset_out = run_coracam_dry_run_from_config(subset_config);
+    if (subset_out.find("channels=1") == std::string::npos ||
+        subset_out.find("left_h264") == std::string::npos ||
+        subset_out.find("right_h264") != std::string::npos) {
+        throw std::runtime_error("dry-run subset: unexpected channel wiring\noutput: " +
+                                 subset_out);
     }
     std::cerr << "rollio-devices-coracam-tests: dry-run OK\n";
 }
@@ -250,6 +279,11 @@ auto run_annexb_parser_test() -> void {
     if (!has_annexb_start_code(kf.data(), kf.size())) {
         throw std::runtime_error("annexb parser: keyframe missing start code");
     }
+    const auto kf_types = scan_h264_slice_types(kf.data(), kf.size());
+    if (h264_picture_type_label(kf_types) != 'I' || kf_types.i_slices == 0U ||
+        kf_types.idr_nalus == 0U) {
+        throw std::runtime_error("annexb parser: keyframe slice type should be I/IDR");
+    }
 
     // Delta frame should not contain SPS/PPS
     const auto delta = make_mock_annexb_au(false, 1);
@@ -259,6 +293,18 @@ auto run_annexb_parser_test() -> void {
     scan_sps_pps(delta.data(), delta.size(), has_sps2, has_pps2, has_idr2);
     if (has_sps2 || has_pps2 || has_idr2) {
         throw std::runtime_error("annexb parser: delta frame unexpectedly has SPS/PPS/IDR");
+    }
+    const auto delta_types = scan_h264_slice_types(delta.data(), delta.size());
+    if (h264_picture_type_label(delta_types) != 'P' || delta_types.p_slices == 0U) {
+        throw std::runtime_error("annexb parser: delta slice type should be P");
+    }
+
+    // Explicit B-slice fixture: first_mb_in_slice=0, slice_type=1
+    // (Exp-Golomb bits "1 010" => 0xA0).
+    const std::vector<uint8_t> b_slice = {0x00, 0x00, 0x00, 0x01, kNalHeaderSlice, 0xA0};
+    const auto b_types = scan_h264_slice_types(b_slice.data(), b_slice.size());
+    if (h264_picture_type_label(b_types) != 'B' || b_types.b_slices == 0U) {
+        throw std::runtime_error("annexb parser: B slice type was not detected");
     }
 
     std::cerr << "rollio-devices-coracam-tests: annexb parser OK\n";
@@ -548,6 +594,8 @@ auto run_device_config_extra_test() -> void {
         "id = \"cora-righthand\"\n"
         "bus_root = \"coracam_righthand\"\n"
         "dds_domain_id = 31\n"
+        "dds_shm_segment_size = 67108864\n"
+        "dds_callback_threads = 4\n"
         "\n"
         "[extra]\n"
         "coracam_mapping_file = \"./coracam-mapping.toml\"\n"
@@ -568,6 +616,12 @@ auto run_device_config_extra_test() -> void {
     }
     if (!config.dds_domain_id || *config.dds_domain_id != 31U) {
         throw std::runtime_error("device_config: dds_domain_id mismatch");
+    }
+    if (!config.dds_shm_segment_size || *config.dds_shm_segment_size != 67108864U) {
+        throw std::runtime_error("device_config: dds_shm_segment_size mismatch");
+    }
+    if (!config.dds_callback_threads || *config.dds_callback_threads != 4U) {
+        throw std::runtime_error("device_config: dds_callback_threads mismatch");
     }
     if (config.channels.size() != 1U || config.channels[0].channel_type != "left_raw") {
         throw std::runtime_error("device_config: channel after [extra] not parsed");

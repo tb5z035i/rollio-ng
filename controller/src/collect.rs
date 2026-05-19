@@ -10,8 +10,8 @@ use crate::runtime_paths::{
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE,
-    EPISODE_DROPPED_SERVICE, EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_DROPPED_SERVICE,
+    EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
 use rollio_types::messages::{
@@ -626,8 +626,14 @@ mod tests {
         config.mode = rollio_types::config::CollectionMode::Intervention;
         config.pairings.clear();
 
-        let specs = build_preview_specs(&config, Path::new("."), Path::new("."), Path::new("."))
-            .expect("specs should build");
+        let specs = build_preview_specs(
+            &config,
+            Path::new("."),
+            Path::new("."),
+            Path::new("."),
+            Path::new("."),
+        )
+        .expect("specs should build");
 
         assert!(
             specs.iter().all(|spec| !spec.id.starts_with("teleop-")),

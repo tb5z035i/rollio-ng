@@ -73,21 +73,35 @@ struct ChannelWorkerConfig {
 // Per-channel telemetry counters — written by the worker thread and read
 // (best-effort, no lock) by the main thread for the periodic log line.
 struct ChannelStatus {
-    uint64_t frames_received{0};          // DDS samples received (raw + h264)
-    uint64_t frames_published{0};         // iceoryx2 samples successfully published
-    uint64_t frames_dropped{0};           // dropped: loan failure or parse/validate error
-    uint64_t keyframes{0};                // H264 only: IDR frames seen
-    uint64_t sps_pps_seen{0};             // H264 only: samples carrying SPS+PPS
-    uint64_t discontinuities{0};          // timestamp / sequence backward jumps
-    uint64_t timestamp_regressions{0};    // timestamp went backwards
-    uint64_t timestamp_gaps{0};           // timestamp jumped > 3 * frame_period
-    uint64_t encoding_mismatches{0};      // raw: encoding != expected
-    uint64_t stride_repacks{0};           // raw: step != width*bpp, row-copy taken
-    uint64_t dimension_drifts{0};         // width/height differs from configured
-    uint64_t pre_codec_drops{0};          // H264: IDR seen before any SPS+PPS
-    uint64_t codec_config_recoveries{0};  // H264: came back to ready after loss
-    uint64_t idle_seconds{0};             // consecutive seconds without new sample
-    bool codec_ready{false};              // H264: SPS+PPS were seen at least once
+    uint64_t frames_received{0};             // DDS samples received (raw + h264)
+    uint64_t frames_published{0};            // iceoryx2 samples successfully published
+    uint64_t frames_dropped{0};              // dropped: loan failure or parse/validate error
+    uint64_t keyframes{0};                   // H264 only: IDR frames seen
+    uint64_t sps_pps_seen{0};                // H264 only: samples carrying SPS+PPS
+    uint64_t discontinuities{0};             // timestamp / sequence backward jumps
+    uint64_t timestamp_regressions{0};       // timestamp went backwards
+    uint64_t timestamp_gaps{0};              // timestamp jumped > 3 * frame_period
+    uint64_t timestamp_fallbacks{0};         // missing source stamp; local receive time used
+    uint64_t payload_bytes_received{0};      // bytes received from Cora DDS payloads
+    uint64_t payload_bytes_published{0};     // bytes published to iceoryx2
+    uint64_t max_source_age_us{0};           // max local_now - source timestamp
+    uint64_t max_publish_us{0};              // max iceoryx loan/copy/send duration
+    uint64_t max_callback_to_publish_us{0};  // max DDS callback-to-publish duration
+    uint64_t encoding_mismatches{0};         // raw: encoding != expected
+    uint64_t stride_repacks{0};              // raw: step != width*bpp, row-copy taken
+    uint64_t dimension_drifts{0};            // width/height differs from configured
+    uint64_t pre_codec_drops{0};             // H264: IDR seen before any SPS+PPS
+    uint64_t codec_config_recoveries{0};     // H264: came back to ready after loss
+    uint64_t h264_frames_i{0};               // H264: AU classified as I/IDR
+    uint64_t h264_frames_p{0};               // H264: AU classified as P
+    uint64_t h264_frames_b{0};               // H264: AU classified as B
+    uint64_t h264_frames_sp{0};              // H264: AU classified as SP
+    uint64_t h264_frames_si{0};              // H264: AU classified as SI
+    uint64_t h264_frames_mixed{0};           // H264: AU contains mixed slice types
+    uint64_t h264_frames_unknown{0};         // H264: slice header could not be parsed
+    uint64_t h264_idr_frames{0};             // H264: AU contains at least one IDR NAL
+    uint64_t idle_seconds{0};                // consecutive seconds without new sample
+    bool codec_ready{false};                 // H264: SPS+PPS were seen at least once
 };
 
 // One running channel worker. Create via start(); stop via stop() (RAII).

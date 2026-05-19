@@ -1,6 +1,7 @@
 #ifndef ROLLIO_DEVICES_CORACAM_H264_ANNEXB_HPP
 #define ROLLIO_DEVICES_CORACAM_H264_ANNEXB_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -54,6 +55,29 @@ auto has_annexb_start_code(const uint8_t* data, std::size_t size) noexcept -> bo
 // not start with a valid start code.
 auto scan_sps_pps(const uint8_t* data, std::size_t size, bool& has_sps, bool& has_pps,
                   bool& has_idr) noexcept -> bool;
+
+// Best-effort H.264 VCL slice-type summary for one Annex-B access unit.
+//
+// This parses only the first two Exp-Golomb fields of each VCL slice
+// header (`first_mb_in_slice`, `slice_type`). It is intentionally not a
+// decoder; it is enough to distinguish common GOP shapes such as all-I,
+// IPPPP, or streams containing B slices.
+struct H264SliceTypeStats {
+    uint32_t vcl_nalus{0};
+    uint32_t idr_nalus{0};
+    uint32_t p_slices{0};
+    uint32_t b_slices{0};
+    uint32_t i_slices{0};
+    uint32_t sp_slices{0};
+    uint32_t si_slices{0};
+    uint32_t unknown_slices{0};
+};
+
+auto scan_h264_slice_types(const uint8_t* data, std::size_t size) -> H264SliceTypeStats;
+
+// Return a compact picture label derived from the VCL slice summary:
+//   I/P/B/S/T for I/P/B/SP/SI, M for mixed slice types, ? for unknown.
+auto h264_picture_type_label(const H264SliceTypeStats& stats) noexcept -> char;
 
 // Find the offset to the *NAL header byte* for every NAL unit in the buffer
 // (i.e. the byte right after each start code). Returns an empty vector if
