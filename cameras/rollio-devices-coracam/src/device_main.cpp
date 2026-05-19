@@ -126,19 +126,43 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
                            const std::optional<CoraMapping>& mapping)
     -> std::vector<ChannelWorkerConfig>;
 
+// Look up the descriptor for an id, throwing a uniform error message on miss.
+auto require_descriptor(std::string_view id) -> const DeviceDescriptor& {
+    if (const auto* desc = find_descriptor_by_id(id); desc != nullptr) {
+        return *desc;
+    }
+    std::string msg = std::string(kCoracamProgramName) + ": unknown coracam id '";
+    msg.append(id);
+    msg += "' (expected one of:";
+    for (std::size_t i = 0; i < kDescriptorCount; ++i) {
+        msg += " ";
+        msg += kAllDescriptors[i]->id;
+    }
+    msg += ")";
+    throw std::runtime_error(msg);
+}
+
 // ---------------------------------------------------------------------------
 // probe
 // ---------------------------------------------------------------------------
 
-auto cmd_probe(const DeviceDescriptor& desc) -> int {
-    // Return a single-element array; the controller merges the outputs of
-    // all discovered rollio-device-coracam-* executables.
-    std::cout << "[{"
-              << "\"id\":\"" << json_escape(desc.default_id) << "\","
-              << "\"name\":\"" << json_escape(desc.default_name) << "\","
-              << "\"driver\":\"" << json_escape(desc.driver) << "\","
-              << "\"type\":\"camera\""
-              << "}]\n";
+auto cmd_probe() -> int {
+    // Single executable exposes all physical Coracam mount points. The
+    // controller's discovery layer picks each entry up as a distinct device.
+    std::cout << '[';
+    for (std::size_t i = 0; i < kDescriptorCount; ++i) {
+        const auto& desc = *kAllDescriptors[i];
+        if (i > 0) {
+            std::cout << ',';
+        }
+        std::cout << "{"
+                  << "\"id\":\"" << json_escape(desc.id) << "\","
+                  << "\"name\":\"" << json_escape(desc.default_name) << "\","
+                  << "\"driver\":\"" << json_escape(kCoracamDriver) << "\","
+                  << "\"type\":\"camera\""
+                  << "}";
+    }
+    std::cout << "]\n";
     return 0;
 }
 
@@ -146,7 +170,7 @@ auto cmd_probe(const DeviceDescriptor& desc) -> int {
 // validate
 // ---------------------------------------------------------------------------
 
-auto cmd_validate(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
+auto cmd_validate(int argc, char* argv[]) -> int {
     const bool json = has_flag(argc, argv, "--json");
     const auto config_path = optional_arg(argc, argv, "--config");
     const auto mapping_path = optional_arg(argc, argv, "--mapping");
@@ -171,6 +195,7 @@ auto cmd_validate(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
     if (id.empty()) {
         throw std::runtime_error("validate requires a device id");
     }
+    const auto& desc = require_descriptor(id);
 
     // If --config is supplied perform full schema + mapping validation; this
     // makes `validate` useful to the controller's collect path. Without
@@ -210,7 +235,7 @@ auto cmd_validate(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
                   << "\"valid\":" << (valid ? "true" : "false") << ","
                   << "\"mode\":\"" << json_escape(mode) << "\","
                   << "\"id\":\"" << json_escape(id) << "\","
-                  << "\"driver\":\"" << json_escape(desc.driver) << "\","
+                  << "\"driver\":\"" << json_escape(kCoracamDriver) << "\","
                   << "\"errors\":[";
         for (std::size_t i = 0; i < errors.size(); ++i) {
             if (i > 0)
@@ -235,11 +260,18 @@ auto cmd_validate(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
 
 // Emit the DeviceQueryResponse JSON expected by the controller's live query.
 // Fixed 4 channels, two raw + two h264, all 640x480@25Hz.
-auto cmd_query(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
-    (void)argc;
-    (void)argv;
-    // The id argument is not needed for a mock query — return the fixed
-    // virtual device regardless of which id is passed.
+auto cmd_query(int argc, char* argv[]) -> int {
+    std::string id;
+    for (int i = 0; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (!arg.empty() && arg.front() != '-') {
+            id = std::string(arg);
+        }
+    }
+    if (id.empty()) {
+        throw std::runtime_error("query requires a device id");
+    }
+    const auto& desc = require_descriptor(id);
 
     auto emit_channel = [&](const CoracamChannel& ch, bool last) {
         std::cout << "{"
@@ -269,9 +301,9 @@ auto cmd_query(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
     };
 
     std::cout << "{"
-              << "\"driver\":\"" << desc.driver << "\","
+              << "\"driver\":\"" << kCoracamDriver << "\","
               << "\"devices\":[{"
-              << "\"id\":\"" << desc.default_id << "\","
+              << "\"id\":\"" << desc.id << "\","
               << "\"device_class\":\"coracam\","
               << "\"device_label\":\"" << desc.device_label << "\","
               << "\"default_device_name\":\"" << desc.default_name << "\","
@@ -327,9 +359,9 @@ auto find_mapping_topic(const CoraMapping& mapping, std::string_view channel_typ
 auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const DeviceDescriptor& desc,
                            const std::optional<CoraMapping>& mapping)
     -> std::vector<ChannelWorkerConfig> {
-    if (config.driver != desc.driver) {
-        throw std::runtime_error(std::string(desc.program_name) + " requires driver = \"" +
-                                 desc.driver + "\", got \"" + config.driver + "\"");
+    if (config.driver != kCoracamDriver) {
+        throw std::runtime_error(std::string(kCoracamProgramName) + " requires driver = \"" +
+                                 kCoracamDriver + "\", got \"" + config.driver + "\"");
     }
 
     // Channel-type uniqueness inside the BinaryDeviceConfig.
@@ -380,7 +412,7 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
         }
         // Profile must be present and match the channel kind.
         if (!found->profile.has_value()) {
-            throw std::runtime_error(std::string(desc.program_name) + ": channel '" +
+            throw std::runtime_error(std::string(kCoracamProgramName) + ": channel '" +
                                      kch.channel_type + "' requires a [channels.profile] table");
         }
         const auto& prof = *found->profile;
@@ -388,7 +420,7 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
                                      ? rollio::PixelFormat::H264AnnexB
                                      : rollio::PixelFormat::Bgr24;
         if (prof.pixel_format != expected_pf) {
-            throw std::runtime_error(std::string(desc.program_name) + ": channel '" +
+            throw std::runtime_error(std::string(kCoracamProgramName) + ": channel '" +
                                      kch.channel_type + "' pixel_format mismatch (expected " +
                                      rollio::pixel_format_to_string(expected_pf) + ")");
         }
@@ -448,7 +480,7 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
     }
 
     if (out.empty()) {
-        throw std::runtime_error(std::string(desc.program_name) +
+        throw std::runtime_error(std::string(kCoracamProgramName) +
                                  ": at least one fixed coracam channel must be enabled");
     }
 
@@ -501,7 +533,7 @@ auto initialize_cora_participant(const rollio::BinaryDeviceConfig& config,
     if (participant.isInitialized()) {
         return;
     }
-    std::cerr << desc.program_name << ": Cora DDS participant config domain=" << dds_cfg.domain_id
+    std::cerr << kCoracamProgramName << ": Cora DDS participant config domain=" << dds_cfg.domain_id
               << " shm_segment_size=" << dds_cfg.shm_segment_size
               << " callback_threads=" << dds_cfg.callback_threads << '\n';
     if (!participant.initialize(dds_cfg)) {
@@ -509,7 +541,7 @@ auto initialize_cora_participant(const rollio::BinaryDeviceConfig& config,
     }
 }
 
-auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
+auto cmd_run(int argc, char* argv[]) -> int {
     using namespace iox2;
 
     const bool dry_run = has_flag(argc, argv, "--dry-run");
@@ -523,6 +555,8 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
     const auto config = config_inline.has_value()
                             ? rollio::parse_binary_device_config(*config_inline)
                             : rollio::load_binary_device_config_from_file(*config_path);
+
+    const auto& desc = require_descriptor(config.id);
 
     // Optional Cora mapping file. Path may come from --mapping CLI flag or
     // ROLLIO_CORACAM_MAPPING_FILE env var.
@@ -541,7 +575,7 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
     const auto channel_configs = build_channel_configs(config, desc, mapping);
 
     if (dry_run) {
-        std::cerr << desc.program_name << ": dry-run ok"
+        std::cerr << kCoracamProgramName << ": dry-run ok"
                   << " device=" << config.id << " bus_root=" << config.bus_root
                   << " channels=" << channel_configs.size();
         if (mapping_path.has_value()) {
@@ -599,7 +633,7 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
         workers.push_back(std::move(w));
     }
 
-    std::cerr << desc.program_name << ": running"
+    std::cerr << kCoracamProgramName << ": running"
               << " device=" << config.id << " bus_root=" << config.bus_root
               << " channels=" << workers.size() << '\n';
 
@@ -608,7 +642,7 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
         auto sample = ctrl_sub.receive().value();
         while (sample.has_value()) {
             if (sample->payload().tag == rollio::ControlEventTag::Shutdown) {
-                std::cerr << desc.program_name << ": shutdown received, stopping workers\n";
+                std::cerr << kCoracamProgramName << ": shutdown received, stopping workers\n";
                 for (auto& w : workers) {
                     w->stop();
                 }
@@ -617,7 +651,7 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
                 if (any_dds_channel) {
                     framework::dds::DDSParticipant::instance().shutdown();
                 }
-                std::cerr << desc.program_name << ": stopped\n";
+                std::cerr << kCoracamProgramName << ": stopped\n";
                 return 0;
             }
             sample = ctrl_sub.receive().value();
@@ -630,8 +664,8 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
 // usage
 // ---------------------------------------------------------------------------
 
-auto print_usage(const DeviceDescriptor& desc) -> void {
-    std::cerr << "Usage: " << desc.program_name << " <command> [args...]\n"
+auto print_usage() -> void {
+    std::cerr << "Usage: " << kCoracamProgramName << " <command> [args...]\n"
               << "  probe [--json]\n"
               << "  validate [--json] [--config <path>] [--mapping <path>] <id>\n"
               << "  query [--json] <id>\n"
@@ -647,31 +681,31 @@ auto print_usage(const DeviceDescriptor& desc) -> void {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-int coracam_main(int argc, char* argv[], const DeviceDescriptor& desc) {
+int coracam_main(int argc, char* argv[]) {
     try {
         if (argc < 2) {
-            print_usage(desc);
+            print_usage();
             return 1;
         }
 
         const std::string command = argv[1];
 
         if (command == "probe") {
-            return cmd_probe(desc);
+            return cmd_probe();
         }
         if (command == "validate") {
-            return cmd_validate(argc - 2, argv + 2, desc);
+            return cmd_validate(argc - 2, argv + 2);
         }
         if (command == "query") {
-            return cmd_query(argc - 2, argv + 2, desc);
+            return cmd_query(argc - 2, argv + 2);
         }
         if (command == "run") {
-            return cmd_run(argc - 1, argv + 1, desc);
+            return cmd_run(argc - 1, argv + 1);
         }
 
         throw std::runtime_error("unknown subcommand: " + command);
     } catch (const std::exception& ex) {
-        std::cerr << desc.program_name << ": " << ex.what() << '\n';
+        std::cerr << kCoracamProgramName << ": " << ex.what() << '\n';
         return 1;
     }
 }

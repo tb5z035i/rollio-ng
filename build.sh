@@ -78,9 +78,7 @@ CORE_BINS=(
 # discoverable by the controller (see cameras/README.md).
 CAMERA_BINS=(
     "realsense/rollio-device-realsense"
-    "rollio-devices-coracam/rollio-device-coracam-head"
-    "rollio-devices-coracam/rollio-device-coracam-lefthand"
-    "rollio-devices-coracam/rollio-device-coracam-righthand"
+    "rollio-devices-coracam/rollio-device-coracam"
 )
 
 # On arm64, include the Horizon X5 VPU encoder binary.
@@ -325,7 +323,7 @@ stage_cora_sdk_runtime() {
     # debug object trees.
     local root="$1"
     [[ "$DEB_ARCH" == "arm64" ]] || return 0
-    compgen -G "$root/usr/bin/rollio-device-coracam-*" >/dev/null || return 0
+    [[ -x "$root/usr/bin/rollio-device-coracam" ]] || return 0
 
     local src="$CORA_SDK_ROOT"
     [[ -d "$src/lib" ]] || die "missing Cora SDK lib dir: $src/lib -- run \`make prepare-cora-sdk\`"

@@ -72,7 +72,7 @@ pub(super) fn binary_device_from_discovery(
             build_channel_config_from_meta(channel_type, meta, preferred_mode, channel_name)
         })
         .collect();
-    let is_coracam = discovery.driver.starts_with("coracam-");
+    let is_coracam = discovery.driver == "coracam";
     BinaryDeviceConfig {
         name: name.clone(),
         executable: Some(default_device_executable_name(&discovery.driver)),

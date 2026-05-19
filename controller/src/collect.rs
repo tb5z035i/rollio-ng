@@ -41,6 +41,7 @@ pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
     // `~/.local/state/rollio`). We must read this before any chdir-like
     // operation runs.
     let invocation_cwd = std::env::current_dir()?;
+    let resume_hint = crate::dataset_resume::probe_resume(&config, &invocation_cwd)?;
     // Persisted configs no longer carry value_limits; refresh them from a
     // fresh `query --json` per device before runtime children are spawned.
     // The visualizer treats absent limits as a hard error, so any failure
@@ -58,6 +59,7 @@ pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
         state_dir,
         current_exe_dir,
         invocation_cwd,
+        resume_hint,
     )
 }
 
@@ -68,6 +70,7 @@ fn run_with_config(
     state_dir: std::path::PathBuf,
     current_exe_dir: std::path::PathBuf,
     invocation_cwd: std::path::PathBuf,
+    resume_hint: Option<crate::dataset_resume::DatasetResumeHint>,
 ) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root.as_path();
     let share_root = share_root.as_path();
@@ -85,6 +88,16 @@ fn run_with_config(
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGINT, Arc::clone(&shutdown_requested))?;
     signal_hook::flag::register(SIGTERM, Arc::clone(&shutdown_requested))?;
+
+    let mut lifecycle = EpisodeLifecycle::default();
+    if let Some(hint) = resume_hint {
+        eprintln!(
+            "rollio: resuming dataset at episode_index {} ({} episodes already on disk)",
+            hint.next_episode_index, hint.prior_stored_episode_count
+        );
+        lifecycle
+            .resume_from_prior_recordings(hint.next_episode_index, hint.prior_stored_episode_count);
+    }
 
     let controller_ipc = ControllerIpc::new()?;
     let specs = crate::runtime_plan::build_collect_specs(
@@ -104,15 +117,6 @@ fn run_with_config(
         &controller_ipc,
     )?;
 
-    let mut lifecycle = EpisodeLifecycle::default();
-    if let Some(hint) = crate::dataset_resume::probe_resume(&config, invocation_cwd)? {
-        eprintln!(
-            "rollio: resuming dataset at episode_index {} ({} episodes already on disk)",
-            hint.next_episode_index, hint.prior_stored_episode_count
-        );
-        lifecycle
-            .resume_from_prior_recordings(hint.next_episode_index, hint.prior_stored_episode_count);
-    }
     controller_ipc.publish_status(lifecycle.status(Instant::now()))?;
 
     let trigger = run_collect_loop(

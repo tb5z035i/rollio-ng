@@ -337,11 +337,11 @@ fn coracam_mapping_path(
     device: &BinaryDeviceConfig,
     invocation_cwd: &Path,
 ) -> Result<Option<String>, Box<dyn Error>> {
-    let is_coracam = device.driver.starts_with("coracam-")
+    let is_coracam = device.driver == "coracam"
         || device
             .executable
             .as_deref()
-            .is_some_and(|name| name.starts_with("rollio-device-coracam-"));
+            .is_some_and(|name| name == "rollio-device-coracam");
     if !is_coracam {
         return Ok(None);
     }
@@ -678,8 +678,8 @@ mod tests {
         );
         let device = BinaryDeviceConfig {
             name: "coracam_righthand".into(),
-            executable: Some("rollio-device-coracam-righthand".into()),
-            driver: "coracam-righthand".into(),
+            executable: Some("rollio-device-coracam".into()),
+            driver: "coracam".into(),
             id: "cora-righthand".into(),
             bus_root: "coracam_righthand".into(),
             dds_domain_id: None,
@@ -729,8 +729,8 @@ fps = 30
 
 [[devices]]
 name = "coracam_head"
-executable = "rollio-device-coracam-head"
-driver = "coracam-head"
+executable = "rollio-device-coracam"
+driver = "coracam"
 id = "cora-head"
 bus_root = "coracam_head"
 

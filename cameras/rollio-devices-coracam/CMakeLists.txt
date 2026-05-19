@@ -1,16 +1,18 @@
 # cameras/rollio-devices-coracam/CMakeLists.txt
 #
-# Three Rollio camera devices that bridge Cora camera topics into the Rollio
-# iceoryx2 bus as standard CameraFrameHeader frames. The driver is built on
-# the Cora SDK (framework::ChannelReader<T, PubSubType>) instead of a hand
-# written Fast-DDS subscriber + CDR parser.
+# Single Rollio camera device executable bridging Cora camera topics into the
+# Rollio iceoryx2 bus as standard CameraFrameHeader frames. The driver is
+# built on the Cora SDK (framework::ChannelReader<T, PubSubType>) instead of
+# a hand written Fast-DDS subscriber + CDR parser. The three physical mount
+# points (head / lefthand / righthand) are selected at run time via the
+# BinaryDeviceConfig.id field (cora-head / cora-lefthand / cora-righthand).
 #
 # When a channel's DDS topic name is empty (e.g. in unit tests without a
 # DDS stack) the worker falls back to the internal mock generator so that
 # the iceoryx2 publish path and encoder passthrough integration remain
 # testable offline.
 #
-# See signal_other/analysis/rollio-device/coracam-cora-sdk-migration.zh.md.
+# See signal_other/analysis/rollio-device/coracam-single-binary-multi-process-setup实施方案.zh.md.
 
 find_package(Threads REQUIRED)
 find_package(cora REQUIRED CONFIG)
@@ -33,24 +35,21 @@ target_link_libraries(rollio-devices-coracam-runtime PUBLIC
     cora::cora_framework
 )
 
-foreach(_device head lefthand righthand)
-    set(_target rollio-device-coracam-${_device})
-    add_executable(${_target} apps/coracam_${_device}.cpp)
-    target_link_libraries(${_target} PRIVATE rollio-devices-coracam-runtime)
-    set_target_properties(${_target} PROPERTIES
-        BUILD_RPATH "${ROLLIO_CORA_SDK_ROOT}/lib;/opt/cora/lib"
-        INSTALL_RPATH "/opt/cora/lib"
-    )
-endforeach()
+add_executable(rollio-device-coracam apps/coracam.cpp)
+target_link_libraries(rollio-device-coracam PRIVATE rollio-devices-coracam-runtime)
+set_target_properties(rollio-device-coracam PROPERTIES
+    BUILD_RPATH "${ROLLIO_CORA_SDK_ROOT}/lib;/opt/cora/lib"
+    INSTALL_RPATH "/opt/cora/lib"
+)
 
 if(ROLLIO_BUILD_CPP_TESTS)
     add_executable(rollio-devices-coracam-tests tests/runtime.cpp)
     target_link_libraries(rollio-devices-coracam-tests PRIVATE rollio-devices-coracam-runtime)
-    add_dependencies(rollio-devices-coracam-tests rollio-device-coracam-head)
+    add_dependencies(rollio-devices-coracam-tests rollio-device-coracam)
     target_compile_definitions(
         rollio-devices-coracam-tests
         PRIVATE
-        ROLLIO_DEVICE_CORACAM_HEAD_BIN="$<TARGET_FILE:rollio-device-coracam-head>"
+        ROLLIO_DEVICE_CORACAM_BIN="$<TARGET_FILE:rollio-device-coracam>"
     )
     # Set ROLLIO_CORACAM_NO_DDS=1 so the runtime test uses the internal mock
     # generator path rather than attempting a live Cora SDK connection.

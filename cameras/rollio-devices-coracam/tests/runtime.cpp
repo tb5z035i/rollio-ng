@@ -71,7 +71,7 @@ auto run_coracam_dry_run_from_config(const std::string& config_inline) -> std::s
     (void)write(fd, config_inline.data(), config_inline.size());
     close(fd);
 
-    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_HEAD_BIN + "\" run --config \"" +
+    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_BIN + "\" run --config \"" +
                      tmp_path + "\" --dry-run 2>&1";
     const auto out = capture_stdout(cmd);
     unlink(tmp_path);
@@ -85,13 +85,13 @@ auto spawn_device(const std::string& config_inline) -> pid_t {
     }
     if (pid == 0) {
         char* argv[] = {
-            const_cast<char*>(ROLLIO_DEVICE_CORACAM_HEAD_BIN),
+            const_cast<char*>(ROLLIO_DEVICE_CORACAM_BIN),
             const_cast<char*>("run"),
             const_cast<char*>("--config-inline"),
             const_cast<char*>(config_inline.c_str()),
             nullptr,
         };
-        execv(ROLLIO_DEVICE_CORACAM_HEAD_BIN, argv);
+        execv(ROLLIO_DEVICE_CORACAM_BIN, argv);
         _exit(127);
     }
     return pid;
@@ -159,13 +159,17 @@ auto collect_frames(iox2::Subscriber<iox2::ServiceType::Ipc, iox2::bb::Slice<uin
 // ---------------------------------------------------------------------------
 
 auto run_probe_test() -> void {
-    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_HEAD_BIN + "\" probe";
+    const auto cmd = std::string("\"") + ROLLIO_DEVICE_CORACAM_BIN + "\" probe";
     const auto out = capture_stdout(cmd);
-    if (out.find("\"driver\":\"coracam-head\"") == std::string::npos) {
-        throw std::runtime_error("probe: missing expected driver field\noutput: " + out);
+    if (count_substring(out, "\"driver\":\"coracam\"") != 3U) {
+        throw std::runtime_error("probe: expected 3 coracam entries\noutput: " + out);
     }
-    if (out.find("\"id\":\"cora-head\"") == std::string::npos) {
-        throw std::runtime_error("probe: missing expected id field\noutput: " + out);
+    for (const auto* expected_id : {"cora-head", "cora-lefthand", "cora-righthand"}) {
+        const auto needle = std::string("\"id\":\"") + expected_id + "\"";
+        if (out.find(needle) == std::string::npos) {
+            throw std::runtime_error(std::string("probe: missing id ") + expected_id +
+                                     " in output: " + out);
+        }
     }
     std::cerr << "rollio-devices-coracam-tests: probe OK\n";
 }
@@ -178,7 +182,7 @@ auto run_dry_run_test() -> void {
     const auto bus_root = unique_bus_root();
     const auto config_inline =
         "name = \"coracam_head\"\n"
-        "driver = \"coracam-head\"\n"
+        "driver = \"coracam\"\n"
         "id = \"cora-head\"\n"
         "bus_root = \"" +
         bus_root +
@@ -235,7 +239,7 @@ auto run_dry_run_test() -> void {
 
     const auto subset_config =
         "name = \"coracam_head\"\n"
-        "driver = \"coracam-head\"\n"
+        "driver = \"coracam\"\n"
         "id = \"cora-head\"\n"
         "bus_root = \"" +
         bus_root +
@@ -589,8 +593,8 @@ auto run_cora_mapping_test() -> void {
 auto run_device_config_extra_test() -> void {
     const std::string toml =
         "name = \"coracam_righthand\"\n"
-        "executable = \"rollio-device-coracam-righthand\"\n"
-        "driver = \"coracam-righthand\"\n"
+        "executable = \"rollio-device-coracam\"\n"
+        "driver = \"coracam\"\n"
         "id = \"cora-righthand\"\n"
         "bus_root = \"coracam_righthand\"\n"
         "dds_domain_id = 31\n"
@@ -611,7 +615,7 @@ auto run_device_config_extra_test() -> void {
         "pixel_format = \"bgr24\"\n";
 
     const auto config = rollio::parse_binary_device_config(toml);
-    if (config.name != "coracam_righthand" || config.driver != "coracam-righthand") {
+    if (config.name != "coracam_righthand" || config.driver != "coracam") {
         throw std::runtime_error("device_config: root fields mismatch");
     }
     if (!config.dds_domain_id || *config.dds_domain_id != 31U) {
@@ -672,7 +676,7 @@ auto run_runtime_test() -> void {
 
     const auto config_inline =
         "name = \"coracam_head\"\n"
-        "driver = \"coracam-head\"\n"
+        "driver = \"coracam\"\n"
         "id = \"cora-head\"\n"
         "bus_root = \"" +
         bus_root +

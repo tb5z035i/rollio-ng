@@ -357,7 +357,10 @@ impl SetupSession {
         Ok(true)
     }
 
-    pub(super) fn set_assembler_staging_dir(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+    pub(super) fn set_assembler_staging_dir(
+        &mut self,
+        value: &str,
+    ) -> Result<bool, Box<dyn Error>> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             self.message = Some("Assembler staging_dir must not be empty.".into());
@@ -414,6 +417,21 @@ impl SetupSession {
         }
         self.config.storage.queue_size = parsed;
         self.config.validate()?;
+        Ok(true)
+    }
+
+    /// Flip the `[runtime].advanced_pipeline_logs` flag from the wizard.
+    /// Pre-configurable here so coracam (and any other driver that emits
+    /// verbose per-channel pipeline diagnostics) can be toggled at setup
+    /// time rather than via hand-edited TOML.
+    pub(super) fn toggle_advanced_pipeline_logs(&mut self) -> Result<bool, Box<dyn Error>> {
+        let previous = self.config.runtime.advanced_pipeline_logs;
+        self.config.runtime.advanced_pipeline_logs = !previous;
+        if let Err(error) = self.config.validate() {
+            self.config.runtime.advanced_pipeline_logs = previous;
+            self.message = Some(format!("advanced_pipeline_logs rejected: {error}"));
+            return Ok(false);
+        }
         Ok(true)
     }
 

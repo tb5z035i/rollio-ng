@@ -187,7 +187,7 @@ fn binary_device_config_accepts_dds_resource_knobs() {
     let config = BinaryDeviceConfig::from_str(
         r#"
 name = "coracam_head"
-driver = "coracam-head"
+driver = "coracam"
 id = "cora-head"
 bus_root = "coracam_head"
 dds_shm_segment_size = 67108864
@@ -206,7 +206,7 @@ profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
     let err = BinaryDeviceConfig::from_str(
         r#"
 name = "coracam_head"
-driver = "coracam-head"
+driver = "coracam"
 id = "cora-head"
 bus_root = "coracam_head"
 dds_shm_segment_size = 0

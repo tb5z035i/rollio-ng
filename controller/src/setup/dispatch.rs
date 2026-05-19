@@ -65,9 +65,7 @@ impl SetupSession {
                 };
                 Ok(SessionMutation::state_only(self.open_subpanel(name)))
             }
-            "setup_close_subpanel" => {
-                Ok(SessionMutation::state_only(self.close_subpanel()))
-            }
+            "setup_close_subpanel" => Ok(SessionMutation::state_only(self.close_subpanel())),
             "setup_subpanel_toggle_preview_enabled" => {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
@@ -143,18 +141,16 @@ impl SetupSession {
                     self.subpanel_set_control_frequency_hz(name, value)?,
                 ))
             }
-            "setup_open_add_picker" => {
-                Ok(SessionMutation::state_only(self.open_add_picker()))
+            "setup_open_add_picker" => Ok(SessionMutation::state_only(self.open_add_picker())),
+            "setup_add_pseudo_camera" => {
+                Ok(SessionMutation::config_changed(self.add_pseudo_camera()?))
             }
-            "setup_add_pseudo_camera" => Ok(SessionMutation::config_changed(
-                self.add_pseudo_camera()?,
-            )),
-            "setup_add_pseudo_robot" => Ok(SessionMutation::config_changed(
-                self.add_pseudo_robot()?,
-            )),
-            "setup_add_command_device" => Ok(SessionMutation::config_changed(
-                self.add_command_device()?,
-            )),
+            "setup_add_pseudo_robot" => {
+                Ok(SessionMutation::config_changed(self.add_pseudo_robot()?))
+            }
+            "setup_add_command_device" => {
+                Ok(SessionMutation::config_changed(self.add_command_device()?))
+            }
             "setup_toggle_identify" => {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
@@ -314,12 +310,16 @@ impl SetupSession {
                     self.set_ui_http_host(value)?,
                 ))
             }
-            "setup_set_episode_fps" => self.set_text_field(command.value.as_deref(), Self::set_episode_fps),
+            "setup_set_episode_fps" => {
+                self.set_text_field(command.value.as_deref(), Self::set_episode_fps)
+            }
             "setup_set_episode_chunk_size" => {
                 self.set_text_field(command.value.as_deref(), Self::set_episode_chunk_size)
             }
-            "setup_set_controller_shutdown_timeout_ms" => self
-                .set_text_field(command.value.as_deref(), Self::set_controller_shutdown_timeout_ms),
+            "setup_set_controller_shutdown_timeout_ms" => self.set_text_field(
+                command.value.as_deref(),
+                Self::set_controller_shutdown_timeout_ms,
+            ),
             "setup_set_controller_child_poll_interval_ms" => self.set_text_field(
                 command.value.as_deref(),
                 Self::set_controller_child_poll_interval_ms,
@@ -359,6 +359,9 @@ impl SetupSession {
                 command.value.as_deref(),
                 Self::set_monitor_metrics_frequency_hz,
             ),
+            "setup_toggle_advanced_pipeline_logs" => Ok(SessionMutation::config_changed(
+                self.toggle_advanced_pipeline_logs()?,
+            )),
             "setup_save" => {
                 save_project_config(&self.config, &self.output_path)?;
                 self.mark_saved();
