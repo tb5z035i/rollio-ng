@@ -31,7 +31,9 @@ use rollio_types::messages::{
 };
 
 use rollio_encoder::backend::color::{ColorBackendId, ColorCodec, ColorEncoderBackend};
-use rollio_encoder::codec::{encoded_codec_id, CodecSession, CodecSessionParams, EncodedPacketSink, OwnedFrame};
+use rollio_encoder::codec::{
+    encoded_codec_id, CodecSession, CodecSessionParams, EncodedPacketSink, OwnedFrame,
+};
 use rollio_encoder::error::{EncoderError, Result};
 use rollio_encoder::media::EncodeMetrics;
 
@@ -124,7 +126,7 @@ impl Nv12Converter {
                 dst_width as i32,
                 dst_height as i32,
                 dst_pix_fmt,
-                ffmpeg::ffi::SWS_BILINEAR as i32,
+                ffmpeg::ffi::SWS_BILINEAR,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
@@ -152,13 +154,18 @@ impl Nv12Converter {
     }
 
     /// Convert a raw frame to NV12 in-place. Returns (y_ptr, uv_ptr, y_stride, uv_stride).
-    fn convert(&mut self, payload: &[u8], src_format: PixelFormat) -> Result<(&[u8], &[u8], u32, u32)> {
+    fn convert(
+        &mut self,
+        payload: &[u8],
+        src_format: PixelFormat,
+    ) -> Result<(&[u8], &[u8], u32, u32)> {
         let dst_w = self.dst_width as i32;
         let src_h = self.src_height as i32;
         let y_size = (self.dst_width * self.dst_height) as usize;
 
         // Source: caller-provided payload at SOURCE dims.
-        let (src_data, src_linesize) = source_planes(payload, src_format, self.src_width, self.src_height)?;
+        let (src_data, src_linesize) =
+            source_planes(payload, src_format, self.src_width, self.src_height)?;
 
         // Destination: NV12 at OUTPUT dims.
         let dst_data: [*mut u8; 4] = [
@@ -174,7 +181,7 @@ impl Nv12Converter {
         let ret = unsafe {
             ffmpeg::ffi::sws_scale(
                 self.sws_ctx,
-                src_data.as_ptr() as *const *const u8,
+                src_data.as_ptr(),
                 src_linesize.as_ptr(),
                 0,
                 src_h,
@@ -232,15 +239,24 @@ fn source_planes(
     match format {
         PixelFormat::Rgb24 | PixelFormat::Bgr24 => {
             let stride = width as i32 * 3;
-            Ok(([ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()], [stride, 0, 0, 0]))
+            Ok((
+                [ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()],
+                [stride, 0, 0, 0],
+            ))
         }
         PixelFormat::Yuyv => {
             let stride = width as i32 * 2;
-            Ok(([ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()], [stride, 0, 0, 0]))
+            Ok((
+                [ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()],
+                [stride, 0, 0, 0],
+            ))
         }
         PixelFormat::Gray8 => {
             let stride = width as i32;
-            Ok(([ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()], [stride, 0, 0, 0]))
+            Ok((
+                [ptr, std::ptr::null(), std::ptr::null(), std::ptr::null()],
+                [stride, 0, 0, 0],
+            ))
         }
         PixelFormat::Nv12 => {
             let y_size = (width * height) as usize;
@@ -272,10 +288,7 @@ impl HorizonX5Backend {
         // all standard search paths — not just a single hardcoded location.
         let name = b"libmultimedia.so.1\0";
         unsafe {
-            let handle = libc::dlopen(
-                name.as_ptr() as *const libc::c_char,
-                libc::RTLD_LAZY,
-            );
+            let handle = libc::dlopen(name.as_ptr() as *const libc::c_char, libc::RTLD_LAZY);
             if handle.is_null() {
                 return false;
             }
@@ -305,7 +318,7 @@ impl HorizonX5Backend {
         params: &CodecSessionParams<'_>,
         first_frame: &OwnedFrame,
     ) -> Result<Box<dyn CodecSession>> {
-        HorizonX5Session::new(params, first_frame)
+        HorizonX5Session::open(params, first_frame)
     }
 }
 
@@ -359,7 +372,10 @@ struct HorizonX5Session {
 }
 
 impl HorizonX5Session {
-    fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Box<dyn CodecSession>> {
+    fn open(
+        params: &CodecSessionParams<'_>,
+        first_frame: &OwnedFrame,
+    ) -> Result<Box<dyn CodecSession>> {
         let color_codec = ColorCodec::try_from(params.codec)?;
         let x5_codec_id = color_codec_to_x5(color_codec).ok_or_else(|| {
             EncoderError::message(format!(
@@ -379,19 +395,15 @@ impl HorizonX5Session {
             _ => 0,
         };
         let gop_size = fps; // keyframe every second
-        let quality = if color_codec == ColorCodec::Mjpg { 85 } else { 0 };
+        let quality = if color_codec == ColorCodec::Mjpg {
+            85
+        } else {
+            0
+        };
 
         // Create the VPU encoder via C shim
         let encoder = unsafe {
-            x5_encoder_create(
-                x5_codec_id,
-                width,
-                height,
-                fps,
-                bit_rate,
-                gop_size,
-                quality,
-            )
+            x5_encoder_create(x5_codec_id, width, height, fps, bit_rate, gop_size, quality)
         };
         if encoder.is_null() {
             return Err(EncoderError::message(
@@ -425,7 +437,13 @@ impl HorizonX5Session {
         Ok(Box::new(session))
     }
 
-    fn make_header(&self, kind: EncodedPacketKind, pts_us: i64, is_key: bool, payload_len: u32) -> EncodedPacketHeader {
+    fn make_header(
+        &self,
+        kind: EncodedPacketKind,
+        pts_us: i64,
+        is_key: bool,
+        payload_len: u32,
+    ) -> EncodedPacketHeader {
         let mut flags = 0u32;
         if is_key {
             flags |= ENCODED_PACKET_FLAG_KEYFRAME;
@@ -587,7 +605,11 @@ fn extract_h264_parameter_sets(stream: &[u8]) -> Option<&[u8]> {
     }
     let mut end = stream.len();
     for &start in &starts {
-        let header_off = if stream.get(start + 2) == Some(&1) { start + 3 } else { start + 4 };
+        let header_off = if stream.get(start + 2) == Some(&1) {
+            start + 3
+        } else {
+            start + 4
+        };
         if header_off >= stream.len() {
             break;
         }
@@ -597,5 +619,9 @@ fn extract_h264_parameter_sets(stream: &[u8]) -> Option<&[u8]> {
             break;
         }
     }
-    if end == 0 { None } else { Some(&stream[..end]) }
+    if end == 0 {
+        None
+    } else {
+        Some(&stream[..end])
+    }
 }

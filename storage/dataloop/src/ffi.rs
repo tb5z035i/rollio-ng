@@ -121,8 +121,7 @@ impl DataloopClient {
         let base_url_c = CString::new(base_url).map_err(|e| e.to_string())?;
         let token_c = CString::new(token).map_err(|e| e.to_string())?;
         let config = DlUploadConfig::default();
-        let handle =
-            unsafe { dl_client_create(base_url_c.as_ptr(), token_c.as_ptr(), &config) };
+        let handle = unsafe { dl_client_create(base_url_c.as_ptr(), token_c.as_ptr(), &config) };
         if handle.is_null() {
             return Err(last_error_string());
         }
@@ -157,7 +156,7 @@ impl DataloopClient {
             )
         };
 
-// PLACEHOLDER_FFI_WRAPPER_CONT
+        // PLACEHOLDER_FFI_WRAPPER_CONT
 
         if rc != 0 {
             return Err(error_from_buf(&error_buf));
@@ -193,7 +192,7 @@ impl DataloopClient {
         Ok(metadata)
     }
 
-// PLACEHOLDER_FFI_UPLOAD_TO
+    // PLACEHOLDER_FFI_UPLOAD_TO
 
     pub fn upload_to_episode(
         &self,
@@ -205,8 +204,7 @@ impl DataloopClient {
             .iter()
             .map(|p| path_to_cstring(p))
             .collect::<Result<Vec<_>, _>>()?;
-        let path_ptrs: Vec<*const c_char> =
-            path_cstrings.iter().map(|s| s.as_ptr()).collect();
+        let path_ptrs: Vec<*const c_char> = path_cstrings.iter().map(|s| s.as_ptr()).collect();
         let episode_path_c = CString::new(episode_path).map_err(|e| e.to_string())?;
         let bucket_c = CString::new(bucket).map_err(|e| e.to_string())?;
         let mut succeeded: c_int = 0;

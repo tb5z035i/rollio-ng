@@ -1,9 +1,7 @@
+use super::devices::select_supported_mode;
 use super::overview::camera_channel_type_for_profile;
 use super::pairings::{build_default_channel_pairings, default_publish_states_for_meta};
-use super::devices::select_supported_mode;
-use super::state::{
-    AvailableDevice, CameraProfile, DiscoveredChannelMeta, DiscoveredDevice,
-};
+use super::state::{AvailableDevice, CameraProfile, DiscoveredChannelMeta, DiscoveredDevice};
 use crate::discovery::{discover_probe_entries, run_driver_json, DiscoveryOptions};
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
@@ -173,7 +171,9 @@ pub(super) fn robot_publish_states_fallback(channel_type: &str) -> Vec<RobotStat
     }
 }
 
-pub(super) fn pick_default_camera_profile(profiles: &[CameraProfile]) -> Option<CameraChannelProfile> {
+pub(super) fn pick_default_camera_profile(
+    profiles: &[CameraProfile],
+) -> Option<CameraChannelProfile> {
     profiles
         .iter()
         .max_by_key(|profile| camera_profile_quality_key(profile))
@@ -1106,4 +1106,3 @@ pub(super) fn group_default_mode(index: usize) -> RobotMode {
         _ => RobotMode::FreeDrive,
     }
 }
-

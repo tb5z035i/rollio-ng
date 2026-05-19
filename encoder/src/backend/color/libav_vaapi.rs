@@ -108,12 +108,8 @@ impl ColorEncoderBackend for LibavVaapiBackend {
 /// are decoded via libavcodec (SW); raw inputs are wrapped into an
 /// AVFrame directly. Both paths feed `hwupload_vaapi` downstream.
 enum InputStage {
-    CpuDecode {
-        decoder: ffmpeg::decoder::Video,
-    },
-    Raw {
-        source_pixel: Pixel,
-    },
+    CpuDecode { decoder: ffmpeg::decoder::Video },
+    Raw { source_pixel: Pixel },
 }
 
 struct Pipeline {
@@ -150,10 +146,7 @@ pub(crate) struct VaapiHwSession {
 }
 
 impl VaapiHwSession {
-    pub(crate) fn new(
-        params: &CodecSessionParams<'_>,
-        first_frame: &OwnedFrame,
-    ) -> Result<Self> {
+    pub(crate) fn new(params: &CodecSessionParams<'_>, first_frame: &OwnedFrame) -> Result<Self> {
         crate::media::ensure_ffmpeg_initialized()?;
         let vaapi_device = create_hw_device(EncoderBackend::Vaapi)?;
 
@@ -211,9 +204,9 @@ impl VaapiHwSession {
         let packet = ffmpeg::Packet::copy(&first_frame.payload);
         decoder.send_packet(&packet)?;
         let mut decoded = ffmpeg::frame::Video::empty();
-        decoder
-            .receive_frame(&mut decoded)
-            .map_err(|e| EncoderError::message(format!("SW decoder failed on first packet: {e}")))?;
+        decoder.receive_frame(&mut decoded).map_err(|e| {
+            EncoderError::message(format!("SW decoder failed on first packet: {e}"))
+        })?;
         let decoded_pixel = decoded.format();
         let source_pixel = match decoded_pixel {
             Pixel::YUVJ420P => Pixel::YUV420P,
@@ -283,16 +276,14 @@ impl VaapiHwSession {
         })
     }
 
-    fn open_encoder(
-        &self,
-        filter: &ScaleGraph,
-    ) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
-        let codec_name = select_encoder_name(self.codec, EncoderBackend::Vaapi).ok_or_else(|| {
-            EncoderError::message(format!(
-                "no VAAPI encoder available for {}",
-                self.codec.as_str()
-            ))
-        })?;
+    fn open_encoder(&self, filter: &ScaleGraph) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
+        let codec_name =
+            select_encoder_name(self.codec, EncoderBackend::Vaapi).ok_or_else(|| {
+                EncoderError::message(format!(
+                    "no VAAPI encoder available for {}",
+                    self.codec.as_str()
+                ))
+            })?;
         let codec = ffmpeg::encoder::find_by_name(codec_name)
             .ok_or_else(|| EncoderError::message(format!("encoder `{codec_name}` not found")))?;
         let fps = ffmpeg::Rational(self.fps as i32, 1);
@@ -409,8 +400,7 @@ impl VaapiHwSession {
                     if let Some(target) = relabel {
                         unsafe {
                             (*decoded.as_mut_ptr()).color_range = f::AVColorRange::AVCOL_RANGE_JPEG;
-                            (*decoded.as_mut_ptr()).format =
-                                f::AVPixelFormat::from(target) as i32;
+                            (*decoded.as_mut_ptr()).format = f::AVPixelFormat::from(target) as i32;
                         }
                     }
                     decoded.set_pts(Some(pts_us));
@@ -467,11 +457,7 @@ impl VaapiHwSession {
 }
 
 impl CodecSession for VaapiHwSession {
-    fn encode(
-        &mut self,
-        frame: &OwnedFrame,
-        sink: &mut dyn EncodedPacketSink,
-    ) -> Result<()> {
+    fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
         let started = Instant::now();
         let pts_us = match crate::media::compute_pts_us(
             frame.header.timestamp_us,

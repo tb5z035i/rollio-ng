@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register the X5 backend as the sole color backend for this binary.
     // Must happen before any call to ColorBackendRegistry::global().
     ColorBackendRegistry::init_with(vec![
-        Arc::new(HorizonX5Backend) as Arc<dyn ColorEncoderBackend>,
+        Arc::new(HorizonX5Backend) as Arc<dyn ColorEncoderBackend>
     ]);
 
     let cli = Cli::parse();

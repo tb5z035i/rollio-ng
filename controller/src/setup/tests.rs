@@ -22,7 +22,6 @@ use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
-
 fn project_camera_device_names(p: &ProjectConfig) -> Vec<String> {
     p.devices
         .iter()
@@ -123,10 +122,7 @@ fn robot_discovery(id: &str, dof: u32) -> DiscoveredDevice {
             // `joint_position` / `joint_mit` commands. (Tests that
             // need parallel-grip behaviour use `parallel_gripper_discovery`
             // below.)
-            supported_commands: vec![
-                RobotCommandKind::JointPosition,
-                RobotCommandKind::JointMit,
-            ],
+            supported_commands: vec![RobotCommandKind::JointPosition, RobotCommandKind::JointMit],
             ..DiscoveredChannelMeta::default()
         },
     );
@@ -149,8 +145,7 @@ fn robot_discovery(id: &str, dof: u32) -> DiscoveredDevice {
 fn robot_discovery_no_whitelist(id: &str, dof: u32) -> DiscoveredDevice {
     let mut device = robot_discovery(id, dof);
     if let Some(meta) = device.channel_meta_by_channel.get_mut("arm") {
-        meta.direct_joint_compatibility =
-            rollio_types::config::DirectJointCompatibility::default();
+        meta.direct_joint_compatibility = rollio_types::config::DirectJointCompatibility::default();
     }
     device
 }
@@ -458,9 +453,7 @@ fn toggle_device_selection_disables_only_selected_airbot_channel() {
 /// `airbot_play_discovery` plus an explicit `EndEffectorPose` in
 /// supported_states. Used to exercise the new toggle commands so the
 /// fixture has enough surface area to flip kinds on and off.
-fn airbot_arm_discovery_with_supported_states(
-    supported: Vec<RobotStateKind>,
-) -> DiscoveredDevice {
+fn airbot_arm_discovery_with_supported_states(supported: Vec<RobotStateKind>) -> DiscoveredDevice {
     let mut discovery = airbot_play_discovery(None);
     // Preserve the parent fixture's `direct_joint_compatibility` (it
     // already self-whitelists airbot-play:arm peers) so DirectJoint
@@ -571,8 +564,7 @@ fn toggle_publish_state_blocks_removal_when_pairing_uses_kind() {
         .available_devices
         .iter()
         .find(|device| {
-            device.current.name == leader_name
-                && device.current.channels[0].channel_type == "arm"
+            device.current.name == leader_name && device.current.channels[0].channel_type == "arm"
         })
         .expect("leader arm row should exist")
         .name
@@ -1322,12 +1314,9 @@ fn identify_preview_pipeline_produces_consistent_encoder_and_visualizer_topics()
         Some(camera_name.as_str())
     );
 
-    let preview = super::overview::build_preview_project_config(
-        &session,
-        4242,
-        "ws://127.0.0.1:4242",
-    )
-    .expect("preview config builds for camera identify");
+    let preview =
+        super::overview::build_preview_project_config(&session, 4242, "ws://127.0.0.1:4242")
+            .expect("preview config builds for camera identify");
 
     preview
         .validate()
@@ -1379,10 +1368,8 @@ fn identify_preview_pipeline_produces_consistent_encoder_and_visualizer_topics()
         &camera_source.bus_root,
         &camera_source.channel_type,
     );
-    let viz_jpeg_topic = rollio_bus::preview_jpeg_service_name(
-        &camera_source.bus_root,
-        &camera_source.channel_type,
-    );
+    let viz_jpeg_topic =
+        rollio_bus::preview_jpeg_service_name(&camera_source.bus_root, &camera_source.channel_type);
     assert!(
         encoder_topic == viz_packet_topic || encoder_topic == viz_jpeg_topic,
         "encoder topic {encoder_topic:?} must match visualizer's derived packet topic \
@@ -1412,12 +1399,9 @@ fn build_preview_project_config_forces_jpeg_for_terminal_ui() {
         .clone();
     assert!(session.set_identify_device(Some(&camera_name)));
 
-    let preview = super::overview::build_preview_project_config(
-        &session,
-        4242,
-        "ws://127.0.0.1:4242",
-    )
-    .expect("preview config builds for camera identify");
+    let preview =
+        super::overview::build_preview_project_config(&session, 4242, "ws://127.0.0.1:4242")
+            .expect("preview config builds for camera identify");
 
     for device in &preview.devices {
         for channel in &device.channels {
@@ -1470,13 +1454,12 @@ fn add_pseudo_devices_round_trip_and_dedupe_ids() {
         .filter(|d| d.id.starts_with("pseudo_camera_"))
         .map(|d| d.id.as_str())
         .collect();
-    assert_eq!(pseudo_camera_ids, vec!["pseudo_camera_0", "pseudo_camera_1"]);
+    assert_eq!(
+        pseudo_camera_ids,
+        vec!["pseudo_camera_0", "pseudo_camera_1"]
+    );
 
-    assert!(session
-        .config
-        .devices
-        .iter()
-        .any(|d| d.driver == "command"));
+    assert!(session.config.devices.iter().any(|d| d.driver == "command"));
 
     session
         .config
@@ -2044,8 +2027,7 @@ fn set_pairing_endpoint_rejects_self_loop_leader() {
     // The picker should never let the operator pick a leader that
     // equals the pair's existing follower; the controller backstops
     // that with the same constraint.
-    let mut session =
-        setup_session(&[robot_discovery("arm_a", 6), robot_discovery("arm_b", 6)]);
+    let mut session = setup_session(&[robot_discovery("arm_a", 6), robot_discovery("arm_b", 6)]);
     if session.config.pairings.is_empty() {
         session
             .create_pairing(None)
@@ -2308,8 +2290,7 @@ fn eligibility_lists_drop_channels_disabled_in_step_one() {
         .iter()
         .find_map(|d| {
             d.channels.iter().find_map(|c| {
-                if format!("{}|{}|{}|{}|-", "robot", d.driver, d.id, c.channel_type)
-                    == target_name
+                if format!("{}|{}|{}|{}|-", "robot", d.driver, d.id, c.channel_type) == target_name
                 {
                     Some((d.name.clone(), c.channel_type.clone()))
                 } else {
@@ -2796,4 +2777,3 @@ port = 19090
     rollio_types::config::ProjectConfig::from_str(toml_text)
         .expect("template should parse before mutation")
 }
-

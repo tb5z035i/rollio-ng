@@ -49,7 +49,11 @@ impl SetupSession {
     }
 
     pub(super) fn cycle_storage_backend(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
-        let options = [StorageBackend::Local, StorageBackend::Http, StorageBackend::Dataloop];
+        let options = [
+            StorageBackend::Local,
+            StorageBackend::Http,
+            StorageBackend::Dataloop,
+        ];
         let current_index = options
             .iter()
             .position(|backend| *backend == self.config.storage.backend)
@@ -410,7 +414,10 @@ impl SetupSession {
         Ok(true)
     }
 
-    pub(super) fn set_assembler_staging_dir(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+    pub(super) fn set_assembler_staging_dir(
+        &mut self,
+        value: &str,
+    ) -> Result<bool, Box<dyn Error>> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             self.message = Some("Assembler staging_dir must not be empty.".into());

@@ -5,11 +5,11 @@
 
 use flatbuffers::FlatBufferBuilder;
 
-use crate::fb::foxglove::{
-    CompressedVideo, CompressedVideoArgs, JointState, JointStateArgs, JointStates,
-    JointStatesArgs, Time,
-};
 use crate::fb::discover::{Imu, ImuArgs, TactileData, TactileDataArgs, TactilePoint};
+use crate::fb::foxglove::{
+    CompressedVideo, CompressedVideoArgs, JointState, JointStateArgs, JointStates, JointStatesArgs,
+    Time,
+};
 
 // ---------------------------------------------------------------------------
 // Timestamp helper

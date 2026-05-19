@@ -4,6 +4,8 @@ use super::state::{SessionMutation, SetupCommandEnvelope, SetupSession, TeleopPa
 use rollio_types::config::{MappingStrategy, RobotStateKind};
 use std::error::Error;
 
+type TextFieldSetter = fn(&mut SetupSession, &str) -> Result<bool, Box<dyn Error>>;
+
 impl SetupSession {
     /// Helper: dispatch a text-input command. Pulls `command.value`,
     /// returns `SessionMutation::default()` when absent (the wizard
@@ -13,7 +15,7 @@ impl SetupSession {
     fn set_text_field(
         &mut self,
         value: Option<&str>,
-        setter: fn(&mut Self, &str) -> Result<bool, Box<dyn Error>>,
+        setter: TextFieldSetter,
     ) -> Result<SessionMutation, Box<dyn Error>> {
         let Some(value) = value else {
             return Ok(SessionMutation::default());
@@ -65,9 +67,7 @@ impl SetupSession {
                 };
                 Ok(SessionMutation::state_only(self.open_subpanel(name)))
             }
-            "setup_close_subpanel" => {
-                Ok(SessionMutation::state_only(self.close_subpanel()))
-            }
+            "setup_close_subpanel" => Ok(SessionMutation::state_only(self.close_subpanel())),
             "setup_subpanel_toggle_preview_enabled" => {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
@@ -143,18 +143,16 @@ impl SetupSession {
                     self.subpanel_set_control_frequency_hz(name, value)?,
                 ))
             }
-            "setup_open_add_picker" => {
-                Ok(SessionMutation::state_only(self.open_add_picker()))
+            "setup_open_add_picker" => Ok(SessionMutation::state_only(self.open_add_picker())),
+            "setup_add_pseudo_camera" => {
+                Ok(SessionMutation::config_changed(self.add_pseudo_camera()?))
             }
-            "setup_add_pseudo_camera" => Ok(SessionMutation::config_changed(
-                self.add_pseudo_camera()?,
-            )),
-            "setup_add_pseudo_robot" => Ok(SessionMutation::config_changed(
-                self.add_pseudo_robot()?,
-            )),
-            "setup_add_command_device" => Ok(SessionMutation::config_changed(
-                self.add_command_device()?,
-            )),
+            "setup_add_pseudo_robot" => {
+                Ok(SessionMutation::config_changed(self.add_pseudo_robot()?))
+            }
+            "setup_add_command_device" => {
+                Ok(SessionMutation::config_changed(self.add_command_device()?))
+            }
             "setup_toggle_identify" => {
                 let Some(name) = command.name.as_deref() else {
                     return Ok(SessionMutation::default());
@@ -330,12 +328,16 @@ impl SetupSession {
                     self.set_ui_http_host(value)?,
                 ))
             }
-            "setup_set_episode_fps" => self.set_text_field(command.value.as_deref(), Self::set_episode_fps),
+            "setup_set_episode_fps" => {
+                self.set_text_field(command.value.as_deref(), Self::set_episode_fps)
+            }
             "setup_set_episode_chunk_size" => {
                 self.set_text_field(command.value.as_deref(), Self::set_episode_chunk_size)
             }
-            "setup_set_controller_shutdown_timeout_ms" => self
-                .set_text_field(command.value.as_deref(), Self::set_controller_shutdown_timeout_ms),
+            "setup_set_controller_shutdown_timeout_ms" => self.set_text_field(
+                command.value.as_deref(),
+                Self::set_controller_shutdown_timeout_ms,
+            ),
             "setup_set_controller_child_poll_interval_ms" => self.set_text_field(
                 command.value.as_deref(),
                 Self::set_controller_child_poll_interval_ms,

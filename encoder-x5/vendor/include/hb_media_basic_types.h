@@ -36,9 +36,9 @@ typedef uint64_t hb_u64;
 /** hb_s64 is a 64 bit signed quantity that is 64 bit word aligned */
 typedef int64_t hb_s64;
 
-/** 
-* The hb_bool type is intended to be used to represent a true or a false 
-* value. The hb_bool is a 32 bit quantity and is aligned on a 32 bit word 
+/**
+* The hb_bool type is intended to be used to represent a true or a false
+* value. The hb_bool is a 32 bit quantity and is aligned on a 32 bit word
 * boundary.
 */
 typedef int32_t hb_bool;

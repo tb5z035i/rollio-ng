@@ -118,7 +118,6 @@ struct CameraStreamBuffer {
 struct CameraPacket {
     timestamp_us: u64,
     data: Vec<u8>,
-    is_keyframe: bool,
 }
 
 impl CameraStreamBuffer {
@@ -142,7 +141,6 @@ impl CameraStreamBuffer {
         self.packets.push(CameraPacket {
             timestamp_us: header.source_timestamp_us,
             data: payload.to_vec(),
-            is_keyframe: header.is_keyframe(),
         });
     }
 
@@ -218,8 +216,7 @@ impl EpisodeManager {
             .map(|c| c.channel_id.clone())
             .collect();
         let staging_slots = config.staging_slots as usize;
-        let stale_after =
-            Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
+        let stale_after = Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
         Self {
             config,
             active_episode_index: None,
@@ -333,14 +330,10 @@ impl EpisodeManager {
             return;
         };
         let key = format!("{}/{}", channel_id, command_kind.topic_suffix());
-        episode
-            .action_samples
-            .entry(key)
-            .or_default()
-            .push(Sample {
-                timestamp_us,
-                values,
-            });
+        episode.action_samples.entry(key).or_default().push(Sample {
+            timestamp_us,
+            values,
+        });
     }
 
     fn on_packet(&mut self, channel_id: &str, header: &EncodedPacketHeader, payload: &[u8]) {
@@ -543,8 +536,8 @@ fn stage_episode_mcap(
     bfbs_dir: &Path,
     episode: &PendingEpisode,
 ) -> Result<StagedResult, Box<dyn Error>> {
-    let episode_dir = Path::new(&config.staging_dir)
-        .join(format!("episode_{:06}", episode.episode_index));
+    let episode_dir =
+        Path::new(&config.staging_dir).join(format!("episode_{:06}", episode.episode_index));
     std::fs::create_dir_all(&episode_dir)?;
 
     let mcap_path = episode_dir.join("episode.mcap");
@@ -569,8 +562,12 @@ fn stage_episode_mcap(
             };
 
             for packet in &stream.packets {
-                let fb_data =
-                    encode::encode_compressed_video(packet.timestamp_us, &camera_config.channel_id, format, &packet.data);
+                let fb_data = encode::encode_compressed_video(
+                    packet.timestamp_us,
+                    &camera_config.channel_id,
+                    format,
+                    &packet.data,
+                );
                 writer.write_message(channel_idx, us_to_ns(packet.timestamp_us), &fb_data)?;
             }
         }
@@ -591,11 +588,8 @@ fn stage_episode_mcap(
 
     // Register action channels and write samples
     for (key, samples) in &episode.action_samples {
-        let channel_idx = writer.add_channel(
-            &format!("/action/{key}"),
-            SchemaType::JointStates,
-            bfbs_dir,
-        )?;
+        let channel_idx =
+            writer.add_channel(&format!("/action/{key}"), SchemaType::JointStates, bfbs_dir)?;
         for sample in samples {
             let fb_data = encode::encode_joint_states(sample.timestamp_us, &sample.values, None);
             writer.write_message(channel_idx, us_to_ns(sample.timestamp_us), &fb_data)?;
@@ -604,13 +598,22 @@ fn stage_episode_mcap(
 
     // Write episode metadata
     let mut meta = BTreeMap::new();
-    meta.insert("episode_index".to_string(), episode.episode_index.to_string());
-    meta.insert("start_time_us".to_string(), episode.start_time_us.to_string());
+    meta.insert(
+        "episode_index".to_string(),
+        episode.episode_index.to_string(),
+    );
+    meta.insert(
+        "start_time_us".to_string(),
+        episode.start_time_us.to_string(),
+    );
     if let Some(stop) = episode.stop_time_us {
         meta.insert("stop_time_us".to_string(), stop.to_string());
     }
     if !config.embedded_config_toml.is_empty() {
-        meta.insert("config_toml".to_string(), config.embedded_config_toml.clone());
+        meta.insert(
+            "config_toml".to_string(),
+            config.embedded_config_toml.clone(),
+        );
     }
     writer.write_metadata("episode", meta)?;
 
@@ -727,9 +730,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
                 WorkerEvent::Staged(result) => {
                     episode_ready_publisher.send_copy(EpisodeReady {
                         episode_index: result.episode_index,
-                        staging_dir: FixedString256::new(
-                            &result.staging_dir.to_string_lossy(),
-                        ),
+                        staging_dir: FixedString256::new(&result.staging_dir.to_string_lossy()),
                     })?;
                     made_progress = true;
                 }
@@ -769,7 +770,10 @@ fn resolve_bfbs_dir(config: &AssemblerRuntimeConfigV2) -> Result<PathBuf, Box<dy
         }
     }
     // Fall back to a `bfbs/` directory next to the staging dir
-    let candidate = Path::new(&config.staging_dir).parent().unwrap_or(Path::new(".")).join("bfbs");
+    let candidate = Path::new(&config.staging_dir)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("bfbs");
     if candidate.is_dir() {
         return Ok(candidate);
     }
@@ -810,10 +814,8 @@ fn create_episode_ready_publisher(
 
 fn create_backpressure_publisher(
     node: &Node<ipc::Service>,
-) -> Result<
-    iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>,
-    Box<dyn Error>,
-> {
+) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>, Box<dyn Error>>
+{
     let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
     let service = node
         .service_builder(&service_name)
@@ -962,9 +964,7 @@ fn create_observation_subscribers(
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ObservationSubscriberKind::JointVector15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ObservationSubscriberKind::JointVector15(service.subscriber_builder().create()?)
                 }
             };
             Ok(ObservationSubscriber {
@@ -1007,9 +1007,7 @@ fn create_action_subscribers(
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ActionSubscriberKind::JointMitCommand15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ActionSubscriberKind::JointMitCommand15(service.subscriber_builder().create()?)
                 }
                 RobotCommandKind::ParallelPosition => {
                     let service = node
