@@ -49,7 +49,11 @@ impl SetupSession {
     }
 
     pub(super) fn cycle_storage_backend(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
-        let options = [StorageBackend::Local, StorageBackend::Http, StorageBackend::Dataloop];
+        let options = [
+            StorageBackend::Local,
+            StorageBackend::Http,
+            StorageBackend::Dataloop,
+        ];
         let current_index = options
             .iter()
             .position(|backend| *backend == self.config.storage.backend)

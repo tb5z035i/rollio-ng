@@ -991,11 +991,7 @@ impl StorageConfig {
                 }
             }
             StorageBackend::Dataloop => {
-                if self
-                    .endpoint
-                    .as_deref()
-                    .is_none_or(|v| v.trim().is_empty())
-                {
+                if self.endpoint.as_deref().is_none_or(|v| v.trim().is_empty()) {
                     return Err(ConfigError::Validation(
                         "storage: dataloop backend requires endpoint (base_url)".into(),
                     ));

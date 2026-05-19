@@ -118,8 +118,6 @@ struct CameraStreamBuffer {
 struct CameraPacket {
     timestamp_us: u64,
     data: Vec<u8>,
-    #[allow(dead_code)]
-    is_keyframe: bool,
 }
 
 impl CameraStreamBuffer {
@@ -143,7 +141,6 @@ impl CameraStreamBuffer {
         self.packets.push(CameraPacket {
             timestamp_us: header.source_timestamp_us,
             data: payload.to_vec(),
-            is_keyframe: header.is_keyframe(),
         });
     }
 

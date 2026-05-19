@@ -50,9 +50,7 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
     match (&args.config, &args.config_inline) {
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
-        (None, None) => {
-            Err("rollio-storage-dataloop requires --config or --config-inline".into())
-        }
+        (None, None) => Err("rollio-storage-dataloop requires --config or --config-inline".into()),
         (Some(_), Some(_)) => {
             Err("rollio-storage-dataloop config flags are mutually exclusive".into())
         }
@@ -65,8 +63,9 @@ fn resolve_base_url(config: &StorageRuntimeConfig) -> Result<String, Box<dyn Err
             return Ok(url.to_owned());
         }
     }
-    std::env::var("DATALOOP_BASE_URL")
-        .map_err(|_| "dataloop base_url not found in config.endpoint or DATALOOP_BASE_URL env var".into())
+    std::env::var("DATALOOP_BASE_URL").map_err(|_| {
+        "dataloop base_url not found in config.endpoint or DATALOOP_BASE_URL env var".into()
+    })
 }
 
 fn resolve_token(config: &StorageRuntimeConfig) -> Result<String, Box<dyn Error>> {
@@ -87,7 +86,9 @@ fn resolve_project_id(config: &StorageRuntimeConfig) -> Result<String, Box<dyn E
     }
     std::env::var("DATALOOP_PROJECT_ID")
         .or_else(|_| std::env::var("PROJECT_ID"))
-        .map_err(|_| "dataloop project_id not found in config or DATALOOP_PROJECT_ID env var".into())
+        .map_err(|_| {
+            "dataloop project_id not found in config or DATALOOP_PROJECT_ID env var".into()
+        })
 }
 
 pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error>> {
@@ -115,7 +116,7 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
         })
         .map_err(|e| io::Error::other(format!("failed to spawn worker: {e}")))?;
 
-// PLACEHOLDER_RUNTIME_MAIN_LOOP
+    // PLACEHOLDER_RUNTIME_MAIN_LOOP
 
     let mut shutdown_sent = false;
     let mut shutdown_complete = false;
@@ -248,11 +249,7 @@ fn upload_episode(
 ) -> Result<String, Box<dyn Error>> {
     let files = collect_files(&request.staging_dir)?;
     if files.is_empty() {
-        return Err(format!(
-            "staging dir is empty: {}",
-            request.staging_dir.display()
-        )
-        .into());
+        return Err(format!("staging dir is empty: {}", request.staging_dir.display()).into());
     }
 
     let tags_json = format!(
@@ -276,11 +273,7 @@ fn upload_episode(
             .map_err(|e| io::Error::other(format!("upload_to_episode failed: {e}")))?;
 
         if upload_result.failed > 0 {
-            return Err(format!(
-                "upload_to_episode: {} files failed",
-                upload_result.failed
-            )
-            .into());
+            return Err(format!("upload_to_episode: {} files failed", upload_result.failed).into());
         }
     }
 

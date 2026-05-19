@@ -4,6 +4,8 @@ use super::state::{SessionMutation, SetupCommandEnvelope, SetupSession, TeleopPa
 use rollio_types::config::{MappingStrategy, RobotStateKind};
 use std::error::Error;
 
+type TextFieldSetter = fn(&mut SetupSession, &str) -> Result<bool, Box<dyn Error>>;
+
 impl SetupSession {
     /// Helper: dispatch a text-input command. Pulls `command.value`,
     /// returns `SessionMutation::default()` when absent (the wizard
@@ -14,7 +16,7 @@ impl SetupSession {
     fn set_text_field(
         &mut self,
         value: Option<&str>,
-        setter: fn(&mut Self, &str) -> Result<bool, Box<dyn Error>>,
+        setter: TextFieldSetter,
     ) -> Result<SessionMutation, Box<dyn Error>> {
         let Some(value) = value else {
             return Ok(SessionMutation::default());

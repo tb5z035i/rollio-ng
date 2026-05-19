@@ -318,7 +318,7 @@ impl HorizonX5Backend {
         params: &CodecSessionParams<'_>,
         first_frame: &OwnedFrame,
     ) -> Result<Box<dyn CodecSession>> {
-        HorizonX5Session::new(params, first_frame)
+        HorizonX5Session::open(params, first_frame)
     }
 }
 
@@ -372,8 +372,7 @@ struct HorizonX5Session {
 }
 
 impl HorizonX5Session {
-    #[allow(clippy::new_ret_no_self)]
-    fn new(
+    fn open(
         params: &CodecSessionParams<'_>,
         first_frame: &OwnedFrame,
     ) -> Result<Box<dyn CodecSession>> {
