@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use crate::discovery::known_device_executables;
 
-const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2_000);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const VALIDATION_TIMEOUT: Duration = Duration::from_millis(1_000);
 const SETUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SETUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);

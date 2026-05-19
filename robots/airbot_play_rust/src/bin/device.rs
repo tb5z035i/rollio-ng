@@ -34,10 +34,10 @@ const DRIVER_NAME: &str = "airbot-play";
 /// replies arrive in tens of milliseconds; the previous 1000ms default was
 /// chosen for slow CAN hardware but multiplies with the four sequential
 /// `pcba_name` / `product_sn` / `pcba_sn` / `eef_type` requests that
-/// `probe_all` issues per interface — so an empty CAN bus took ~4 seconds
-/// to clear, easily blowing the controller's `DISCOVERY_TIMEOUT`. 250ms is
-/// well above any observed real-hardware response time and drops the
-/// empty-bus probe to ~1 second total.
+/// `probe_all` issues per interface, walked sequentially across every UP
+/// CAN interface. The controller's `DISCOVERY_TIMEOUT` bounds the total;
+/// 250ms keeps a multi-interface empty-bus probe under that ceiling while
+/// staying well above any observed real-hardware response time.
 const DEFAULT_PROBE_TIMEOUT_MS: u64 = 250;
 
 // AIRBOT Play arm joint envelope (radians). Matches the analytical kinematics
