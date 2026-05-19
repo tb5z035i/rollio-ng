@@ -604,7 +604,10 @@ pub(crate) fn storage_binary_for(
             Ok("rollio-storage-local-lerobot")
         }
         (EpisodeFormat::Mcap, StorageBackend::Local) => Ok("rollio-storage-local"),
-        (_, StorageBackend::Http) => Err("storage.backend = http is not implemented yet".into()),
+        (_, StorageBackend::Http) => {
+            Err("storage.backend = http is not implemented yet".into())
+        }
+        (_, StorageBackend::Dataloop) => Ok("rollio-storage-dataloop"),
     }
 }
 

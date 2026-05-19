@@ -264,10 +264,12 @@ export interface SetupConfigSnapshot {
     staging_slots: number;
   };
   storage: {
-    backend: "local" | "http";
+    backend: "local" | "http" | "dataloop";
     output_path: string;
     endpoint?: string | null;
     queue_size?: number;
+    dataloop_project_id?: string | null;
+    dataloop_token?: string | null;
   };
   monitor?: {
     metrics_frequency_hz: number;
@@ -377,6 +379,8 @@ export type CommandAction =
   | "setup_set_project_name"
   | "setup_set_storage_output_path"
   | "setup_set_storage_endpoint"
+  | "setup_set_dataloop_project_id"
+  | "setup_set_dataloop_token"
   | "setup_set_ui_http_host"
   | "setup_set_ui_http_port"
   | "setup_set_ui_start_key"

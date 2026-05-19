@@ -2491,6 +2491,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rollio-storage-dataloop"
+version = "1.0.0"
+dependencies = [
+ "clap",
+ "iceoryx2",
+ "rollio-bus",
+ "rollio-types",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "rollio-storage-local"
 version = "1.0.0"
 dependencies = [

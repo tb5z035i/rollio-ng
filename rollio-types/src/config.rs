@@ -939,6 +939,8 @@ pub struct StorageConfig {
     pub endpoint: Option<String>,
     #[serde(default = "default_storage_queue_size")]
     pub queue_size: u32,
+    pub dataloop_token: Option<String>,
+    pub dataloop_project_id: Option<String>,
 }
 
 fn default_storage_queue_size() -> u32 {
@@ -952,6 +954,8 @@ impl Default for StorageConfig {
             output_path: Some("./output".into()),
             endpoint: None,
             queue_size: default_storage_queue_size(),
+            dataloop_token: None,
+            dataloop_project_id: None,
         }
     }
 }
@@ -986,6 +990,26 @@ impl StorageConfig {
                     ));
                 }
             }
+            StorageBackend::Dataloop => {
+                if self
+                    .endpoint
+                    .as_deref()
+                    .is_none_or(|v| v.trim().is_empty())
+                {
+                    return Err(ConfigError::Validation(
+                        "storage: dataloop backend requires endpoint (base_url)".into(),
+                    ));
+                }
+                if self
+                    .dataloop_project_id
+                    .as_deref()
+                    .is_none_or(|v| v.trim().is_empty())
+                {
+                    return Err(ConfigError::Validation(
+                        "storage: dataloop backend requires dataloop_project_id".into(),
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -998,6 +1022,7 @@ pub enum StorageBackend {
     #[default]
     Local,
     Http,
+    Dataloop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1008,6 +1033,8 @@ pub struct StorageRuntimeConfig {
     pub endpoint: Option<String>,
     #[serde(default = "default_storage_queue_size")]
     pub queue_size: u32,
+    pub dataloop_token: Option<String>,
+    pub dataloop_project_id: Option<String>,
 }
 
 impl StorageRuntimeConfig {
@@ -1027,6 +1054,8 @@ impl StorageRuntimeConfig {
             output_path: self.output_path.clone(),
             endpoint: self.endpoint.clone(),
             queue_size: self.queue_size,
+            dataloop_token: self.dataloop_token.clone(),
+            dataloop_project_id: self.dataloop_project_id.clone(),
         }
         .validate()
     }
@@ -4275,6 +4304,8 @@ impl ProjectConfig {
             output_path: self.storage.output_path.clone(),
             endpoint: self.storage.endpoint.clone(),
             queue_size: self.storage.queue_size,
+            dataloop_token: self.storage.dataloop_token.clone(),
+            dataloop_project_id: self.storage.dataloop_project_id.clone(),
         }
     }
 }
@@ -4289,6 +4320,7 @@ pub fn storage_process_id_for(format: EpisodeFormat, backend: StorageBackend) ->
         }
         (EpisodeFormat::Mcap, StorageBackend::Local) => "storage-local",
         (_, StorageBackend::Http) => "storage-http",
+        (_, StorageBackend::Dataloop) => "storage-dataloop",
     }
 }
 

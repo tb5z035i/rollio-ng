@@ -49,26 +49,51 @@ impl SetupSession {
     }
 
     pub(super) fn cycle_storage_backend(&mut self, delta: i32) -> Result<bool, Box<dyn Error>> {
-        let options = [StorageBackend::Local, StorageBackend::Http];
+        let options = [StorageBackend::Local, StorageBackend::Http, StorageBackend::Dataloop];
         let current_index = options
             .iter()
             .position(|backend| *backend == self.config.storage.backend)
             .unwrap_or(0);
         let next_index = rotate_index(current_index, options.len(), delta);
         self.config.storage.backend = options[next_index];
-        if matches!(self.config.storage.backend, StorageBackend::Local) {
-            self.config.storage.endpoint = None;
-            if self
-                .config
-                .storage
-                .output_path
-                .as_deref()
-                .is_none_or(|path| path.trim().is_empty())
-            {
-                self.config.storage.output_path = Some("./output".into());
+        match self.config.storage.backend {
+            StorageBackend::Local => {
+                self.config.storage.endpoint = None;
+                if self
+                    .config
+                    .storage
+                    .output_path
+                    .as_deref()
+                    .is_none_or(|path| path.trim().is_empty())
+                {
+                    self.config.storage.output_path = Some("./output".into());
+                }
             }
-        } else if self.config.storage.endpoint.is_none() {
-            self.config.storage.endpoint = Some("http://127.0.0.1:8080/upload".into());
+            StorageBackend::Http => {
+                if self.config.storage.endpoint.is_none() {
+                    self.config.storage.endpoint = Some("http://127.0.0.1:8080/upload".into());
+                }
+            }
+            StorageBackend::Dataloop => {
+                if self
+                    .config
+                    .storage
+                    .endpoint
+                    .as_deref()
+                    .is_none_or(|v| v.trim().is_empty() || v.contains("/upload"))
+                {
+                    self.config.storage.endpoint = Some("http://127.0.0.1/".into());
+                }
+                if self
+                    .config
+                    .storage
+                    .dataloop_project_id
+                    .as_deref()
+                    .is_none_or(|v| v.trim().is_empty())
+                {
+                    self.config.storage.dataloop_project_id = Some("1".into());
+                }
+            }
         }
         self.config.validate()?;
         Ok(true)
@@ -119,13 +144,41 @@ impl SetupSession {
     pub(super) fn set_storage_endpoint(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            self.message = Some("HTTP storage endpoint must not be empty.".into());
+            self.message = Some("Storage endpoint must not be empty.".into());
             return Ok(false);
         }
         if self.config.storage.endpoint.as_deref() == Some(trimmed) {
             return Ok(false);
         }
         self.config.storage.endpoint = Some(trimmed.into());
+        self.config.validate()?;
+        Ok(true)
+    }
+
+    pub(super) fn set_dataloop_project_id(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.message = Some("Dataloop project ID must not be empty.".into());
+            return Ok(false);
+        }
+        if self.config.storage.dataloop_project_id.as_deref() == Some(trimmed) {
+            return Ok(false);
+        }
+        self.config.storage.dataloop_project_id = Some(trimmed.into());
+        self.config.validate()?;
+        Ok(true)
+    }
+
+    pub(super) fn set_dataloop_token(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.message = Some("Dataloop token must not be empty.".into());
+            return Ok(false);
+        }
+        if self.config.storage.dataloop_token.as_deref() == Some(trimmed) {
+            return Ok(false);
+        }
+        self.config.storage.dataloop_token = Some(trimmed.into());
         self.config.validate()?;
         Ok(true)
     }

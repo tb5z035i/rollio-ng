@@ -24,6 +24,8 @@ type StaticEditableFieldId =
   | "project_name"
   | "storage_output_path"
   | "storage_endpoint"
+  | "storage_dataloop_project_id"
+  | "storage_dataloop_token"
   | "storage_queue_size"
   | "ui_http_host"
   | "ui_http_port"
@@ -1843,7 +1845,7 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       label:
         setupState.config.storage.backend === "local"
           ? "Output path"
-          : "HTTP endpoint",
+          : "Endpoint",
       value: storageTarget,
       kind: "text",
       editableFieldId:
@@ -1851,6 +1853,24 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
           ? "storage_output_path"
           : "storage_endpoint",
     },
+    ...(setupState.config.storage.backend === "dataloop"
+      ? [
+          {
+            id: "storage_dataloop_project_id",
+            label: "Project ID",
+            value: setupState.config.storage.dataloop_project_id ?? "",
+            kind: "text" as const,
+            editableFieldId: "storage_dataloop_project_id" as const,
+          },
+          {
+            id: "storage_dataloop_token",
+            label: "Token",
+            value: setupState.config.storage.dataloop_token ?? "",
+            kind: "text" as const,
+            editableFieldId: "storage_dataloop_token" as const,
+          },
+        ]
+      : []),
     {
       id: "storage_queue_size",
       label: "Queue size",
@@ -3012,6 +3032,10 @@ function editCommandForField(
       return "setup_set_assembler_staging_slots";
     case "storage_queue_size":
       return "setup_set_storage_queue_size";
+    case "storage_dataloop_project_id":
+      return "setup_set_dataloop_project_id";
+    case "storage_dataloop_token":
+      return "setup_set_dataloop_token";
     case "monitor_metrics_frequency_hz":
       return "setup_set_monitor_metrics_frequency_hz";
   }

@@ -32,13 +32,6 @@ fps = 30
 pixel_format = "mjpeg"
 native_pixel_format = "MJPG"
 
-[devices.channels.record]
-video_backend = "nvidia"
-crf = 10
-
-[devices.channels.preview_config]
-crf = 30
-
 [devices.channels.command_defaults]
 joint_mit_kp = []
 joint_mit_kd = []
@@ -64,15 +57,11 @@ preview_enabled = true
 record_enabled = true
 
 [devices.channels.profile]
-width = 640
-height = 480
+width = 2592
+height = 1944
 fps = 60
-pixel_format = "yuyv"
-native_pixel_format = "YUYV"
-
-[devices.channels.record]
-video_backend = "nvidia"
-crf = 5
+pixel_format = "mjpeg"
+native_pixel_format = "MJPG"
 
 [devices.channels.command_defaults]
 joint_mit_kp = []
@@ -86,9 +75,12 @@ staging_dir = "/dev/shm/rollio"
 staging_slots = 4
 
 [storage]
-backend = "local"
+backend = "dataloop"
 output_path = "./output"
+endpoint = "http://192.168.31.120"
 queue_size = 32
+dataloop_token = "sk-123"
+dataloop_project_id = "19"
 
 [monitor]
 metrics_frequency_hz = 1.0
