@@ -28,8 +28,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const DDS_DOMAIN_ID_ENV: &str = "ROLLIO_DDS_DOMAIN_ID";
+
 pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
     let mut config = args.load_project_config()?;
+    let dds_domain_id = collect_dds_domain_id_from_env()?;
     let workspace_root = workspace_root()?;
     let share_root = resolve_share_root()?;
     let state_dir = resolve_state_dir()?;
@@ -60,6 +63,7 @@ pub fn run(args: CollectArgs) -> Result<(), Box<dyn Error>> {
         current_exe_dir,
         invocation_cwd,
         resume_hint,
+        dds_domain_id,
     )
 }
 
@@ -71,6 +75,7 @@ fn run_with_config(
     current_exe_dir: std::path::PathBuf,
     invocation_cwd: std::path::PathBuf,
     resume_hint: Option<crate::dataset_resume::DatasetResumeHint>,
+    dds_domain_id: u32,
 ) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root.as_path();
     let share_root = share_root.as_path();
@@ -107,6 +112,7 @@ fn run_with_config(
         child_working_dir,
         current_exe_dir,
         invocation_cwd,
+        dds_domain_id,
     )?;
 
     let mut children = spawn_collect_children(
@@ -144,6 +150,26 @@ fn run_with_config(
     }
 
     result_for_shutdown_trigger(&trigger)
+}
+
+fn collect_dds_domain_id_from_env() -> Result<u32, Box<dyn Error>> {
+    let Some(raw) = std::env::var_os(DDS_DOMAIN_ID_ENV) else {
+        return Ok(0);
+    };
+    let raw = raw
+        .to_str()
+        .ok_or_else(|| format!("{DDS_DOMAIN_ID_ENV} must be valid UTF-8"))?;
+    parse_collect_dds_domain_id(raw)
+}
+
+fn parse_collect_dds_domain_id(raw: &str) -> Result<u32, Box<dyn Error>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{DDS_DOMAIN_ID_ENV} must not be empty").into());
+    }
+    trimmed
+        .parse::<u32>()
+        .map_err(|error| format!("{DDS_DOMAIN_ID_ENV} must be a u32 value: {error}").into())
 }
 
 fn spawn_collect_children(
@@ -531,6 +557,7 @@ mod tests {
             Path::new("."),
             Path::new("."),
             Path::new("."),
+            0,
         )
         .expect("specs should build");
 
@@ -623,6 +650,57 @@ mod tests {
     }
 
     #[test]
+    fn build_collect_specs_uses_runtime_dds_domain_argument() {
+        let mut config = include_str!("../../config/config.example.toml")
+            .parse::<ProjectConfig>()
+            .expect("example config should parse");
+        let workspace_root = temp_workspace_root();
+        config.assembler.staging_dir = workspace_root
+            .join("staging")
+            .to_string_lossy()
+            .into_owned();
+        create_fake_web_bundle(&workspace_root);
+
+        let specs = build_collect_specs(
+            &config,
+            &workspace_root,
+            &workspace_root,
+            Path::new("."),
+            Path::new("."),
+            Path::new("."),
+            42,
+        )
+        .expect("specs should build");
+
+        let device_spec = specs
+            .iter()
+            .find(|spec| spec.id == "device-camera_top")
+            .expect("camera_top device should be spawned");
+        let inline = device_spec.command.args[2].to_string_lossy();
+        assert!(
+            inline.contains("dds_domain_id = 42"),
+            "runtime DDS domain id should be injected into device inline config, got: {inline}"
+        );
+
+        let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn parse_collect_dds_domain_id_rejects_invalid_values() {
+        assert_eq!(parse_collect_dds_domain_id("7").unwrap(), 7);
+        assert_eq!(parse_collect_dds_domain_id(" 9 ").unwrap(), 9);
+
+        for raw in ["", " ", "-1", "abc"] {
+            let err =
+                parse_collect_dds_domain_id(raw).expect_err(&format!("{raw:?} should be rejected"));
+            assert!(
+                err.to_string().contains(DDS_DOMAIN_ID_ENV),
+                "error should mention {DDS_DOMAIN_ID_ENV}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn build_preview_specs_skips_teleop_router_for_intervention_mode() {
         let mut config = include_str!("../../config/config.example.toml")
             .parse::<ProjectConfig>()
@@ -636,6 +714,7 @@ mod tests {
             Path::new("."),
             Path::new("."),
             Path::new("."),
+            0,
         )
         .expect("specs should build");
 

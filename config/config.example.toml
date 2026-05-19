@@ -51,10 +51,12 @@ chunk_size = 1000
 # Shared runtime settings
 # -----------------------------------------------------------------------------
 [runtime]
-# DDS/Cora domain id shared by all device processes that use DDS. The
-# controller injects this value into each device's runtime BinaryDeviceConfig.
-# (default: 0)
-dds_domain_id = 0
+# DDS/Cora domain id is intentionally not saved here. For Coracam / DDS runs,
+# choose it at collect time:
+#
+#     ROLLIO_DDS_DOMAIN_ID=7 rollio collect --config config.toml
+#
+# If the environment variable is omitted, collect uses domain 0.
 
 # Keep concise 10s pipeline summaries by default. Set true only while debugging
 # camera/encoder/visualizer latency, payload size, frame type, or GOP issues.

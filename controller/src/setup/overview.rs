@@ -269,6 +269,7 @@ pub(super) fn build_setup_preview_specs(
         child_working_dir,
         current_exe_dir,
         &invocation_cwd,
+        0,
     )
 }
 

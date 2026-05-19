@@ -163,9 +163,8 @@ fn ui_runtime_config_defaults_to_all_interfaces() {
 }
 
 #[test]
-fn project_runtime_defaults_dds_domain_to_zero() {
+fn project_runtime_defaults_pipeline_logs_to_false() {
     let config = ProjectConfig::draft_setup_template();
-    assert_eq!(config.runtime.dds_domain_id, 0);
     assert!(!config.runtime.advanced_pipeline_logs);
 }
 
@@ -173,13 +172,21 @@ fn project_runtime_defaults_dds_domain_to_zero() {
 fn project_runtime_accepts_advanced_pipeline_logs_switch() {
     let runtime: RuntimeConfig = toml::from_str(
         r#"
-dds_domain_id = 7
 advanced_pipeline_logs = true
 "#,
     )
     .expect("runtime config should parse");
-    assert_eq!(runtime.dds_domain_id, 7);
     assert!(runtime.advanced_pipeline_logs);
+}
+
+#[test]
+fn project_runtime_rejects_dds_domain_id_toml_key() {
+    let err = toml::from_str::<RuntimeConfig>("dds_domain_id = 7\n")
+        .expect_err("DDS domain id must be configured through ROLLIO_DDS_DOMAIN_ID");
+    assert!(
+        err.to_string().contains("unknown field `dds_domain_id`"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

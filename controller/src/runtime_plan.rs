@@ -60,6 +60,7 @@ pub(crate) fn build_collect_specs(
     child_working_dir: &Path,
     current_exe_dir: &Path,
     invocation_cwd: &Path,
+    dds_domain_id: u32,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs = build_preview_specs(
         config,
@@ -67,6 +68,7 @@ pub(crate) fn build_collect_specs(
         child_working_dir,
         current_exe_dir,
         invocation_cwd,
+        dds_domain_id,
     )?;
 
     // The control server hosts the long-lived control plane WebSocket and
@@ -159,6 +161,7 @@ pub(crate) fn build_preview_specs(
     child_working_dir: &Path,
     current_exe_dir: &Path,
     invocation_cwd: &Path,
+    dds_domain_id: u32,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs = Vec::new();
 
@@ -175,7 +178,7 @@ pub(crate) fn build_preview_specs(
         specs.push(with_pipeline_log_env(
             build_device_spec(
                 device,
-                config.runtime.dds_domain_id,
+                dds_domain_id,
                 workspace_root,
                 child_working_dir,
                 current_exe_dir,
@@ -756,6 +759,7 @@ port = 19090
             Path::new("/var/lib/rollio"),
             Path::new("/opt/rollio/bin"),
             Path::new("/userdata"),
+            0,
         )
         .expect("preview specs should build");
 
@@ -807,6 +811,7 @@ port = 19090
             Path::new("/var/lib/rollio"),
             Path::new("/opt/rollio/bin"),
             Path::new("/userdata"),
+            0,
         )
         .expect("preview specs should build");
 

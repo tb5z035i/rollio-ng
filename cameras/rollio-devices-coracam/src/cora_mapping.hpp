@@ -6,7 +6,7 @@
 // The mapping file lets operators override the Coracam → Cora topic / type /
 // QoS contract without recompiling the device.  Schema (see方案文档 §5):
 //
-//   domain_id = 0
+//   domain_id = 0                         # fallback only; collect uses ROLLIO_DDS_DOMAIN_ID
 //   participant_name = "rollio_coracam_head"
 //   max_packet_bytes = 4194304
 //   annex_b_validation = "scan"          # scan | metadata | auto

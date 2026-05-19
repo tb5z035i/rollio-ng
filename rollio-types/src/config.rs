@@ -1468,18 +1468,14 @@ impl From<ProjectConfigSerde> for ProjectConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
-    #[serde(default)]
-    pub dds_domain_id: u32,
     #[serde(default)]
     pub advanced_pipeline_logs: bool,
 }
 
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Fast-DDS/Cora use a 32-bit domain id in their public API, so every
-        // TOML u32 value accepted by serde is valid here.
-        let _ = self.dds_domain_id;
         let _ = self.advanced_pipeline_logs;
         Ok(())
     }

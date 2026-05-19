@@ -100,14 +100,8 @@ pub fn config_schema() -> ConfigSchema {
             SchemaSection {
                 name: "runtime",
                 kind: SchemaSectionKind::Table,
-                description: "Project-wide runtime knobs injected into child process configs.",
+                description: "Project-wide runtime knobs saved in the project config.",
                 fields: vec![
-                    int_field(
-                        "dds_domain_id",
-                        "DDS/Cora domain id shared by every device process that uses DDS.",
-                        false,
-                        0,
-                    ),
                     bool_field(
                         "advanced_pipeline_logs",
                         "Enable full per-process pipeline statistics logs. When false, children emit concise low-frequency summaries.",
@@ -116,7 +110,7 @@ pub fn config_schema() -> ConfigSchema {
                     ),
                 ],
                 notes: vec![
-                    "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
+                    "DDS/Cora domain id is not stored in config.toml; pass it to `rollio collect` with ROLLIO_DDS_DOMAIN_ID.",
                 ],
                 allows_extra_fields: false,
             },
@@ -825,14 +819,8 @@ fn sprint_extra_a_schema() -> ConfigSchema {
             SchemaSection {
                 name: "runtime",
                 kind: SchemaSectionKind::Table,
-                description: "Project-wide runtime knobs injected into child process configs.",
+                description: "Project-wide runtime knobs saved in the project config.",
                 fields: vec![
-                    int_field(
-                        "dds_domain_id",
-                        "DDS/Cora domain id shared by every device process that uses DDS.",
-                        false,
-                        0,
-                    ),
                     bool_field(
                         "advanced_pipeline_logs",
                         "Enable full per-process pipeline statistics logs. When false, children emit concise low-frequency summaries.",
@@ -841,7 +829,7 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                     ),
                 ],
                 notes: vec![
-                    "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
+                    "DDS/Cora domain id is not stored in config.toml; pass it to `rollio collect` with ROLLIO_DDS_DOMAIN_ID.",
                 ],
                 allows_extra_fields: false,
             },

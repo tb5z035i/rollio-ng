@@ -388,13 +388,15 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
 
     const bool no_dds = (std::getenv("ROLLIO_CORACAM_NO_DDS") != nullptr);
 
-    // Pull device-level defaults from mapping (if provided).
+    // Pull device-level defaults from mapping (if provided). The DDS domain is
+    // owned by the controller's runtime config so a collect-time environment
+    // override applies uniformly across every Coracam device process.
     const uint32_t mapping_max_packet =
         mapping && mapping->max_packet_bytes ? *mapping->max_packet_bytes : 4U * 1024U * 1024U;
     const uint32_t dds_domain =
-        mapping && mapping->domain_id
-            ? *mapping->domain_id
-            : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId);
+        config.dds_domain_id
+            ? *config.dds_domain_id
+            : (mapping && mapping->domain_id ? *mapping->domain_id : kCoraDdsDomainId);
     const auto mapping_annexb_mode = mapping && mapping->annex_b_validation
                                          ? *mapping->annex_b_validation
                                          : AnnexBValidationMode::Scan;
@@ -504,17 +506,17 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
 }
 
 // Initialize the global Cora DDSParticipant exactly once before any
-// ChannelReader is created. Domain id comes from mapping, then generated
-// BinaryDeviceConfig, then descriptor default; participant name comes from
-// mapping when available, otherwise from the device descriptor.
+// ChannelReader is created. Domain id comes from the generated
+// BinaryDeviceConfig first, then mapping, then descriptor default; participant
+// name comes from mapping when available, otherwise from the device descriptor.
 auto initialize_cora_participant(const rollio::BinaryDeviceConfig& config,
                                  const std::optional<CoraMapping>& mapping,
                                  const DeviceDescriptor& desc) -> void {
     framework::dds::DDSConfig dds_cfg;
     dds_cfg.domain_id =
-        static_cast<int>(mapping && mapping->domain_id
-                             ? *mapping->domain_id
-                             : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId));
+        static_cast<int>(config.dds_domain_id ? *config.dds_domain_id
+                                              : (mapping && mapping->domain_id ? *mapping->domain_id
+                                                                               : kCoraDdsDomainId));
     dds_cfg.participant_name = (mapping && mapping->participant_name)
                                    ? *mapping->participant_name
                                    : std::string(desc.default_name);
