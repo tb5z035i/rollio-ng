@@ -48,6 +48,15 @@ fps = 30
 chunk_size = 1000
 
 # -----------------------------------------------------------------------------
+# Shared runtime settings
+# -----------------------------------------------------------------------------
+[runtime]
+# DDS/Cora domain id shared by all device processes that use DDS. The
+# controller injects this value into each device's runtime BinaryDeviceConfig.
+# (default: 0)
+dds_domain_id = 0
+
+# -----------------------------------------------------------------------------
 # Controller process supervisor
 # -----------------------------------------------------------------------------
 [controller]

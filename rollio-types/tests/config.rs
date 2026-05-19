@@ -14,10 +14,14 @@ fn parse_example_project_config() {
     assert_eq!(config.episode.fps, 30);
     assert_eq!(config.episode.format, EpisodeFormat::LeRobotV2_1);
     // Per-channel record config: first camera channel should have H264 video codec
-    let first_cam = config.devices[0].channels.iter()
+    let first_cam = config.devices[0]
+        .channels
+        .iter()
         .find(|c| c.kind == DeviceType::Camera)
         .expect("should have a camera channel");
-    let record_cfg = first_cam.record.as_ref()
+    let record_cfg = first_cam
+        .record
+        .as_ref()
         .map(|r| r.resolve())
         .unwrap_or_default();
     assert_eq!(record_cfg.video_codec, EncoderCodec::H264);
@@ -156,6 +160,12 @@ fn ui_runtime_config_defaults_to_all_interfaces() {
     assert_eq!(UiRuntimeConfig::default().http_host, "0.0.0.0");
     let config = ProjectConfig::draft_setup_template();
     assert_eq!(config.ui.http_host, "0.0.0.0");
+}
+
+#[test]
+fn project_runtime_defaults_dds_domain_to_zero() {
+    let config = ProjectConfig::draft_setup_template();
+    assert_eq!(config.runtime.dds_domain_id, 0);
 }
 
 /// Per-codec backends should default to inheriting the legacy global
@@ -685,6 +695,7 @@ fn schema_export_is_v2_and_includes_nested_sections() {
     assert!(section_ids.contains(&"devices"));
     assert!(section_ids.contains(&"devices.channels"));
     assert!(section_ids.contains(&"pairings"));
+    assert!(section_ids.contains(&"runtime"));
 }
 
 // -----------------------------------------------------------------------
@@ -929,8 +940,8 @@ fn direct_joint_requires_two_sided_whitelist() {
 #[test]
 fn parse_mcap_flatbuffer_smoke_config() {
     let toml_text = include_str!("../../config/mcap-flatbuffer-smoke.toml");
-    let config = ProjectConfig::from_str(toml_text)
-        .expect("mcap-flatbuffer-smoke.toml should parse");
+    let config =
+        ProjectConfig::from_str(toml_text).expect("mcap-flatbuffer-smoke.toml should parse");
     assert_eq!(config.project_name, "mcap-flatbuffer-smoke");
     assert_eq!(config.episode.format, EpisodeFormat::Mcap);
     assert_eq!(config.devices.len(), 4);

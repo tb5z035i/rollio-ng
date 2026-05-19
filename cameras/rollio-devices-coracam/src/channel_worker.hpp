@@ -110,8 +110,10 @@ public:
 
 private:
     void worker_loop();
-    void worker_loop_dds();   // real Fast-DDS subscriber path
-    void worker_loop_mock();  // internal mock generator (no DDS required)
+    void worker_loop_dds();        // dispatch to cora typed reader path
+    void worker_loop_cora_raw();   // Cora SDK raw image typed reader path
+    void worker_loop_cora_h264();  // Cora SDK foxglove h264 typed reader path
+    void worker_loop_mock();       // internal mock generator (no DDS required)
 
     ChannelWorkerConfig cfg_;
     ChannelStatus status_{};

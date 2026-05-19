@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include <cora/dds/dds_participant.h>
+
 #include "channel_worker.hpp"
 #include "cora_mapping.hpp"
 #include "device_descriptor.hpp"
@@ -356,8 +358,10 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
     // Pull device-level defaults from mapping (if provided).
     const uint32_t mapping_max_packet =
         mapping && mapping->max_packet_bytes ? *mapping->max_packet_bytes : 4U * 1024U * 1024U;
-    const uint32_t mapping_domain =
-        mapping && mapping->domain_id ? *mapping->domain_id : kCoraDdsDomainId;
+    const uint32_t dds_domain =
+        mapping && mapping->domain_id
+            ? *mapping->domain_id
+            : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId);
     const auto mapping_annexb_mode = mapping && mapping->annex_b_validation
                                          ? *mapping->annex_b_validation
                                          : AnnexBValidationMode::Scan;
@@ -439,7 +443,7 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
 
             wcfg.dds_topic_name = normalize_cora_dds_topic(std::move(topic));
             wcfg.dds_type_name = type;
-            wcfg.dds_domain_id = mapping_domain;
+            wcfg.dds_domain_id = dds_domain;
             wcfg.max_payload_bytes = per_channel_max;
         }
 
@@ -463,6 +467,33 @@ auto build_channel_configs(const rollio::BinaryDeviceConfig& config, const Devic
     }
 
     return out;
+}
+
+// Initialize the global Cora DDSParticipant exactly once before any
+// ChannelReader is created. Domain id comes from mapping, then generated
+// BinaryDeviceConfig, then descriptor default; participant name comes from
+// mapping when available, otherwise from the device descriptor.
+auto initialize_cora_participant(const rollio::BinaryDeviceConfig& config,
+                                 const std::optional<CoraMapping>& mapping,
+                                 const DeviceDescriptor& desc) -> void {
+    framework::dds::DDSConfig dds_cfg;
+    dds_cfg.domain_id = static_cast<int>(
+        mapping && mapping->domain_id
+            ? *mapping->domain_id
+            : (config.dds_domain_id ? *config.dds_domain_id : kCoraDdsDomainId));
+    dds_cfg.participant_name = (mapping && mapping->participant_name)
+                                   ? *mapping->participant_name
+                                   : std::string(desc.default_name);
+    dds_cfg.use_shared_memory = true;
+    dds_cfg.use_udp = true;
+
+    auto& participant = framework::dds::DDSParticipant::instance();
+    if (participant.isInitialized()) {
+        return;
+    }
+    if (!participant.initialize(dds_cfg)) {
+        throw std::runtime_error("failed to initialize Cora DDSParticipant");
+    }
 }
 
 auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
@@ -536,6 +567,16 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
                             .value();
     auto ctrl_sub = ctrl_service.subscriber_builder().create().value();
 
+    // Initialize the Cora SDK DDS participant exactly once before any
+    // ChannelReader is constructed by a worker thread. Skipped in the
+    // mock path (ROLLIO_CORACAM_NO_DDS=1) where no real reader is created.
+    const bool any_dds_channel = std::any_of(
+        channel_configs.begin(), channel_configs.end(),
+        [](const ChannelWorkerConfig& wc) { return !wc.dds_topic_name.empty(); });
+    if (any_dds_channel) {
+        initialize_cora_participant(config, mapping, desc);
+    }
+
     // Start one worker thread per channel.
     std::vector<std::unique_ptr<ChannelWorker>> workers;
     workers.reserve(channel_configs.size());
@@ -557,6 +598,11 @@ auto cmd_run(int argc, char* argv[], const DeviceDescriptor& desc) -> int {
                 std::cerr << desc.program_name << ": shutdown received, stopping workers\n";
                 for (auto& w : workers) {
                     w->stop();
+                }
+                // Workers are joined; ChannelReader instances are destroyed.
+                // Safe to shut down the global Cora participant now.
+                if (any_dds_channel) {
+                    framework::dds::DDSParticipant::instance().shutdown();
                 }
                 std::cerr << desc.program_name << ": stopped\n";
                 return 0;

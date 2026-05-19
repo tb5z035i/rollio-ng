@@ -169,6 +169,7 @@ pub(crate) fn build_preview_specs(
     for device in &config.devices {
         specs.push(build_device_spec(
             device,
+            config.runtime.dds_domain_id,
             workspace_root,
             child_working_dir,
             current_exe_dir,
@@ -275,12 +276,15 @@ pub(crate) fn build_control_server_spec(
 
 pub(crate) fn build_device_spec(
     device: &BinaryDeviceConfig,
+    dds_domain_id: u32,
     workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
     invocation_cwd: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
-    let inline_config = toml::to_string(device)?;
+    let mut runtime_device = device.clone();
+    runtime_device.dds_domain_id = Some(dds_domain_id);
+    let inline_config = toml::to_string(&runtime_device)?;
     let executable_name = device
         .executable
         .clone()
@@ -651,12 +655,14 @@ mod tests {
             driver: "coracam-righthand".into(),
             id: "cora-righthand".into(),
             bus_root: "coracam_righthand".into(),
+            dds_domain_id: None,
             channels: Vec::new(),
             extra,
         };
 
         let spec = build_device_spec(
             &device,
+            31,
             Path::new("/workspace"),
             Path::new("/var/lib/rollio"),
             Path::new("/opt/rollio/bin"),
@@ -673,6 +679,11 @@ mod tests {
                 OsString::from("--mapping"),
                 OsString::from("/userdata/coracam-mapping.toml"),
             ]
+        );
+        let inline = spec.command.args[2].to_string_lossy();
+        assert!(
+            inline.contains("dds_domain_id = 31"),
+            "global DDS domain should be injected into device inline config, got: {inline}"
         );
     }
 

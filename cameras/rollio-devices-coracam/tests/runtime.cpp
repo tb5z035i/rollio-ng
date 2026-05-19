@@ -547,6 +547,7 @@ auto run_device_config_extra_test() -> void {
         "driver = \"coracam-righthand\"\n"
         "id = \"cora-righthand\"\n"
         "bus_root = \"coracam_righthand\"\n"
+        "dds_domain_id = 31\n"
         "\n"
         "[extra]\n"
         "coracam_mapping_file = \"./coracam-mapping.toml\"\n"
@@ -564,6 +565,9 @@ auto run_device_config_extra_test() -> void {
     const auto config = rollio::parse_binary_device_config(toml);
     if (config.name != "coracam_righthand" || config.driver != "coracam-righthand") {
         throw std::runtime_error("device_config: root fields mismatch");
+    }
+    if (!config.dds_domain_id || *config.dds_domain_id != 31U) {
+        throw std::runtime_error("device_config: dds_domain_id mismatch");
     }
     if (config.channels.size() != 1U || config.channels[0].channel_type != "left_raw") {
         throw std::runtime_error("device_config: channel after [extra] not parsed");

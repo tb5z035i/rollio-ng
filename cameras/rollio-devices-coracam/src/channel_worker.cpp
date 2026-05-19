@@ -12,8 +12,14 @@
 #include <stdexcept>
 #include <vector>
 
-#include "cora_subscriber.hpp"
-#include "cora_types.hpp"
+// Cora SDK headers.
+#include <cora/channel.h>
+#include <cora/dds/dds_qos.h>
+#include <foxglove_msgs/msg/CompressedVideo.h>
+#include <foxglove_msgs/msg/CompressedVideoPubSubTypes.h>
+#include <sensor_msgs/msg/Image.h>
+#include <sensor_msgs/msg/ImagePubSubTypes.h>
+
 #include "h264_annexb.hpp"
 #include "iox2/iceoryx2.hpp"
 #include "rollio/topic_names.hpp"
@@ -24,12 +30,22 @@ namespace rollio::coracam {
 using SteadyClock = std::chrono::steady_clock;
 using SystemClock = std::chrono::system_clock;
 
+using RawImageReader =
+    framework::ChannelReader<sensor_msgs::msg::Image, sensor_msgs::msg::ImagePubSubType>;
+using H264Reader = framework::ChannelReader<foxglove_msgs::msg::CompressedVideo,
+                                            foxglove_msgs::msg::CompressedVideoPubSubType>;
+
 namespace {
 
 auto unix_timestamp_us() -> uint64_t {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(SystemClock::now().time_since_epoch())
             .count());
+}
+
+// Convert sec/nanosec (ROS2 Time-style) to UNIX microseconds.
+auto stamp_to_us(int32_t sec, uint32_t nanosec) -> uint64_t {
+    return static_cast<uint64_t>(sec) * 1'000'000ULL + static_cast<uint64_t>(nanosec) / 1'000ULL;
 }
 
 auto env_is_enabled(const char* name) -> bool {
@@ -70,7 +86,7 @@ auto h264_nal_type_list(const uint8_t* data, std::size_t size) -> std::string {
 }
 
 auto append_h264_dump(const std::filesystem::path& dir, const std::string& channel_type,
-                      const std::vector<uint8_t>& data) -> void {
+                     const std::vector<uint8_t>& data) -> void {
     if (dir.empty()) {
         return;
     }
@@ -126,23 +142,24 @@ auto clamp_u8(int value) -> uint8_t {
     return static_cast<uint8_t>(std::clamp(value, 0, 255));
 }
 
-auto nv12_to_bgr24(const CoraRawImage& img, uint32_t width, uint32_t height,
+// NV12 → BGR24 conversion (read directly from the Cora SDK message buffer).
+auto nv12_to_bgr24(const std::vector<uint8_t>& src, uint32_t width, uint32_t height, uint32_t step,
                    std::vector<uint8_t>& out) -> bool {
     if (width == 0 || height == 0 || (height % 2U) != 0) {
         return false;
     }
-    const uint32_t y_step = img.step != 0 ? img.step : width;
+    const uint32_t y_step = step != 0 ? step : width;
     if (y_step < width) {
         return false;
     }
     const uint64_t y_len = static_cast<uint64_t>(height) * y_step;
     const uint64_t uv_len = static_cast<uint64_t>(height / 2U) * y_step;
-    if (img.data.size() < y_len + uv_len) {
+    if (src.size() < y_len + uv_len) {
         return false;
     }
 
-    const auto* y_plane = img.data.data();
-    const auto* uv_plane = img.data.data() + y_len;
+    const auto* y_plane = src.data();
+    const auto* uv_plane = src.data() + y_len;
     out.resize(static_cast<std::size_t>(width) * height * 3U);
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
@@ -165,23 +182,23 @@ auto nv12_to_bgr24(const CoraRawImage& img, uint32_t width, uint32_t height,
     return true;
 }
 
-auto mono8_to_bgr24(const CoraRawImage& img, uint32_t width, uint32_t height,
-                    std::vector<uint8_t>& out) -> bool {
+auto mono8_to_bgr24(const std::vector<uint8_t>& src, uint32_t width, uint32_t height,
+                    uint32_t step, std::vector<uint8_t>& out) -> bool {
     if (width == 0 || height == 0) {
         return false;
     }
-    const uint32_t step = img.step != 0 ? img.step : width;
-    if (step < width) {
+    const uint32_t s = step != 0 ? step : width;
+    if (s < width) {
         return false;
     }
-    const uint64_t expected = static_cast<uint64_t>(height) * step;
-    if (img.data.size() < expected) {
+    const uint64_t expected = static_cast<uint64_t>(height) * s;
+    if (src.size() < expected) {
         return false;
     }
 
     out.resize(static_cast<std::size_t>(width) * height * 3U);
     for (uint32_t y = 0; y < height; ++y) {
-        const auto* src_row = img.data.data() + static_cast<std::size_t>(y) * step;
+        const auto* src_row = src.data() + static_cast<std::size_t>(y) * s;
         auto* dst_row = out.data() + static_cast<std::size_t>(y) * width * 3U;
         for (uint32_t x = 0; x < width; ++x) {
             const uint8_t value = src_row[x];
@@ -220,6 +237,21 @@ auto publish_frame(iox2::Publisher<iox2::ServiceType::Ipc, iox2::bb::Slice<uint8
     return true;
 }
 
+// Update the idle_seconds counter when no sample arrived during the last
+// reader.receive() call. Emits a periodic log at 5s / 30s / minute marks.
+auto update_idle_seconds(const std::string& prog, ChannelStatus& status,
+                         SteadyClock::time_point last_sample) -> void {
+    const auto idle =
+        std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - last_sample).count();
+    if (idle > 0 && static_cast<uint64_t>(idle) != status.idle_seconds) {
+        status.idle_seconds = static_cast<uint64_t>(idle);
+        if (status.idle_seconds == 5 || status.idle_seconds == 30 ||
+            (status.idle_seconds % 60) == 0) {
+            std::cerr << prog << ": no Cora samples for " << status.idle_seconds << "s\n";
+        }
+    }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -256,29 +288,190 @@ void ChannelWorker::worker_loop() {
 }
 
 // ---------------------------------------------------------------------------
-// DDS subscriber path — real Cora / Fast-DDS topics
+// Cora SDK typed reader path
 // ---------------------------------------------------------------------------
 
 void ChannelWorker::worker_loop_dds() {
+    if (cfg_.kind == ChannelKind::H264AnnexB) {
+        worker_loop_cora_h264();
+    } else {
+        worker_loop_cora_raw();
+    }
+}
+
+void ChannelWorker::worker_loop_cora_h264() {
     using namespace iox2;
 
-    const bool is_h264 = (cfg_.kind == ChannelKind::H264AnnexB);
     const auto prog = std::string("[coracam] ") + cfg_.channel_type;
-    const auto pf = is_h264 ? rollio::PixelFormat::H264AnnexB : rollio::PixelFormat::Bgr24;
+    const auto pf = rollio::PixelFormat::H264AnnexB;
+    const uint64_t initial_slice_len = static_cast<uint64_t>(cfg_.max_payload_bytes);
 
-    // Initial iceoryx2 slice capacity. For raw we size to the configured
-    // width*height*3; for H264 to the max packet budget.
-    const uint64_t initial_slice_len = is_h264
-                                           ? static_cast<uint64_t>(cfg_.max_payload_bytes)
-                                           : static_cast<uint64_t>(cfg_.width) * cfg_.height * 3U;
-
-    // Per-worker mutable state for discontinuity + codec-config tracking.
-    // We keep these out of ChannelStatus because they are pure scratch.
     uint64_t last_ts_us = 0;
     bool have_last_ts = false;
     const double frame_period_us =
         cfg_.fps > 0 ? (1'000'000.0 / static_cast<double>(cfg_.fps)) : 0.0;
-    // Reusable raw conversion buffer.
+
+    try {
+        set_log_level_from_env_or(LogLevel::Warn);
+        auto node = NodeBuilder().create<ServiceType::Ipc>().value();
+        const auto sname = ServiceName::create(cfg_.service_name.c_str()).value();
+        auto service = node.service_builder(sname)
+                           .publish_subscribe<bb::Slice<uint8_t>>()
+                           .user_header<rollio::CameraFrameHeader>()
+                           .open_or_create()
+                           .value();
+        auto publisher = service.publisher_builder()
+                             .initial_max_slice_len(initial_slice_len)
+                             .allocation_strategy(AllocationStrategy::PowerOfTwo)
+                             .create()
+                             .value();
+
+        H264Reader reader(cfg_.dds_topic_name, framework::dds::QoSConfig::reliableQoS());
+
+        std::cerr << prog << ": cora h264 worker started"
+                  << " topic=" << cfg_.dds_topic_name << " bus=" << cfg_.service_name
+                  << " size=" << cfg_.width << "x" << cfg_.height << '\n';
+
+        auto last_status = SteadyClock::now();
+        auto last_sample = SteadyClock::now();
+        uint64_t frame_index = 0;
+
+        while (!stop_requested_.load(std::memory_order_acquire)) {
+            auto msg = reader.receive(200);
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (!msg) {
+                update_idle_seconds(prog, status_, last_sample);
+                continue;
+            }
+            last_sample = SteadyClock::now();
+            status_.idle_seconds = 0;
+            status_.frames_received += 1;
+
+            const auto& pkt = msg->data();
+            const auto& data = pkt.data();
+
+            if (data.empty()) {
+                std::cerr << prog << ": empty payload, dropping\n";
+                status_.frames_dropped += 1;
+                continue;
+            }
+            if (data.size() > cfg_.max_payload_bytes) {
+                std::cerr << prog << ": oversized payload " << data.size() << " > "
+                          << cfg_.max_payload_bytes << ", dropping\n";
+                status_.frames_dropped += 1;
+                continue;
+            }
+            if (!has_annexb_start_code(data.data(), data.size())) {
+                std::cerr << prog << ": missing Annex-B start code, dropping\n";
+                status_.frames_dropped += 1;
+                continue;
+            }
+            // Diagnostic: foxglove `format` should be "h264".
+            if (!pkt.format().empty()) {
+                const auto& f = pkt.format();
+                bool is_h264 = (f.size() == 4) && (f[0] == 'h' || f[0] == 'H') &&
+                               (f[1] == '2') && (f[2] == '6') && (f[3] == '4');
+                if (!is_h264) {
+                    status_.encoding_mismatches += 1;
+                }
+            }
+
+            bool has_sps = false, has_pps = false, has_idr = false;
+            scan_sps_pps(data.data(), data.size(), has_sps, has_pps, has_idr);
+            if (const auto dir = h264_dump_dir(); !dir.empty()) {
+                append_h264_dump(dir, cfg_.channel_type, data);
+                log_h264_sample_debug(cfg_.channel_type, frame_index, data, has_sps, has_pps,
+                                      has_idr);
+            }
+
+            if (has_idr) {
+                status_.keyframes += 1;
+            }
+            if (has_sps && has_pps) {
+                status_.sps_pps_seen += 1;
+                status_.codec_ready = true;
+            }
+
+            if (has_idr && !status_.codec_ready && !(has_sps && has_pps)) {
+                std::cerr << prog
+                          << ": IDR without prior SPS/PPS, dropping until codec config seen\n";
+                status_.pre_codec_drops += 1;
+                status_.frames_dropped += 1;
+                continue;
+            }
+
+            uint64_t ts_us = 0;
+            if (pkt.timestamp().sec() > 0 || pkt.timestamp().nanosec() > 0) {
+                ts_us = stamp_to_us(pkt.timestamp().sec(), pkt.timestamp().nanosec());
+            }
+            if (ts_us == 0) {
+                ts_us = unix_timestamp_us();
+            }
+
+            if (have_last_ts) {
+                if (ts_us < last_ts_us) {
+                    std::cerr << prog << ": timestamp regression " << last_ts_us << " -> " << ts_us
+                              << '\n';
+                    status_.timestamp_regressions += 1;
+                    status_.discontinuities += 1;
+                } else if (frame_period_us > 0.0 &&
+                           static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
+                    std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
+                              << "us > 3 frame periods\n";
+                    status_.timestamp_gaps += 1;
+                    status_.discontinuities += 1;
+                }
+            }
+            last_ts_us = ts_us;
+            have_last_ts = true;
+
+            if (!publish_frame(publisher, ts_us, cfg_.width, cfg_.height, pf, frame_index,
+                               data.data(), data.size(), cfg_.channel_type)) {
+                status_.frames_dropped += 1;
+            } else {
+                status_.frames_published += 1;
+            }
+
+            ++frame_index;
+
+            if (SteadyClock::now() - last_status >= std::chrono::seconds(5)) {
+                std::cerr << prog << ": status received=" << status_.frames_received
+                          << " published=" << status_.frames_published
+                          << " dropped=" << status_.frames_dropped
+                          << " keyframes=" << status_.keyframes
+                          << " sps_pps=" << status_.sps_pps_seen
+                          << " pre_codec_drops=" << status_.pre_codec_drops;
+                if (status_.discontinuities > 0) {
+                    std::cerr << " ts_regr=" << status_.timestamp_regressions
+                              << " ts_gaps=" << status_.timestamp_gaps;
+                }
+                std::cerr << '\n';
+                last_status = SteadyClock::now();
+            }
+        }
+
+        std::cerr << prog << ": cora h264 worker stopped"
+                  << " published=" << status_.frames_published << '\n';
+
+    } catch (const std::exception& ex) {
+        std::cerr << "[coracam] " << cfg_.channel_type << ": cora h264 worker error: " << ex.what()
+                  << '\n';
+    }
+}
+
+void ChannelWorker::worker_loop_cora_raw() {
+    using namespace iox2;
+
+    const auto prog = std::string("[coracam] ") + cfg_.channel_type;
+    const auto pf = rollio::PixelFormat::Bgr24;
+    const uint64_t initial_slice_len = static_cast<uint64_t>(cfg_.width) * cfg_.height * 3U;
+
+    uint64_t last_ts_us = 0;
+    bool have_last_ts = false;
+    const double frame_period_us =
+        cfg_.fps > 0 ? (1'000'000.0 / static_cast<double>(cfg_.fps)) : 0.0;
     std::vector<uint8_t> raw_convert_buf;
 
     try {
@@ -296,292 +489,162 @@ void ChannelWorker::worker_loop_dds() {
                              .create()
                              .value();
 
-        // Create the Fast-DDS subscriber.
-        CoraSubscriber dds_sub(cfg_.dds_topic_name, cfg_.dds_type_name, cfg_.dds_domain_id);
+        RawImageReader reader(cfg_.dds_topic_name, framework::dds::QoSConfig::bestEffortQoS());
 
-        std::cerr << prog << ": dds worker started"
-                  << " topic=" << cfg_.dds_topic_name << " type=" << cfg_.dds_type_name
-                  << " bus=" << cfg_.service_name
-                  << " kind=" << (is_h264 ? "h264-annex-b" : "bgr24") << " size=" << cfg_.width
-                  << "x" << cfg_.height << '\n';
+        std::cerr << prog << ": cora raw worker started"
+                  << " topic=" << cfg_.dds_topic_name << " bus=" << cfg_.service_name
+                  << " size=" << cfg_.width << "x" << cfg_.height << '\n';
 
         auto last_status = SteadyClock::now();
         auto last_sample = SteadyClock::now();
         uint64_t frame_index = 0;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
-            // Block for up to 200 ms waiting for a DDS sample.
-            CoraSample sample;
-            const bool got = dds_sub.take_next(sample, std::chrono::milliseconds(200));
-
+            auto msg = reader.receive(200);
             if (stop_requested_.load(std::memory_order_acquire)) {
                 break;
             }
-            if (!got) {
-                // Update idle-seconds counter without spamming.
-                const auto idle = std::chrono::duration_cast<std::chrono::seconds>(
-                                      SteadyClock::now() - last_sample)
-                                      .count();
-                if (idle > 0 && static_cast<uint64_t>(idle) != status_.idle_seconds) {
-                    status_.idle_seconds = static_cast<uint64_t>(idle);
-                    if (status_.idle_seconds == 5 || status_.idle_seconds == 30 ||
-                        (status_.idle_seconds % 60) == 0) {
-                        std::cerr << prog << ": no DDS samples for " << status_.idle_seconds
-                                  << "s\n";
-                    }
-                }
+            if (!msg) {
+                update_idle_seconds(prog, status_, last_sample);
                 continue;
             }
             last_sample = SteadyClock::now();
             status_.idle_seconds = 0;
-
             status_.frames_received += 1;
 
-            // Basic payload sanity checks.
-            if (sample.payload.empty()) {
-                std::cerr << prog << ": empty payload, dropping\n";
+            const auto& img = msg->data();
+            const auto& encoding = img.encoding();
+            // The Cora SDK message stores bulk data in std::vector<uint8_t>.
+            // We need a mutable copy when we have to repack stride or convert
+            // colour space. Hold a pointer + length we can rebind to either
+            // the original buffer or raw_convert_buf as needed.
+            const std::vector<uint8_t>& src_data = img.data();
+            const uint8_t* payload_ptr = src_data.data();
+            uint64_t payload_len = src_data.size();
+            uint32_t width = img.width() != 0 ? img.width() : cfg_.width;
+            uint32_t height = img.height() != 0 ? img.height() : cfg_.height;
+            const uint32_t step = img.step();
+
+            if (payload_len == 0) {
+                std::cerr << prog << ": empty raw payload, dropping\n";
                 status_.frames_dropped += 1;
                 continue;
             }
-            if (sample.payload.size() > cfg_.max_payload_bytes + 4U /* encap */) {
-                std::cerr << prog << ": oversized payload " << sample.payload.size() << " > "
+            if (payload_len > cfg_.max_payload_bytes) {
+                std::cerr << prog << ": oversized raw payload " << payload_len << " > "
                           << cfg_.max_payload_bytes << ", dropping\n";
                 status_.frames_dropped += 1;
                 continue;
             }
 
-            uint64_t ts_us = sample.source_timestamp_us;
-            uint32_t width = cfg_.width;
-            uint32_t height = cfg_.height;
-            const uint8_t* payload_ptr = nullptr;
-            uint64_t payload_len = 0;
+            if (!cfg_.raw_expected_encoding.empty() && !encoding.empty() &&
+                encoding != cfg_.raw_expected_encoding) {
+                std::cerr << prog << ": raw encoding mismatch '" << encoding << "' vs expected '"
+                          << cfg_.raw_expected_encoding << "', dropping\n";
+                status_.encoding_mismatches += 1;
+                status_.frames_dropped += 1;
+                continue;
+            }
 
-            if (is_h264) {
-                // Parse foxglove_msgs/msg/CompressedVideo.
-                // This type carries no width/height/is_keyframe metadata;
-                // keyframe detection relies exclusively on NAL scan.
-                FoxgloveCompressedVideo pkt;
-                if (!parse_foxglove_compressed_video(sample.payload.data(), sample.payload.size(),
-                                                     pkt)) {
-                    std::cerr << prog << ": h264 CDR parse failed, dropping\n";
-                    dump_cdr_hex("h264 raw", sample.payload.data(), sample.payload.size());
+            if (img.width() != 0 && img.width() != cfg_.width) {
+                status_.dimension_drifts += 1;
+            }
+            if (img.height() != 0 && img.height() != cfg_.height) {
+                status_.dimension_drifts += 1;
+            }
+
+            if (encoding == "nv12") {
+                if (!nv12_to_bgr24(src_data, width, height, step, raw_convert_buf)) {
+                    std::cerr << prog << ": nv12 conversion failed (payload=" << src_data.size()
+                              << " w=" << width << " h=" << height << " step=" << step
+                              << "), dropping\n";
                     status_.frames_dropped += 1;
                     continue;
                 }
-
-                // Validate Annex-B start code.
-                if (!has_annexb_start_code(pkt.data.data(), pkt.data.size())) {
-                    std::cerr << prog << ": missing Annex-B start code, dropping\n";
-                    dump_cdr_hex("h264 data", pkt.data.data(), pkt.data.size());
+                payload_ptr = raw_convert_buf.data();
+                payload_len = raw_convert_buf.size();
+                status_.stride_repacks += 1;
+            } else if (encoding == "mono8") {
+                if (!mono8_to_bgr24(src_data, width, height, step, raw_convert_buf)) {
+                    std::cerr << prog << ": mono8 conversion failed (payload=" << src_data.size()
+                              << " w=" << width << " h=" << height << " step=" << step
+                              << "), dropping\n";
                     status_.frames_dropped += 1;
                     continue;
                 }
-
-                // Always scan NALs — foxglove provides no is_keyframe metadata.
-                bool has_sps = false, has_pps = false, has_idr = false;
-                scan_sps_pps(pkt.data.data(), pkt.data.size(), has_sps, has_pps, has_idr);
-                if (const auto dir = h264_dump_dir(); !dir.empty()) {
-                    append_h264_dump(dir, cfg_.channel_type, pkt.data);
-                    log_h264_sample_debug(cfg_.channel_type, frame_index, pkt.data, has_sps,
-                                          has_pps, has_idr);
-                }
-
-                if (has_idr) {
-                    status_.keyframes += 1;
-                }
-                if (has_sps && has_pps) {
-                    status_.sps_pps_seen += 1;
-                    status_.codec_ready = true;
-                }
-
-                // Codec-config gating.
-                if (has_idr && !status_.codec_ready && !(has_sps && has_pps)) {
-                    std::cerr << prog
-                              << ": IDR without prior SPS/PPS, dropping until codec config seen\n";
-                    status_.pre_codec_drops += 1;
+                payload_ptr = raw_convert_buf.data();
+                payload_len = raw_convert_buf.size();
+                status_.stride_repacks += 1;
+            } else if (encoding == "bgr8" || encoding.empty()) {
+                const uint32_t natural_step = width * 3U;
+                const uint32_t actual_step = step != 0 ? step : natural_step;
+                const uint64_t expected_with_step = static_cast<uint64_t>(height) * actual_step;
+                if (src_data.size() != expected_with_step) {
+                    std::cerr << prog << ": raw payload size mismatch " << src_data.size()
+                              << " vs expected " << expected_with_step << " (w=" << width
+                              << " h=" << height << " step=" << actual_step << " enc=" << encoding
+                              << "), dropping\n";
                     status_.frames_dropped += 1;
                     continue;
                 }
-
-                // Use packet timestamp if available, else DDS source ts.
-                if (pkt.timestamp.sec > 0 || pkt.timestamp.nanosec > 0) {
-                    ts_us = pkt.timestamp.to_us();
-                }
-
-                payload_ptr = pkt.data.data();
-                payload_len = pkt.data.size();
-
-                // Timestamp regression / gap check.
-                if (have_last_ts && ts_us != 0) {
-                    if (ts_us < last_ts_us) {
-                        std::cerr << prog << ": timestamp regression " << last_ts_us << " -> "
-                                  << ts_us << '\n';
-                        status_.timestamp_regressions += 1;
-                        status_.discontinuities += 1;
-                    } else if (frame_period_us > 0.0 &&
-                               static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
-                        std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
-                                  << "us > 3 frame periods\n";
-                        status_.timestamp_gaps += 1;
-                        status_.discontinuities += 1;
+                if (actual_step != natural_step) {
+                    raw_convert_buf.resize(static_cast<std::size_t>(height) * natural_step);
+                    for (uint32_t y = 0; y < height; ++y) {
+                        std::memcpy(raw_convert_buf.data() +
+                                        static_cast<std::size_t>(y) * natural_step,
+                                    src_data.data() + static_cast<std::size_t>(y) * actual_step,
+                                    natural_step);
                     }
+                    payload_ptr = raw_convert_buf.data();
+                    payload_len = raw_convert_buf.size();
+                    status_.stride_repacks += 1;
                 }
-                if (ts_us != 0) {
-                    last_ts_us = ts_us;
-                    have_last_ts = true;
-                }
-
-                if (!publish_frame(publisher, ts_us > 0 ? ts_us : unix_timestamp_us(), width,
-                                   height, pf, frame_index, payload_ptr, payload_len,
-                                   cfg_.channel_type)) {
-                    status_.frames_dropped += 1;
-                } else {
-                    status_.frames_published += 1;
-                }
-
             } else {
-                // Parse raw image.
-                CoraRawImage img;
-                if (!parse_cora_raw_image(sample.payload.data(), sample.payload.size(), img)) {
-                    std::cerr << prog << ": raw CDR parse failed, dropping\n";
-                    dump_cdr_hex("raw image", sample.payload.data(), sample.payload.size());
-                    status_.frames_dropped += 1;
-                    continue;
-                }
+                std::cerr << prog << ": unsupported raw encoding '" << encoding << "', dropping\n";
+                status_.encoding_mismatches += 1;
+                status_.frames_dropped += 1;
+                continue;
+            }
 
-                if (!cfg_.raw_expected_encoding.empty() && !img.encoding.empty() &&
-                    img.encoding != cfg_.raw_expected_encoding) {
-                    std::cerr << prog << ": raw encoding mismatch '" << img.encoding
-                              << "' vs expected '" << cfg_.raw_expected_encoding << "', dropping\n";
-                    status_.encoding_mismatches += 1;
-                    status_.frames_dropped += 1;
-                    continue;
-                }
+            uint64_t ts_us = 0;
+            const auto& stamp = img.header().stamp();
+            if (stamp.sec() > 0 || stamp.nanosec() > 0) {
+                ts_us = stamp_to_us(stamp.sec(), stamp.nanosec());
+            }
+            if (ts_us == 0) {
+                ts_us = unix_timestamp_us();
+            }
 
-                // Dimension drift.
-                if (img.width != 0 && img.width != cfg_.width) {
-                    status_.dimension_drifts += 1;
+            if (have_last_ts) {
+                if (ts_us < last_ts_us) {
+                    std::cerr << prog << ": timestamp regression " << last_ts_us << " -> " << ts_us
+                              << '\n';
+                    status_.timestamp_regressions += 1;
+                    status_.discontinuities += 1;
+                } else if (frame_period_us > 0.0 &&
+                           static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
+                    std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
+                              << "us > 3 frame periods\n";
+                    status_.timestamp_gaps += 1;
+                    status_.discontinuities += 1;
                 }
-                if (img.height != 0 && img.height != cfg_.height) {
-                    status_.dimension_drifts += 1;
-                }
+            }
+            last_ts_us = ts_us;
+            have_last_ts = true;
 
-                // Validate pixel count + optional stride re-packing.
-                if (img.width != 0 && img.height != 0) {
-                    if (img.encoding == "nv12") {
-                        if (!nv12_to_bgr24(img, img.width, img.height, raw_convert_buf)) {
-                            std::cerr << prog << ": nv12 conversion failed"
-                                      << " (payload=" << img.data.size() << " w=" << img.width
-                                      << " h=" << img.height << " step=" << img.step
-                                      << "), dropping\n";
-                            status_.frames_dropped += 1;
-                            continue;
-                        }
-                        img.data.swap(raw_convert_buf);
-                        status_.stride_repacks += 1;
-                    } else if (img.encoding == "mono8") {
-                        if (!mono8_to_bgr24(img, img.width, img.height, raw_convert_buf)) {
-                            std::cerr << prog << ": mono8 conversion failed"
-                                      << " (payload=" << img.data.size() << " w=" << img.width
-                                      << " h=" << img.height << " step=" << img.step
-                                      << "), dropping\n";
-                            status_.frames_dropped += 1;
-                            continue;
-                        }
-                        img.data.swap(raw_convert_buf);
-                        status_.stride_repacks += 1;
-                    } else if (img.encoding == "bgr8" || img.encoding.empty()) {
-                        const uint32_t natural_step = img.width * 3U;
-                        const uint32_t step = img.step != 0 ? img.step : natural_step;
-                        const uint64_t expected_with_step =
-                            static_cast<uint64_t>(img.height) * step;
-                        if (img.data.size() != expected_with_step) {
-                            std::cerr << prog << ": raw payload size mismatch " << img.data.size()
-                                      << " vs expected " << expected_with_step
-                                      << " (w=" << img.width << " h=" << img.height
-                                      << " step=" << step << " enc=" << img.encoding
-                                      << "), dropping\n";
-                            status_.frames_dropped += 1;
-                            continue;
-                        }
-                        if (step != natural_step) {
-                            // Row-copy strip the row padding so downstream gets a
-                            // contiguous width*height*3 buffer.
-                            raw_convert_buf.resize(static_cast<std::size_t>(img.height) *
-                                                   natural_step);
-                            for (uint32_t y = 0; y < img.height; ++y) {
-                                std::memcpy(raw_convert_buf.data() +
-                                                static_cast<std::size_t>(y) * natural_step,
-                                            img.data.data() + static_cast<std::size_t>(y) * step,
-                                            natural_step);
-                            }
-                            img.data.swap(raw_convert_buf);
-                            status_.stride_repacks += 1;
-                        }
-                    } else {
-                        std::cerr << prog << ": unsupported raw encoding '" << img.encoding
-                                  << "', dropping\n";
-                        status_.encoding_mismatches += 1;
-                        status_.frames_dropped += 1;
-                        continue;
-                    }
-                }
-
-                if (img.header.stamp.sec > 0 || img.header.stamp.nanosec > 0) {
-                    ts_us = img.header.stamp.to_us();
-                }
-                if (img.width != 0) {
-                    width = img.width;
-                }
-                if (img.height != 0) {
-                    height = img.height;
-                }
-
-                payload_ptr = img.data.data();
-                payload_len = img.data.size();
-
-                // Timestamp regression / gap check.
-                if (have_last_ts && ts_us != 0) {
-                    if (ts_us < last_ts_us) {
-                        std::cerr << prog << ": timestamp regression " << last_ts_us << " -> "
-                                  << ts_us << '\n';
-                        status_.timestamp_regressions += 1;
-                        status_.discontinuities += 1;
-                    } else if (frame_period_us > 0.0 &&
-                               static_cast<double>(ts_us - last_ts_us) > 3.0 * frame_period_us) {
-                        std::cerr << prog << ": timestamp gap " << (ts_us - last_ts_us)
-                                  << "us > 3 frame periods\n";
-                        status_.timestamp_gaps += 1;
-                        status_.discontinuities += 1;
-                    }
-                }
-                if (ts_us != 0) {
-                    last_ts_us = ts_us;
-                    have_last_ts = true;
-                }
-
-                if (!publish_frame(publisher, ts_us > 0 ? ts_us : unix_timestamp_us(), width,
-                                   height, pf, frame_index, payload_ptr, payload_len,
-                                   cfg_.channel_type)) {
-                    status_.frames_dropped += 1;
-                } else {
-                    status_.frames_published += 1;
-                }
+            if (!publish_frame(publisher, ts_us, width, height, pf, frame_index, payload_ptr,
+                               payload_len, cfg_.channel_type)) {
+                status_.frames_dropped += 1;
+            } else {
+                status_.frames_published += 1;
             }
 
             ++frame_index;
 
-            // Periodic status log every 5 seconds.
             if (SteadyClock::now() - last_status >= std::chrono::seconds(5)) {
-                std::cerr << prog << ": status"
-                          << " received=" << status_.frames_received
+                std::cerr << prog << ": status received=" << status_.frames_received
                           << " published=" << status_.frames_published
                           << " dropped=" << status_.frames_dropped;
-                if (is_h264) {
-                    std::cerr << " keyframes=" << status_.keyframes
-                              << " sps_pps=" << status_.sps_pps_seen
-                              << " pre_codec_drops=" << status_.pre_codec_drops;
-                }
                 if (status_.discontinuities > 0) {
                     std::cerr << " ts_regr=" << status_.timestamp_regressions
                               << " ts_gaps=" << status_.timestamp_gaps;
@@ -597,12 +660,11 @@ void ChannelWorker::worker_loop_dds() {
             }
         }
 
-        dds_sub.stop();
-        std::cerr << prog << ": dds worker stopped"
+        std::cerr << prog << ": cora raw worker stopped"
                   << " published=" << status_.frames_published << '\n';
 
     } catch (const std::exception& ex) {
-        std::cerr << "[coracam] " << cfg_.channel_type << ": dds worker error: " << ex.what()
+        std::cerr << "[coracam] " << cfg_.channel_type << ": cora raw worker error: " << ex.what()
                   << '\n';
     }
 }

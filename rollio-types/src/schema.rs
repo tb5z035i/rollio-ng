@@ -98,6 +98,21 @@ pub fn config_schema() -> ConfigSchema {
                 allows_extra_fields: false,
             },
             SchemaSection {
+                name: "runtime",
+                kind: SchemaSectionKind::Table,
+                description: "Project-wide runtime knobs injected into child process configs.",
+                fields: vec![int_field(
+                    "dds_domain_id",
+                    "DDS/Cora domain id shared by every device process that uses DDS.",
+                    false,
+                    0,
+                )],
+                notes: vec![
+                    "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
+                ],
+                allows_extra_fields: false,
+            },
+            SchemaSection {
                 name: "controller",
                 kind: SchemaSectionKind::Table,
                 description: "Controller process orchestration settings.",
@@ -760,6 +775,21 @@ fn sprint_extra_a_schema() -> ConfigSchema {
                     ),
                 ],
                 notes: vec![],
+                allows_extra_fields: false,
+            },
+            SchemaSection {
+                name: "runtime",
+                kind: SchemaSectionKind::Table,
+                description: "Project-wide runtime knobs injected into child process configs.",
+                fields: vec![int_field(
+                    "dds_domain_id",
+                    "DDS/Cora domain id shared by every device process that uses DDS.",
+                    false,
+                    0,
+                )],
+                notes: vec![
+                    "Controller injects this value into each device's inline BinaryDeviceConfig as dds_domain_id.",
+                ],
                 allows_extra_fields: false,
             },
             SchemaSection {
