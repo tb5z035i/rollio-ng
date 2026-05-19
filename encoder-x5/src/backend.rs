@@ -126,7 +126,7 @@ impl Nv12Converter {
                 dst_width as i32,
                 dst_height as i32,
                 dst_pix_fmt,
-                ffmpeg::ffi::SWS_BILINEAR as i32,
+                ffmpeg::ffi::SWS_BILINEAR,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
@@ -181,7 +181,7 @@ impl Nv12Converter {
         let ret = unsafe {
             ffmpeg::ffi::sws_scale(
                 self.sws_ctx,
-                src_data.as_ptr() as *const *const u8,
+                src_data.as_ptr(),
                 src_linesize.as_ptr(),
                 0,
                 src_h,
@@ -372,6 +372,7 @@ struct HorizonX5Session {
 }
 
 impl HorizonX5Session {
+    #[allow(clippy::new_ret_no_self)]
     fn new(
         params: &CodecSessionParams<'_>,
         first_frame: &OwnedFrame,

@@ -844,6 +844,7 @@ mod tests {
             task_indices: vec![0, 0],
             done_flags: vec![false, true],
             observation_columns,
+            sensor_columns: BTreeMap::new(),
             action_rows: vec![Vec::new(), Vec::new()],
         };
 

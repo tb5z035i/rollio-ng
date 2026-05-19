@@ -35,11 +35,35 @@ set(BUILD_RS2_ALL OFF CACHE BOOL "" FORCE)
 set(CHECK_FOR_UPDATES OFF CACHE BOOL "" FORCE)
 set(IMPORT_DEPTH_CAM_FW OFF CACHE BOOL "" FORCE)
 set(ENABLE_CCACHE OFF CACHE BOOL "" FORCE)
+# Cora SDK ships a compatible nlohmann/json header install. Point
+# librealsense's patched external_json.cmake at those headers before
+# configuring librealsense so it does not try to clone json during configure.
+set(ROLLIO_CORA_SDK_ROOT
+    "${CMAKE_CURRENT_LIST_DIR}/../prebuild/cora-sdk_1.2.0_20260517124657_linux_aarch64/opt/cora"
+    CACHE PATH "Cora SDK root used by rollio-devices-coracam")
+if("${NLOHMANN_JSON_INCLUDE_DIR}" STREQUAL ""
+   AND EXISTS "${ROLLIO_CORA_SDK_ROOT}/include/nlohmann/json_fwd.hpp")
+    set(NLOHMANN_JSON_INCLUDE_DIR
+        "${ROLLIO_CORA_SDK_ROOT}/include"
+        CACHE PATH "nlohmann/json include directory used by vendored librealsense")
+endif()
+# librealsense's CMake/unix_config.cmake unconditionally appends `-Werror`,
+# `-pedantic`, `-Wno-deprecated-builtins`, etc. to CMAKE_CXX_FLAGS via plain
+# `set()` (no PARENT_SCOPE), so the flags leak into every subdir added
+# afterwards.  Save the pre-realsense flags so we can restore a clean baseline
+# before adding Fast-DDS / foonathan_memory — those projects do not compile
+# cleanly with `-Werror -Wpedantic` on clang ≥ 21.
+set(_rollio_cxx_flags_before_realsense "${CMAKE_CXX_FLAGS}")
+set(_rollio_c_flags_before_realsense   "${CMAKE_C_FLAGS}")
 add_subdirectory(
     "../third_party/librealsense"
     "${CMAKE_BINARY_DIR}/third_party/librealsense"
     EXCLUDE_FROM_ALL
 )
+# Restore the baseline.  The realsense static lib was already configured with
+# the polluted flags above; only subsequent subdirs see the restored flags.
+set(CMAKE_CXX_FLAGS "${_rollio_cxx_flags_before_realsense}")
+set(CMAKE_C_FLAGS   "${_rollio_c_flags_before_realsense}")
 
 if(ROLLIO_BUILD_CPP_TESTS)
     enable_testing()
@@ -54,3 +78,20 @@ target_include_directories(
 target_link_libraries(rollio-common INTERFACE iceoryx2-cxx::static-lib-cxx)
 
 add_subdirectory(realsense)
+
+# ── Coracam (Cora SDK H.264 Annex-B + raw camera bridge) ─────────────────
+#
+# Coracam now consumes the prebuilt Cora SDK shipped under
+#   prebuild/cora-sdk_<version>_linux_aarch64/opt/cora
+# instead of building Fast-DDS/foonathan_memory from third_party/.
+# The SDK is auto-discovered: callers do not need to pass CMAKE_PREFIX_PATH.
+#
+# See signal_other/analysis/rollio-device/coracam-cora-sdk-migration.zh.md
+option(ROLLIO_BUILD_CORACAM "Build Cora SDK Coracam bridge devices" OFF)
+if(EXISTS "${ROLLIO_CORA_SDK_ROOT}/lib/cmake/cora/coraConfig.cmake")
+    list(PREPEND CMAKE_PREFIX_PATH "${ROLLIO_CORA_SDK_ROOT}")
+endif()
+
+if(ROLLIO_BUILD_CORACAM)
+    add_subdirectory(rollio-devices-coracam)
+endif()

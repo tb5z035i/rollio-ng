@@ -118,6 +118,7 @@ struct CameraStreamBuffer {
 struct CameraPacket {
     timestamp_us: u64,
     data: Vec<u8>,
+    #[allow(dead_code)]
     is_keyframe: bool,
 }
 

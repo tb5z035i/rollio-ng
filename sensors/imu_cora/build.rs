@@ -4,11 +4,11 @@
 //! `find_package(cora REQUIRED)`), generates FFI bindings from `cpp/include/cora_bridge.h`,
 //! and emits link directives so the resulting binary can find the SDK libraries at runtime.
 //!
-//! SDK discovery is by environment variable only — `examples/cora_sdk/` in the repo is
-//! NOT looked at automatically. Discovery order:
+//! SDK discovery order (first hit wins):
 //!   1. `CORA_SDK_ROOT`
 //!   2. `CORA_SDK_X86_64_ROOT` / `CORA_SDK_AARCH64_ROOT` per Cargo target arch
-//!   3. CMake's default `find_package(cora)` search path (system install)
+//!   3. `<workspace>/prebuild/cora-sdk_*_linux_<arch>/opt/cora` (extracted prebuild)
+//!   4. CMake's default `find_package(cora)` search path (system install)
 //!
 //! On non-Linux hosts (e.g. macOS dev machines) the cmake + link steps are skipped so
 //! `cargo check` still works; a real binary build requires Linux + the SDK.
@@ -41,6 +41,22 @@ fn main() {
     }
 
     let sdk_root = resolve_sdk_root();
+
+    // No SDK available (no env var, no arch-matched prebuild, no system
+    // install). Skip the cmake + link directives so `cargo check` on a
+    // dev host without the SDK still succeeds; a binary build will fail
+    // at link time, which is the same behavior as the original
+    // env-var-only flow.
+    if sdk_root.is_none() && !system_cora_available() {
+        println!(
+            "cargo:warning=imu-cora: Cora SDK not found via CORA_SDK_ROOT, \
+             arch-specific override, prebuild/, or system install; \
+             skipping C++ shim build. Set CORA_SDK_ROOT or place an \
+             extracted SDK under prebuild/cora-sdk_*_linux_<arch>/ for a \
+             functional binary."
+        );
+        return;
+    }
 
     let mut cfg = cmake::Config::new(&shim_dir);
     cfg.profile("Release");
@@ -103,7 +119,58 @@ fn resolve_sdk_root() -> Option<PathBuf> {
     } else {
         return None;
     };
-    read_env_path(arch_var)
+    if let Some(p) = read_env_path(arch_var) {
+        return Some(p);
+    }
+    resolve_prebuild_sdk_root(&target)
+}
+
+/// CMake's default search path includes `/opt/cora` and `/usr/lib/cmake/`.
+/// Probe a couple of well-known locations so the no-SDK fast-path can
+/// distinguish "operator built without the SDK" from "SDK lives in a
+/// system prefix CMake will find on its own".
+fn system_cora_available() -> bool {
+    [
+        "/opt/cora/lib/cmake/cora/coraConfig.cmake",
+        "/usr/lib/cmake/cora/coraConfig.cmake",
+        "/usr/local/lib/cmake/cora/coraConfig.cmake",
+    ]
+    .iter()
+    .any(|p| Path::new(p).exists())
+}
+
+/// Look for an extracted Cora SDK under `<workspace>/prebuild/`. Matches
+/// directory names ending in `_linux_<arch>` (e.g.
+/// `cora-sdk_1.2.0_20260517124657_linux_aarch64`) and expects the SDK tree
+/// rooted at `<entry>/opt/cora` with a `lib/cmake/cora/coraConfig.cmake`.
+fn resolve_prebuild_sdk_root(target: &str) -> Option<PathBuf> {
+    let arch = if target.starts_with("x86_64") {
+        "linux_x86_64"
+    } else if target.starts_with("aarch64") {
+        "linux_aarch64"
+    } else {
+        return None;
+    };
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?);
+    let workspace_root = manifest_dir.parent()?.parent()?;
+    let prebuild = workspace_root.join("prebuild");
+    println!("cargo:rerun-if-changed={}", prebuild.display());
+    let entry = std::fs::read_dir(&prebuild)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|e| {
+            e.path().is_dir()
+                && e.file_name()
+                    .to_string_lossy()
+                    .ends_with(&format!("_{arch}"))
+        })?;
+    let candidate = entry.path().join("opt/cora");
+    let config = candidate.join("lib/cmake/cora/coraConfig.cmake");
+    if config.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn read_env_path(name: &str) -> Option<PathBuf> {

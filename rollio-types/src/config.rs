@@ -1402,6 +1402,8 @@ impl ThresholdDef {
 pub struct ProjectConfig {
     pub project_name: String,
     pub mode: CollectionMode,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
     pub episode: EpisodeConfig,
     pub devices: Vec<BinaryDeviceConfig>,
     #[serde(default)]
@@ -1425,6 +1427,8 @@ struct ProjectConfigSerde {
     project_name: String,
     #[serde(default)]
     mode: Option<CollectionMode>,
+    #[serde(default)]
+    runtime: RuntimeConfig,
     episode: EpisodeConfig,
     devices: Vec<BinaryDeviceConfig>,
     #[serde(default)]
@@ -1450,6 +1454,7 @@ impl From<ProjectConfigSerde> for ProjectConfig {
         Self {
             project_name: value.project_name,
             mode,
+            runtime: value.runtime,
             episode: value.episode,
             devices: value.devices,
             pairings: value.pairings,
@@ -1460,6 +1465,20 @@ impl From<ProjectConfigSerde> for ProjectConfig {
             visualizer: value.visualizer,
             ui: value.ui,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfig {
+    #[serde(default)]
+    pub advanced_pipeline_logs: bool,
+}
+
+impl RuntimeConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let _ = self.advanced_pipeline_logs;
+        Ok(())
     }
 }
 
@@ -1479,6 +1498,12 @@ pub struct BinaryDeviceConfig {
     pub driver: String,
     pub id: String,
     pub bus_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_domain_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_shm_segment_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_callback_threads: Option<u32>,
     #[serde(default)]
     pub channels: Vec<DeviceChannelConfigV2>,
     #[serde(flatten, default)]
@@ -1522,6 +1547,12 @@ impl BinaryDeviceConfig {
         if self.bus_root.trim().is_empty() {
             return Err(ConfigError::Validation(format!(
                 "device \"{}\": bus_root must not be empty",
+                self.name
+            )));
+        }
+        if self.dds_shm_segment_size == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "device \"{}\": dds_shm_segment_size must be > 0 when set",
                 self.name
             )));
         }
@@ -3563,6 +3594,7 @@ impl ProjectConfig {
         Self {
             project_name: default_project_name(),
             mode: CollectionMode::Intervention,
+            runtime: RuntimeConfig::default(),
             episode: EpisodeConfig::default(),
             devices: Vec::new(),
             pairings: Vec::new(),
@@ -3581,6 +3613,7 @@ impl ProjectConfig {
                 "project_name must not be empty".into(),
             ));
         }
+        self.runtime.validate()?;
         self.episode.validate()?;
         if self.devices.is_empty() {
             return Err(ConfigError::Validation(

@@ -162,6 +162,75 @@ fn ui_runtime_config_defaults_to_all_interfaces() {
     assert_eq!(config.ui.http_host, "0.0.0.0");
 }
 
+#[test]
+fn project_runtime_defaults_pipeline_logs_to_false() {
+    let config = ProjectConfig::draft_setup_template();
+    assert!(!config.runtime.advanced_pipeline_logs);
+}
+
+#[test]
+fn project_runtime_accepts_advanced_pipeline_logs_switch() {
+    let runtime: RuntimeConfig = toml::from_str(
+        r#"
+advanced_pipeline_logs = true
+"#,
+    )
+    .expect("runtime config should parse");
+    assert!(runtime.advanced_pipeline_logs);
+}
+
+#[test]
+fn project_runtime_rejects_dds_domain_id_toml_key() {
+    let err = toml::from_str::<RuntimeConfig>("dds_domain_id = 7\n")
+        .expect_err("DDS domain id must be configured through ROLLIO_DDS_DOMAIN_ID");
+    assert!(
+        err.to_string().contains("unknown field `dds_domain_id`"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn binary_device_config_accepts_dds_resource_knobs() {
+    let config = BinaryDeviceConfig::from_str(
+        r#"
+name = "coracam_head"
+driver = "coracam"
+id = "cora-head"
+bus_root = "coracam_head"
+dds_shm_segment_size = 67108864
+dds_callback_threads = 4
+
+[[channels]]
+channel_type = "left_h264"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
+"#,
+    )
+    .expect("DDS resource knobs should parse");
+    assert_eq!(config.dds_shm_segment_size, Some(67_108_864));
+    assert_eq!(config.dds_callback_threads, Some(4));
+
+    let err = BinaryDeviceConfig::from_str(
+        r#"
+name = "coracam_head"
+driver = "coracam"
+id = "cora-head"
+bus_root = "coracam_head"
+dds_shm_segment_size = 0
+
+[[channels]]
+channel_type = "left_h264"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
+"#,
+    )
+    .expect_err("zero-sized DDS shared memory segment should be rejected");
+    assert!(
+        err.to_string().contains("dds_shm_segment_size"),
+        "unexpected error: {err}"
+    );
+}
+
 /// Per-codec backends should default to inheriting the legacy global
 /// `backend` field so loading an older TOML produces the same encoder
 /// configuration. Reading a TOML with explicit per-codec backends must
@@ -689,6 +758,7 @@ fn schema_export_is_v2_and_includes_nested_sections() {
     assert!(section_ids.contains(&"devices"));
     assert!(section_ids.contains(&"devices.channels"));
     assert!(section_ids.contains(&"pairings"));
+    assert!(section_ids.contains(&"runtime"));
 }
 
 // -----------------------------------------------------------------------

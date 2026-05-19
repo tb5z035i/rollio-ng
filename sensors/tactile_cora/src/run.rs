@@ -181,10 +181,7 @@ fn validate_channel(
         .iter()
         .filter_map(|s| s.as_sensor())
         .collect();
-    if !kinds
-        .iter()
-        .any(|k| *k == SensorStateKind::TactilePointCloud2)
-    {
+    if !kinds.contains(&SensorStateKind::TactilePointCloud2) {
         return Err(format!(
             "device \"{}\" channel \"{}\": publish_states must contain \"tactile_point_cloud2\"",
             device.name, channel.channel_type

@@ -101,6 +101,16 @@ endif
 # permutations coexist without blowing each other's cache away.
 CAMERAS_BUILD_DIR := cameras/build-$(TARGET_ARCH)-$(BUILD_TYPE)
 
+# Enable the Cora/Fast-DDS camera bridge by default.  Override with
+# `make ROLLIO_BUILD_CORACAM=OFF` to skip Fast-DDS entirely.
+ROLLIO_BUILD_CORACAM ?= ON
+
+CORA_SDK_NAME    := cora-sdk_1.2.0_20260517124657_linux_aarch64
+CORA_SDK_ARCHIVE := prebuild/$(CORA_SDK_NAME).tar.gz
+CORA_SDK_DIR     := prebuild/$(CORA_SDK_NAME)
+CORA_SDK_ROOT    := $(CORA_SDK_DIR)/opt/cora
+CORA_SDK_CONFIG  := $(CORA_SDK_ROOT)/lib/cmake/cora/coraConfig.cmake
+
 # Parallel jobs: cargo, cmake, and the airbot_play_rust Pinocchio cmake
 # sub-build (`AIRBOT_PINOCCHIO_BUILD_JOBS`) all share this knob. Lower it
 # if rustc + native C++ thrashes CPU or OOMs.
@@ -132,10 +142,11 @@ fmt: rust-fmt cpp-fmt python-fmt
 # `make build && make package` (with the same BUILD_TYPE/TARGET_ARCH).
 # `./build.sh assert_built` errors with a helpful message if any expected
 # artifact is missing under TARGET_DIR / CAMERAS_BUILD_DIR.
-package:
+package: prepare-cora-sdk
 	DEB_ARCH=$(DEB_ARCH) \
 	  TARGET_DIR=$(TARGET_BUILD_DIR) \
 	  CAMERAS_BUILD_DIR=$(CAMERAS_BUILD_DIR) \
+	  CORA_SDK_ROOT=$(CURDIR)/$(CORA_SDK_ROOT) \
 	  ./build.sh all
 
 # Print shell `export` lines that put the freshly-built dev binaries on
@@ -160,6 +171,7 @@ deps:
 	sudo apt-get update
 	# Each entry below maps onto something concrete the build needs:
 	#   patch              -- apply-vendored-patches (Pinocchio static + ffmpeg-sys-next cross)
+	#                         and the C++ librealsense local nlohmann/json patch
 	#   dpkg-dev, file     -- dpkg-deb / dpkg-shlibdeps / ELF detection in build.sh
 	#   cmake, ninja-build -- C++ camera build + airbot Pinocchio sub-build
 	#   pkg-config         -- pkg-config crate + cmake's FindPkgConfig
@@ -178,6 +190,7 @@ deps:
 	#   libtinyxml2-dev    -- urdfdom link dep; explicit for the target-arch
 	#                         linker symlink (libtinyxml2.so)
 	#   libeigen3-dev      -- pinocchio + cxx-build include
+	#   libtbb-dev         -- Cora SDK CMake dependency
 	#   libboost-*-dev     -- pinocchio link deps
 	#   libusb-1.0-0-dev,
 	#   libudev-dev        -- librealsense static link (cameras/realsense). libudev-dev
@@ -194,6 +207,7 @@ deps:
 	  liburdfdom-dev \
 	  libtinyxml2-dev \
 	  libeigen3-dev \
+	  libtbb-dev \
 	  libboost-filesystem-dev libboost-serialization-dev \
 	  libusb-1.0-0-dev libudev-dev \
 	  git
@@ -223,6 +237,7 @@ ifeq ($(TARGET_ARCH),arm64)
 	  liburdfdom-dev:arm64 \
 	  libtinyxml2-dev:arm64 \
 	  libeigen3-dev:arm64 \
+	  libtbb-dev:arm64 \
 	  libboost-filesystem-dev:arm64 libboost-serialization-dev:arm64 \
 	  libusb-1.0-0-dev:arm64 libudev-dev:arm64
 endif
@@ -256,7 +271,7 @@ distclean: clean
 # Composed into the aggregate verbs above; also runnable individually
 # (e.g. `make rust-lint`, `make ui-test`) for fast single-language loops.
 
-.PHONY: apply-vendored-patches apply-airbot-pinocchio-patch apply-ffmpeg-sys-cross-patch
+.PHONY: apply-vendored-patches apply-airbot-pinocchio-patch apply-ffmpeg-sys-cross-patch apply-librealsense-local-nlohmann-json-patch prepare-cora-sdk
 .PHONY: rust-build rust-test rust-lint rust-fmt
 .PHONY: cpp-build  cpp-test  cpp-lint  cpp-fmt
 .PHONY: ui-install ui-build  ui-test   ui-lint
@@ -309,6 +324,37 @@ apply-ffmpeg-sys-cross-patch:
 		patch --batch --no-backup-if-mismatch -d "$(FFMPEG_SYS_DIR)" -p1 < "$(FFMPEG_SYS_CROSS_PATCH)"; \
 	fi
 
+# librealsense clones nlohmann/json during CMake configure by default. This
+# patch lets Rollio use the headers already shipped by the Cora SDK instead.
+LIBREALSENSE_JSON_PATCH := patches/librealsense-local-nlohmann-json.patch
+LIBREALSENSE_DIR        := third_party/librealsense
+
+apply-librealsense-local-nlohmann-json-patch:
+	@test -f "$(LIBREALSENSE_JSON_PATCH)" \
+		|| (echo "missing $(LIBREALSENSE_JSON_PATCH)" >&2; exit 1)
+	@test -d "$(LIBREALSENSE_DIR)" \
+		|| (echo "missing $(LIBREALSENSE_DIR); run git submodule update --init --recursive" >&2; exit 1)
+	@if ! grep -Fq 'NLOHMANN_JSON_INCLUDE_DIR' "$(LIBREALSENSE_DIR)/CMake/external_json.cmake"; then \
+		patch --batch --no-backup-if-mismatch -d "$(LIBREALSENSE_DIR)" -p1 < "$(LIBREALSENSE_JSON_PATCH)"; \
+	fi
+
+prepare-cora-sdk:
+	@if [ "$(ROLLIO_BUILD_CORACAM)" = "OFF" ]; then \
+		echo "prepare-cora-sdk: ROLLIO_BUILD_CORACAM=$(ROLLIO_BUILD_CORACAM); skip"; \
+	elif [ -f "$(CORA_SDK_CONFIG)" ]; then \
+		echo "prepare-cora-sdk: found $(CORA_SDK_ROOT)"; \
+	elif [ -f "$(CORA_SDK_ARCHIVE)" ]; then \
+		echo "prepare-cora-sdk: extracting $(CORA_SDK_ARCHIVE)"; \
+		mkdir -p prebuild; \
+		tar -xzf "$(CORA_SDK_ARCHIVE)" -C prebuild; \
+		test -f "$(CORA_SDK_CONFIG)" \
+			|| (echo "prepare-cora-sdk: missing $(CORA_SDK_CONFIG) after extraction" >&2; exit 1); \
+	else \
+		echo "prepare-cora-sdk: missing $(CORA_SDK_CONFIG)" >&2; \
+		echo "prepare-cora-sdk: add $(CORA_SDK_ARCHIVE) or set ROLLIO_BUILD_CORACAM=OFF" >&2; \
+		exit 1; \
+	fi
+
 # Rust ----------------------------------------------------------------
 
 rust-build: apply-vendored-patches
@@ -352,9 +398,10 @@ rust-fmt:
 
 # C++ -----------------------------------------------------------------
 
-cpp-build:
+cpp-build: apply-librealsense-local-nlohmann-json-patch prepare-cora-sdk
 	cmake -B $(CAMERAS_BUILD_DIR) -S cameras $(CMAKE_TOOLCHAIN_ARGS) \
-	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
+	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
+	  -DROLLIO_BUILD_CORACAM=$(ROLLIO_BUILD_CORACAM)
 	cmake --build $(CAMERAS_BUILD_DIR) --parallel $(BUILD_JOBS)
 
 cpp-test: cpp-build

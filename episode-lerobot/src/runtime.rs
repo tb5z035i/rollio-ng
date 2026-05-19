@@ -1264,6 +1264,7 @@ mod tests {
             staging_slots,
             cameras: Vec::new(),
             observations: Vec::new(),
+            sensor_observations: Vec::new(),
             actions: Vec::new(),
             embedded_config_toml: "stub".into(),
         };

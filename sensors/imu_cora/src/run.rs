@@ -145,7 +145,7 @@ fn validate_channel(
         .iter()
         .filter_map(|s| s.as_sensor())
         .collect();
-    if !kinds.iter().any(|k| *k == SensorStateKind::ImuAccelGyro) {
+    if !kinds.contains(&SensorStateKind::ImuAccelGyro) {
         return Err(format!(
             "device \"{}\" channel \"{}\": publish_states must contain \"imu_accel_gyro\"",
             device.name, channel.channel_type

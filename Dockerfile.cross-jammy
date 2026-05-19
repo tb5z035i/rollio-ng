@@ -63,6 +63,7 @@ RUN set -eux; \
       liburdfdom-dev \
       libtinyxml2-dev \
       libeigen3-dev \
+      libtbb-dev \
       libboost-filesystem-dev libboost-serialization-dev \
       libusb-1.0-0-dev libudev-dev \
       crossbuild-essential-arm64 \
@@ -74,6 +75,7 @@ RUN set -eux; \
       liburdfdom-dev:arm64 \
       libtinyxml2-dev:arm64 \
       libeigen3-dev:arm64 \
+      libtbb-dev:arm64 \
       libboost-filesystem-dev:arm64 libboost-serialization-dev:arm64 \
       libusb-1.0-0-dev:arm64 libudev-dev:arm64 \
       python3 python3-venv python3-pip python3-build python3-setuptools python3-wheel; \

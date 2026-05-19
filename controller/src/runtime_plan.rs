@@ -12,6 +12,8 @@ use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+const ADVANCED_PIPELINE_LOGS_ENV: &str = "ROLLIO_ADVANCED_PIPELINE_LOGS";
+
 /// Resolve a user-facing path string from the project config against the
 /// invocation cwd of the controller. Absolute paths are returned unchanged;
 /// relative paths are joined onto `invocation_cwd` and lexically normalized
@@ -58,9 +60,16 @@ pub(crate) fn build_collect_specs(
     child_working_dir: &Path,
     current_exe_dir: &Path,
     invocation_cwd: &Path,
+    dds_domain_id: u32,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
-    let mut specs =
-        build_preview_specs(config, workspace_root, child_working_dir, current_exe_dir)?;
+    let mut specs = build_preview_specs(
+        config,
+        workspace_root,
+        child_working_dir,
+        current_exe_dir,
+        invocation_cwd,
+        dds_domain_id,
+    )?;
 
     // The control server hosts the long-lived control plane WebSocket and
     // forwards episode commands / status / backpressure via iceoryx2. The
@@ -139,6 +148,7 @@ pub(crate) fn build_collect_specs(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     });
 
@@ -150,23 +160,32 @@ pub(crate) fn build_preview_specs(
     workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
+    dds_domain_id: u32,
 ) -> Result<Vec<ChildSpec>, Box<dyn Error>> {
     let mut specs = Vec::new();
 
-    specs.push(build_visualizer_spec(
-        config,
-        workspace_root,
-        child_working_dir,
-        current_exe_dir,
-    )?);
+    specs.push(with_pipeline_log_env(
+        build_visualizer_spec(config, workspace_root, child_working_dir, current_exe_dir)?,
+        config.runtime.advanced_pipeline_logs,
+    ));
 
-    for device in &config.devices {
-        specs.push(build_device_spec(
-            device,
-            workspace_root,
-            child_working_dir,
-            current_exe_dir,
-        )?);
+    for device in config
+        .devices
+        .iter()
+        .filter(|device| device.channels.iter().any(|channel| channel.enabled))
+    {
+        specs.push(with_pipeline_log_env(
+            build_device_spec(
+                device,
+                dds_domain_id,
+                workspace_root,
+                child_working_dir,
+                current_exe_dir,
+                invocation_cwd,
+            )?,
+            config.runtime.advanced_pipeline_logs,
+        ));
     }
 
     // The visualizer subscribes to each camera's preview tap, which is
@@ -175,12 +194,15 @@ pub(crate) fn build_preview_specs(
     // but it still produces the always-on RGB24 preview tap. Spawning it
     // here means setup/identifying mode also gets live camera previews.
     for encoder_config in config.encoder_runtime_configs_v2() {
-        specs.push(build_encoder_spec(
-            &encoder_config,
-            workspace_root,
-            child_working_dir,
-            current_exe_dir,
-        )?);
+        specs.push(with_pipeline_log_env(
+            build_encoder_spec(
+                &encoder_config,
+                workspace_root,
+                child_working_dir,
+                current_exe_dir,
+            )?,
+            config.runtime.advanced_pipeline_logs,
+        ));
     }
 
     if config.mode == CollectionMode::Teleop {
@@ -195,6 +217,14 @@ pub(crate) fn build_preview_specs(
     }
 
     Ok(specs)
+}
+
+fn with_pipeline_log_env(mut spec: ChildSpec, advanced_pipeline_logs: bool) -> ChildSpec {
+    spec.env.push((
+        OsString::from(ADVANCED_PIPELINE_LOGS_ENV),
+        OsString::from(if advanced_pipeline_logs { "1" } else { "0" }),
+    ));
+    spec
 }
 
 pub(crate) fn build_visualizer_spec(
@@ -217,6 +247,7 @@ pub(crate) fn build_visualizer_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -262,27 +293,36 @@ pub(crate) fn build_control_server_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
 
 pub(crate) fn build_device_spec(
     device: &BinaryDeviceConfig,
+    dds_domain_id: u32,
     workspace_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    invocation_cwd: &Path,
 ) -> Result<ChildSpec, Box<dyn Error>> {
-    let inline_config = toml::to_string(device)?;
+    let mut runtime_device = device.clone();
+    runtime_device.dds_domain_id = Some(dds_domain_id);
+    let inline_config = toml::to_string(&runtime_device)?;
     let executable_name = device
         .executable
         .clone()
         .unwrap_or_else(|| default_device_executable_name(&device.driver));
     let program = resolve_registered_program(&executable_name, workspace_root, current_exe_dir);
-    let common_args = vec![
+    let mut common_args = vec![
         OsString::from("run"),
         OsString::from("--config-inline"),
         OsString::from(inline_config),
     ];
+    if let Some(mapping_path) = coracam_mapping_path(device, invocation_cwd)? {
+        common_args.push(OsString::from("--mapping"));
+        common_args.push(OsString::from(mapping_path));
+    }
 
     Ok(ChildSpec {
         id: format!("device-{}", device.name),
@@ -291,7 +331,68 @@ pub(crate) fn build_device_spec(
             args: common_args,
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
+    })
+}
+
+fn coracam_mapping_path(
+    device: &BinaryDeviceConfig,
+    invocation_cwd: &Path,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let is_coracam = device.driver == "coracam"
+        || device
+            .executable
+            .as_deref()
+            .is_some_and(|name| name == "rollio-device-coracam");
+    if !is_coracam {
+        return Ok(None);
+    }
+
+    let value = device_extra_string(
+        device,
+        &[
+            "coracam_mapping_file",
+            "cora_mapping_file",
+            "mapping_file",
+            "mapping",
+        ],
+    )?;
+    Ok(value.map(|path| resolve_invocation_relative_path(&path, invocation_cwd)))
+}
+
+fn device_extra_string(
+    device: &BinaryDeviceConfig,
+    keys: &[&str],
+) -> Result<Option<String>, Box<dyn Error>> {
+    for key in keys {
+        if let Some(value) = device.extra.get(*key) {
+            return toml_value_as_string(device, key, value).map(Some);
+        }
+    }
+
+    if let Some(toml::Value::Table(extra)) = device.extra.get("extra") {
+        for key in keys {
+            if let Some(value) = extra.get(*key) {
+                return toml_value_as_string(device, key, value).map(Some);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn toml_value_as_string(
+    device: &BinaryDeviceConfig,
+    key: &str,
+    value: &toml::Value,
+) -> Result<String, Box<dyn Error>> {
+    value.as_str().map(str::to_owned).ok_or_else(|| {
+        format!(
+            "device \"{}\": extra key \"{}\" must be a string path",
+            device.name, key
+        )
+        .into()
     })
 }
 
@@ -317,6 +418,7 @@ pub(crate) fn build_teleop_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -344,6 +446,7 @@ pub(crate) fn build_encoder_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -433,6 +536,7 @@ pub(crate) fn build_assembler_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -481,6 +585,7 @@ pub(crate) fn build_storage_spec(
             ],
         },
         working_directory: child_working_dir.to_path_buf(),
+        env: Vec::new(),
         inherit_stdio: false,
     })
 }
@@ -515,6 +620,7 @@ pub(crate) fn ui_browser_url(host: &str, port: u16) -> String {
 mod tests {
     use super::*;
     use rollio_types::config::{EpisodeFormat, StorageBackend, StorageRuntimeConfig};
+    use std::str::FromStr;
 
     #[test]
     fn resolve_invocation_relative_path_keeps_absolute_paths() {
@@ -564,6 +670,164 @@ mod tests {
             !inline.contains("output_path = \"./output\""),
             "relative output_path should be replaced, got: {inline}"
         );
+    }
+
+    #[test]
+    fn build_device_spec_passes_coracam_mapping_as_runtime_arg() {
+        let mut extra = toml::Table::new();
+        extra.insert(
+            "coracam_mapping_file".into(),
+            toml::Value::String("./coracam-mapping.toml".into()),
+        );
+        let device = BinaryDeviceConfig {
+            name: "coracam_righthand".into(),
+            executable: Some("rollio-device-coracam".into()),
+            driver: "coracam".into(),
+            id: "cora-righthand".into(),
+            bus_root: "coracam_righthand".into(),
+            dds_domain_id: None,
+            dds_shm_segment_size: None,
+            dds_callback_threads: None,
+            channels: Vec::new(),
+            extra,
+        };
+
+        let spec = build_device_spec(
+            &device,
+            31,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+        )
+        .expect("device spec should build");
+
+        assert_eq!(
+            spec.command.args,
+            vec![
+                OsString::from("run"),
+                OsString::from("--config-inline"),
+                spec.command.args[2].clone(),
+                OsString::from("--mapping"),
+                OsString::from("/userdata/coracam-mapping.toml"),
+            ]
+        );
+        let inline = spec.command.args[2].to_string_lossy();
+        assert!(
+            inline.contains("dds_domain_id = 31"),
+            "global DDS domain should be injected into device inline config, got: {inline}"
+        );
+    }
+
+    #[test]
+    fn build_preview_specs_skips_devices_with_no_enabled_channels() {
+        let config = ProjectConfig::from_str(
+            r#"
+project_name = "disabled-coracam"
+mode = "intervention"
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "coracam_head"
+executable = "rollio-device-coracam"
+driver = "coracam"
+id = "cora-head"
+bus_root = "coracam_head"
+
+[[devices.channels]]
+channel_type = "left_h264"
+kind = "camera"
+enabled = false
+profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#,
+        )
+        .expect("config should parse");
+
+        let specs = build_preview_specs(
+            &config,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+            0,
+        )
+        .expect("preview specs should build");
+
+        assert!(specs.iter().any(|spec| spec.id == "visualizer"));
+        assert!(
+            specs.iter().all(|spec| spec.id != "device-coracam_head"),
+            "device with no enabled channels should not be spawned: {specs:?}"
+        );
+    }
+
+    #[test]
+    fn build_preview_specs_passes_advanced_pipeline_log_env_to_pipeline_children() {
+        let config = ProjectConfig::from_str(
+            r#"
+project_name = "advanced-logs"
+mode = "intervention"
+
+[runtime]
+advanced_pipeline_logs = true
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "cam"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#,
+        )
+        .expect("config should parse");
+
+        let specs = build_preview_specs(
+            &config,
+            Path::new("/workspace"),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+            0,
+        )
+        .expect("preview specs should build");
+
+        for id in ["visualizer", "device-cam", "encoder-preview-cam-color"] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("missing spec {id}: {specs:?}"));
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|(key, value)| { key == ADVANCED_PIPELINE_LOGS_ENV && value == "1" }),
+                "expected {id} to receive {ADVANCED_PIPELINE_LOGS_ENV}=1, got {:?}",
+                spec.env
+            );
+        }
     }
 
     #[test]

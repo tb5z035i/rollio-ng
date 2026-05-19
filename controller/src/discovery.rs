@@ -25,6 +25,7 @@ pub(crate) fn known_device_executables() -> &'static [&'static str] {
         "rollio-device-realsense",
         "rollio-device-v4l2",
         "rollio-device-agx-nero",
+        "rollio-device-coracam",
     ]
 }
 

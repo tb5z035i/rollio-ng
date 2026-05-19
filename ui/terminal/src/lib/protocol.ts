@@ -123,12 +123,54 @@ export interface SetupDeviceChannelV2 {
   publish_states?: string[];
   recorded_states?: string[];
   control_frequency_hz?: number | null;
+  /** Whether the preview encoder process subscribes to this channel.
+   *  Defaults to `true` for cameras at discovery. */
+  preview_enabled?: boolean;
+  /** Whether the recording encoder writes packets for this channel
+   *  during an episode. Defaults to `true` at discovery. */
+  record_enabled?: boolean;
   profile?: {
     width: number;
     height: number;
     fps: number;
     pixel_format: string;
     native_pixel_format?: string | null;
+  } | null;
+  /** Per-channel recording-encoder configuration (matches the on-disk
+   *  `[devices.channels.record]` block). Every field is optional;
+   *  controller defaults fill in missing ones. */
+  record?: {
+    video_codec?: string;
+    depth_codec?: string;
+    backend?: string;
+    video_backend?: string;
+    depth_backend?: string;
+    chroma_subsampling?: string;
+    crf?: number | null;
+    preset?: string | null;
+    tune?: string | null;
+    bit_depth?: number;
+    color_space?: string;
+    queue_size?: number;
+  } | null;
+  /** Per-channel preview-encoder configuration (matches
+   *  `[devices.channels.preview_config]`). Optional; defaults fill
+   *  in. The wire-format key is `preview_config` (mirrors the Rust
+   *  `#[serde(rename = "preview_config")]` on
+   *  `DeviceChannelConfigV2.preview_settings`); the TS field name
+   *  follows the wire so `ch.preview_config` resolves to the actual
+   *  data. */
+  preview_config?: {
+    output_mode?: string;
+    color_codec?: string;
+    depth_codec?: string;
+    backend?: string;
+    width?: number;
+    height?: number;
+    fps?: number;
+    gop_seconds?: number;
+    crf?: number | null;
+    jpeg_quality?: number;
   } | null;
 }
 
@@ -203,20 +245,42 @@ export interface SetupConfigSnapshot {
     format: "lerobot-v2.1" | "lerobot-v3.0" | "mcap";
     /** Nominal dataset frame rate (1..1000). */
     fps: number;
+    /** Episodes grouped on disk under `chunk-XXX/` directories of this size. */
+    chunk_size?: number;
   };
   /** Native project layout: one binary per row with nested channels. */
   devices: SetupBinaryDeviceConfig[];
   pairings: SetupChannelPairing[];
+  controller?: {
+    shutdown_timeout_ms: number;
+    child_poll_interval_ms: number;
+  };
+  visualizer?: {
+    port: number;
+  };
+  assembler?: {
+    missing_eos_timeout_ms: number;
+    staging_dir: string;
+    staging_slots: number;
+  };
   storage: {
     backend: "local" | "http";
     output_path: string;
     endpoint?: string | null;
+    queue_size?: number;
+  };
+  monitor?: {
+    metrics_frequency_hz: number;
   };
   /** Web gateway (`rollio-web-gateway`) runtime config. Defaults are filled in by the
    *  controller when absent in the saved TOML. */
   ui?: {
     http_host: string;
     http_port: number;
+    start_key?: string;
+    stop_key?: string;
+    keep_key?: string;
+    discard_key?: string;
   };
 }
 
@@ -233,13 +297,11 @@ export interface SetupStateMessage {
   identify_device?: string | null;
   warnings: string[];
   config: SetupConfigSnapshot;
-  /** Working encoder snapshot the controller maintains alongside `config`
-   *  so the wizard can cycle codec/backend/CRF/preset selections without
-   *  mutating the persisted ProjectConfig. Wire format places it as a
-   *  sibling of `config`, not nested inside it (see
-   *  `controller/src/setup.rs::SetupStateEnvelope`). */
-  encoder: SetupEncoderSnapshot;
   available_devices: SetupAvailableDevice[];
+  /** Name of the channel whose subpanel modal is open in Step 1.
+   *  `null` when no subpanel is active. Drives whether the Ink UI
+   *  renders the subpanel overlay. */
+  subpanel_target?: string | null;
 }
 
 export interface SetupEncoderSnapshot {
@@ -285,6 +347,20 @@ export type CommandAction =
   | "setup_toggle_device"
   | "setup_set_device_name"
   | "setup_toggle_identify"
+  | "setup_open_subpanel"
+  | "setup_close_subpanel"
+  | "setup_subpanel_toggle_preview_enabled"
+  | "setup_subpanel_toggle_record_enabled"
+  | "setup_subpanel_cycle_primary"
+  | "setup_subpanel_cycle_record_field"
+  | "setup_subpanel_set_record_field"
+  | "setup_subpanel_cycle_preview_field"
+  | "setup_subpanel_set_preview_field"
+  | "setup_subpanel_set_control_frequency_hz"
+  | "setup_open_add_picker"
+  | "setup_add_pseudo_camera"
+  | "setup_add_pseudo_robot"
+  | "setup_add_command_device"
   | "setup_cycle_camera_profile"
   | "setup_cycle_robot_mode"
   | "setup_cycle_pair_mapping"
@@ -298,20 +374,25 @@ export type CommandAction =
   | "setup_cycle_episode_format"
   | "setup_cycle_storage_backend"
   | "setup_cycle_collection_mode"
-  | "setup_cycle_video_codec"
-  | "setup_cycle_depth_codec"
   | "setup_set_project_name"
   | "setup_set_storage_output_path"
   | "setup_set_storage_endpoint"
   | "setup_set_ui_http_host"
+  | "setup_set_ui_http_port"
+  | "setup_set_ui_start_key"
+  | "setup_set_ui_stop_key"
+  | "setup_set_ui_keep_key"
+  | "setup_set_ui_discard_key"
   | "setup_set_episode_fps"
-  | "setup_set_jpeg_quality"
-  | "setup_set_preview_fps"
-  | "setup_cycle_encoder_crf"
-  | "setup_cycle_encoder_preset"
-  | "setup_cycle_chroma_subsampling"
-  | "setup_cycle_encoder_bit_depth"
-  | "setup_cycle_encoder_color_space"
+  | "setup_set_episode_chunk_size"
+  | "setup_set_controller_shutdown_timeout_ms"
+  | "setup_set_controller_child_poll_interval_ms"
+  | "setup_set_visualizer_port"
+  | "setup_set_assembler_missing_eos_timeout_ms"
+  | "setup_set_assembler_staging_dir"
+  | "setup_set_assembler_staging_slots"
+  | "setup_set_storage_queue_size"
+  | "setup_set_monitor_metrics_frequency_hz"
   | "setup_save"
   | "setup_cancel";
 
@@ -324,6 +405,10 @@ export interface CommandMessage {
   index?: number;
   delta?: number;
   value?: string;
+  /** Optional sub-field selector. Used by the generic subpanel
+   *  encoder-edit commands to identify which knob inside the
+   *  channel's `record` / `preview_settings` block is being mutated. */
+  field?: string;
 }
 
 /** Frame encoding type tags. */
@@ -406,7 +491,7 @@ export function parseJsonMessage(
 export function encodeCommand(
   action: CommandAction,
   fields: Partial<
-    Pick<CommandMessage, "width" | "height" | "name" | "index" | "delta" | "value">
+    Pick<CommandMessage, "width" | "height" | "name" | "index" | "delta" | "value" | "field">
   > = {},
 ): string {
   return JSON.stringify({ type: "command", action, ...fields });
@@ -424,46 +509,8 @@ export function encodeEpisodeCommand(action: Extract<
 }
 
 export function encodeSetupCommand(
-  action: Extract<
-    CommandAction,
-    | "setup_get_state"
-    | "setup_prev_step"
-    | "setup_next_step"
-    | "setup_jump_step"
-    | "setup_toggle_device"
-    | "setup_set_device_name"
-    | "setup_toggle_identify"
-    | "setup_cycle_camera_profile"
-    | "setup_cycle_robot_mode"
-    | "setup_cycle_pair_mapping"
-    | "setup_create_pairing"
-    | "setup_remove_pairing"
-    | "setup_set_pairing_leader"
-    | "setup_set_pairing_follower"
-    | "setup_set_pairing_ratio"
-    | "setup_toggle_publish_state"
-    | "setup_toggle_recorded_state"
-    | "setup_cycle_episode_format"
-    | "setup_cycle_storage_backend"
-    | "setup_cycle_collection_mode"
-    | "setup_cycle_video_codec"
-    | "setup_cycle_depth_codec"
-    | "setup_set_project_name"
-    | "setup_set_storage_output_path"
-    | "setup_set_storage_endpoint"
-    | "setup_set_ui_http_host"
-    | "setup_set_episode_fps"
-    | "setup_set_jpeg_quality"
-    | "setup_set_preview_fps"
-    | "setup_cycle_encoder_crf"
-    | "setup_cycle_encoder_preset"
-    | "setup_cycle_chroma_subsampling"
-    | "setup_cycle_encoder_bit_depth"
-    | "setup_cycle_encoder_color_space"
-    | "setup_save"
-    | "setup_cancel"
-  >,
-  fields: Partial<Pick<CommandMessage, "name" | "index" | "delta" | "value">> = {},
+  action: Extract<CommandAction, `setup_${string}`>,
+  fields: Partial<Pick<CommandMessage, "name" | "index" | "delta" | "value" | "field">> = {},
 ): string {
   return encodeCommand(action, fields);
 }

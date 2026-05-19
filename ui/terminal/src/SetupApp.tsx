@@ -24,11 +24,69 @@ type StaticEditableFieldId =
   | "project_name"
   | "storage_output_path"
   | "storage_endpoint"
+  | "storage_queue_size"
   | "ui_http_host"
+  | "ui_http_port"
+  | "ui_start_key"
+  | "ui_stop_key"
+  | "ui_keep_key"
+  | "ui_discard_key"
   | "episode_fps"
-  | "jpeg_quality"
-  | "preview_fps";
-type EditableFieldId = StaticEditableFieldId | `device_name:${string}`;
+  | "episode_chunk_size"
+  | "controller_shutdown_timeout_ms"
+  | "controller_child_poll_interval_ms"
+  | "visualizer_port"
+  | "assembler_missing_eos_timeout_ms"
+  | "assembler_staging_dir"
+  | "assembler_staging_slots"
+  | "monitor_metrics_frequency_hz";
+/** Edit-buffer identifiers for the channel subpanel. Each one encodes
+ *  the field being edited; the channel name comes from
+ *  `setupState.subpanel_target` so we don't need to embed it here.
+ *  Per-channel record / preview encoder text fields use a `record:`
+ *  / `preview:` prefix so the commit path can dispatch the generic
+ *  `setup_subpanel_set_record_field` / `setup_subpanel_set_preview_field`
+ *  commands with the field name. */
+type SubpanelEditableFieldId =
+  | "subpanel_control_frequency_hz"
+  | `subpanel_record:${string}`
+  | `subpanel_preview:${string}`;
+type EditableFieldId =
+  | StaticEditableFieldId
+  | SubpanelEditableFieldId
+  | `device_name:${string}`;
+
+/** Single field row rendered inside the channel subpanel modal. Mirrors
+ *  `SettingsField` so the same `settingsFieldLine` renderer can paint
+ *  both — same focus indicator, padded label/value columns, trailing
+ *  `[Enter edit]` / `[h/l cycle]` hint. */
+type SubpanelField = {
+  id: string;
+  label: string;
+  value: string;
+  kind: "text" | "cycle" | "readonly";
+  groupSubtitle?: string;
+  /** Cycle command dispatched on `h`/`l` when this row is focused. */
+  cycleAction?: Extract<CommandAction, `setup_${string}`>;
+  /** Optional sub-field selector sent with `cycleAction` (and with
+   *  the matching `setup_subpanel_set_*` action when this is a text
+   *  row inside the record / preview encoder block). Identifies WHICH
+   *  knob inside the channel's record / preview block this row edits. */
+  fieldKey?: string;
+  /** Edit buffer id assigned to `editingField` when `enter` is pressed
+   *  on a text-kind row. Used by the commit path to dispatch the right
+   *  setter. */
+  editId?: EditableFieldId;
+  /** Initial text shown in the edit buffer (defaults to `value`). */
+  editInitialValue?: string;
+  /** Optional human-readable summary of the valid value range / set
+   *  of options, shown between the value column and the interaction
+   *  hint. Examples: `0..=51`, `1..=1000`, `>0`, `h264|h265|av1|mjpg`.
+   *  Cycle rows usually carry the option list; text rows carry the
+   *  numeric range so the operator sees what the validator will
+   *  accept before pressing Enter. */
+  rangeHint?: string;
+};
 
 type SettingsField = {
   id: string;
@@ -206,6 +264,16 @@ export function SetupApp({
   const [editingField, setEditingField] = useState<EditableFieldId | null>(null);
   const [draftValue, setDraftValue] = useState("");
   const [pairingDraft, setPairingDraft] = useState<PairingDraft | null>(null);
+  /// True when the Step 1 "add device" picker modal is open. The
+  /// picker offers three concrete options (pseudo camera, pseudo
+  /// robot, command device stub) and dispatches the matching backend
+  /// command on numeric key selection.
+  const [addPickerOpen, setAddPickerOpen] = useState(false);
+  /// Local cursor inside the channel subpanel modal. Tracked
+  /// separately from `focusedIndex` so j/k in the subpanel don't
+  /// drag the underlying devices-list focus around. Reset on every
+  /// subpanel open/close.
+  const [subpanelCursor, setSubpanelCursor] = useState(0);
 
   useEffect(() => {
     if (!connected) {
@@ -275,7 +343,23 @@ export function SetupApp({
         : [],
     [pickerExceptIndex, pickerLeaderHint, pickerPolicy, setupState],
   );
+  const subpanelTargetEarly = setupState?.subpanel_target ?? null;
+  const subpanelDeviceEarly = useMemo(() => {
+    if (!setupState || !subpanelTargetEarly) return null;
+    return (
+      setupState.available_devices.find((d) => d.name === subpanelTargetEarly) ??
+      null
+    );
+  }, [setupState, subpanelTargetEarly]);
+  const subpanelFields = useMemo<SubpanelField[]>(
+    () => buildSubpanelFields(subpanelDeviceEarly),
+    [subpanelDeviceEarly],
+  );
   const focusableCount = useMemo(() => {
+    // When the subpanel modal is open, the main `focusedIndex` is
+    // frozen — j/k inside the modal write to `subpanelCursor`
+    // instead, so the underlying devices list focus stays where the
+    // operator left it.
     switch (setupState?.step) {
       case "devices":
         return setupState.available_devices.length;
@@ -293,7 +377,12 @@ export function SetupApp({
       default:
         return 0;
     }
-  }, [previewActions.length, settingsFields.length, setupState, stateRows.length]);
+  }, [
+    previewActions.length,
+    settingsFields.length,
+    setupState,
+    stateRows.length,
+  ]);
 
   useEffect(() => {
     if (focusableCount <= 0) {
@@ -302,6 +391,25 @@ export function SetupApp({
     }
     setFocusedIndex((current) => Math.min(current, focusableCount - 1));
   }, [focusableCount, setupState?.step]);
+
+  // Reset the subpanel cursor to the top of the modal when it opens
+  // or closes (so the next open lands at row 0 instead of wherever
+  // the previous open left it).
+  useEffect(() => {
+    setSubpanelCursor(0);
+  }, [setupState?.subpanel_target]);
+
+  // Clamp the subpanel cursor to the current field count (the
+  // available fields shift when the operator e.g. toggles a flag
+  // that hides a sub-section). Keeps the cursor in range without
+  // forcing a reset.
+  useEffect(() => {
+    setSubpanelCursor((current) =>
+      subpanelFields.length === 0
+        ? 0
+        : Math.min(current, subpanelFields.length - 1),
+    );
+  }, [subpanelFields.length]);
 
   useEffect(() => {
     if (
@@ -447,6 +555,37 @@ export function SetupApp({
                 value: draftValue,
               }),
             );
+          } else if (editingField === "subpanel_control_frequency_hz") {
+            if (setupState.subpanel_target) {
+              sendControl(
+                encodeSetupCommand("setup_subpanel_set_control_frequency_hz", {
+                  name: setupState.subpanel_target,
+                  value: draftValue,
+                }),
+              );
+            }
+          } else if (typeof editingField === "string" && editingField.startsWith("subpanel_record:")) {
+            const fieldName = editingField.slice("subpanel_record:".length);
+            if (setupState.subpanel_target) {
+              sendControl(
+                encodeSetupCommand("setup_subpanel_set_record_field", {
+                  name: setupState.subpanel_target,
+                  field: fieldName,
+                  value: draftValue,
+                }),
+              );
+            }
+          } else if (typeof editingField === "string" && editingField.startsWith("subpanel_preview:")) {
+            const fieldName = editingField.slice("subpanel_preview:".length);
+            if (setupState.subpanel_target) {
+              sendControl(
+                encodeSetupCommand("setup_subpanel_set_preview_field", {
+                  name: setupState.subpanel_target,
+                  field: fieldName,
+                  value: draftValue,
+                }),
+              );
+            }
           } else {
             sendControl(
               encodeSetupCommand(
@@ -699,6 +838,89 @@ export function SetupApp({
       }
 
       const normalizedInput = input.toLowerCase();
+
+      // Subpanel hijack: while the channel subpanel is open we trap
+      // ALL navigation keys so j/k don't drag the underlying
+      // devices-list focus around, and n/b don't accidentally move
+      // steps while the operator is editing a channel. Only `q` /
+      // esc exit the modal; everything else either acts on the
+      // subpanel cursor or is dropped.
+      if (
+        setupState.step === "devices" &&
+        setupState.subpanel_target &&
+        editingField === null
+      ) {
+        const subpanelName = setupState.subpanel_target;
+        const focusedField = subpanelFields[subpanelCursor];
+        if (key.escape || normalizedInput === "q") {
+          sendControl(encodeSetupCommand("setup_close_subpanel"));
+          return;
+        }
+        if (key.upArrow || normalizedInput === "k") {
+          setSubpanelCursor((current) =>
+            subpanelFields.length === 0
+              ? 0
+              : (current + subpanelFields.length - 1) % subpanelFields.length,
+          );
+          return;
+        }
+        if (key.downArrow || normalizedInput === "j") {
+          setSubpanelCursor((current) =>
+            subpanelFields.length === 0
+              ? 0
+              : (current + 1) % subpanelFields.length,
+          );
+          return;
+        }
+        if (normalizedInput === "p") {
+          sendControl(
+            encodeSetupCommand("setup_subpanel_toggle_preview_enabled", {
+              name: subpanelName,
+            }),
+          );
+          return;
+        }
+        if (normalizedInput === "r") {
+          sendControl(
+            encodeSetupCommand("setup_subpanel_toggle_record_enabled", {
+              name: subpanelName,
+            }),
+          );
+          return;
+        }
+        if (normalizedInput === "h" || normalizedInput === "l") {
+          if (focusedField?.kind === "cycle" && focusedField.cycleAction) {
+            const delta = normalizedInput === "l" ? 1 : -1;
+            sendControl(
+              encodeSetupCommand(focusedField.cycleAction, {
+                name: subpanelName,
+                field: focusedField.fieldKey,
+                delta,
+              }),
+            );
+          }
+          return;
+        }
+        if (key.return) {
+          if (focusedField?.kind === "text" && focusedField.editId) {
+            setEditingField(focusedField.editId);
+            setDraftValue(focusedField.editInitialValue ?? focusedField.value);
+          } else if (focusedField?.kind === "cycle" && focusedField.cycleAction) {
+            sendControl(
+              encodeSetupCommand(focusedField.cycleAction, {
+                name: subpanelName,
+                field: focusedField.fieldKey,
+                delta: 1,
+              }),
+            );
+          }
+          return;
+        }
+        // Anything else (n, b, arrow left/right, …) is swallowed
+        // while the subpanel is open. Use `q` to leave.
+        return;
+      }
+
       if (normalizedInput === "r") {
         setCameraRendererId((current) => nextAsciiRendererId(current));
         return;
@@ -747,6 +969,49 @@ export function SetupApp({
             }),
           );
         }
+        return;
+      }
+
+      if (normalizedInput === "s" && setupState.step === "devices") {
+        const device = setupState.available_devices[focusedIndex];
+        if (device) {
+          sendControl(
+            encodeSetupCommand("setup_open_subpanel", { name: device.name }),
+          );
+        }
+        return;
+      }
+
+      // Add-device picker modal. `a` opens it; inside the modal,
+      // 1/2/3 dispatch the per-type add commands; esc/q closes.
+      // Intercept before the regular devices-step handlers so the
+      // numeric keys reach the picker rather than the cycle-step
+      // shortcuts.
+      if (setupState.step === "devices" && addPickerOpen) {
+        if (key.escape || normalizedInput === "q") {
+          setAddPickerOpen(false);
+          return;
+        }
+        if (input === "1") {
+          sendControl(encodeSetupCommand("setup_add_pseudo_camera"));
+          setAddPickerOpen(false);
+          return;
+        }
+        if (input === "2") {
+          sendControl(encodeSetupCommand("setup_add_pseudo_robot"));
+          setAddPickerOpen(false);
+          return;
+        }
+        if (input === "3") {
+          sendControl(encodeSetupCommand("setup_add_command_device"));
+          setAddPickerOpen(false);
+          return;
+        }
+        return;
+      }
+
+      if (normalizedInput === "a" && setupState.step === "devices") {
+        setAddPickerOpen(true);
         return;
       }
 
@@ -937,6 +1202,9 @@ export function SetupApp({
     },
   );
 
+  const subpanelTarget = subpanelTargetEarly;
+  const subpanelDevice = subpanelDeviceEarly;
+
   return (
     <Box flexDirection="column" width={columns} height={rows}>
       <TitleBar
@@ -948,6 +1216,75 @@ export function SetupApp({
           name: setupState?.step_name ?? "Waiting",
         }}
       />
+
+      {addPickerOpen ? (
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="magenta">
+          <Text bold color="magenta">
+            Add device
+          </Text>
+          <Text>1) Pseudo camera (640x480 @ 30 fps rgb24)</Text>
+          <Text>2) Pseudo robot (6-DoF arm)</Text>
+          <Text>3) Command device stub (driver = "command")</Text>
+          <Text color="gray">Press 1, 2, or 3 to add. esc to cancel.</Text>
+        </Box>
+      ) : null}
+
+      {subpanelDevice ? (
+        <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor="cyan">
+          <Text bold color="cyan">
+            Channel subpanel — {subpanelDevice.display_name} (
+            {primaryChannel(subpanelDevice.current)?.channel_type ?? "?"})
+          </Text>
+          <Text color="gray">
+            j/k move | h/l cycle | enter edit | p toggle preview | r toggle
+            record | esc close
+          </Text>
+          {(() => {
+            // Pad label/value/range columns to the widest entry in
+            // the current field list so the trailing `[h/l cycle]` /
+            // `[Enter edit]` hints land at the same x-coordinate
+            // across rows — matches the Settings step look.
+            const labelWidth = subpanelFields.reduce(
+              (acc, f) => Math.max(acc, f.label.length),
+              0,
+            );
+            const valueWidth = subpanelFields.reduce(
+              (acc, f) =>
+                Math.max(acc, (f.value || (f.kind === "text" ? "(empty)" : "")).length),
+              0,
+            );
+            const rangeHintWidth = subpanelFields.reduce(
+              (acc, f) =>
+                Math.max(acc, f.rangeHint ? `(${f.rangeHint})`.length : 0),
+              0,
+            );
+            return subpanelFields.map((field, index) => {
+              const showGroup = field.groupSubtitle != null;
+              const lines = [];
+              if (showGroup) {
+                lines.push(
+                  <Box key={`subpanel-group:${field.id}`}>
+                    <Text color="magenta" bold>
+                      {field.groupSubtitle}
+                    </Text>
+                  </Box>,
+                );
+              }
+              const line = subpanelFieldLine(
+                field,
+                index === subpanelCursor,
+                editingField,
+                draftValue,
+                labelWidth,
+                valueWidth,
+                rangeHintWidth,
+              );
+              lines.push(<Box key={line.key}>{renderDetailLine(line)}</Box>);
+              return <Box key={`subpanel-row:${field.id}`} flexDirection="column">{lines}</Box>;
+            });
+          })()}
+        </Box>
+      ) : null}
 
       {showLivePanels ? (
         <>
@@ -999,6 +1336,424 @@ export function SetupApp({
   );
 }
 
+/** Format a Bool flag for the subpanel cycle column. Keeps the value
+ *  column short and visually consistent with the Settings page. */
+function fmtBool(value: boolean | undefined): string {
+  return value === false ? "off" : "on";
+}
+
+/** Format a possibly-missing scalar — replaces undefined / empty with
+ *  the field's effective default so the subpanel value column shows
+ *  what the controller will actually use, not the literal string
+ *  "default". Pass `defaultValue = null` when the field has no
+ *  resolved default (e.g. `record.preset` / `record.tune`), in which
+ *  case the column renders "(unset)" as a placeholder. */
+function fmtOpt(
+  value: string | number | null | undefined,
+  defaultValue: string | number | null = null,
+): string {
+  if (value == null || value === "") {
+    return defaultValue == null ? "(unset)" : String(defaultValue);
+  }
+  return String(value);
+}
+
+/** Effective defaults for the per-channel `record` block. Mirrors the
+ *  `default_*` functions in `rollio-types/src/config.rs`
+ *  (`ChannelRecordConfig::resolve` + `EncoderConfig::default`). Kept
+ *  in sync with the example shown in `config/config.example.toml`. */
+const RECORD_DEFAULTS = {
+  video_codec: "h264",
+  depth_codec: "rvl",
+  backend: "auto",
+  video_backend: "auto",
+  depth_backend: "auto",
+  chroma_subsampling: "422",
+  bit_depth: 8,
+  color_space: "auto",
+  queue_size: 32,
+} as const;
+
+/** Effective defaults for the per-channel `preview_config` block. */
+const PREVIEW_DEFAULTS = {
+  output_mode: "encoded",
+  color_codec: "h264",
+  depth_codec: "rvl",
+  backend: "auto",
+  width: 320,
+  height: 240,
+  fps: 15,
+  gop_seconds: 1,
+  crf: 26,
+  jpeg_quality: 50,
+} as const;
+
+/** Option lists mirrored from `controller/src/setup/subpanel.rs`. The
+ *  hint strings end up next to the value column so the operator sees
+ *  what `h`/`l` will cycle through. Updated together with the Rust
+ *  constants whenever a new variant is added. */
+const RECORD_VIDEO_CODEC_OPTS = "h264|h265|av1|mjpg";
+const RECORD_DEPTH_CODEC_OPTS = "rvl (only)";
+const RECORD_BACKEND_OPTS = "auto|cpu|nvidia|vaapi|passthrough|horizon-x5";
+const RECORD_CHROMA_OPTS = "422|420";
+const RECORD_BIT_DEPTH_OPTS = "8|10";
+const RECORD_COLOR_SPACE_OPTS = "auto|bt709-limited|bt601-limited";
+const RECORD_PRESET_OPTS =
+  "(default)|ultrafast|veryfast|fast|medium|slow|slower|veryslow";
+const PREVIEW_OUTPUT_MODE_OPTS = "jpeg|encoded";
+
+/** Build the per-channel subpanel field list shown in Step 1's modal.
+ *  Each row carries a label, the current value, an interaction hint
+ *  (`[Enter edit]` / `[h/l cycle]`), and the action / edit id the
+ *  global key handler should dispatch when the row is focused. */
+function buildSubpanelFields(
+  device: SetupAvailableDevice | null,
+): SubpanelField[] {
+  if (!device) return [];
+  const ch = primaryChannel(device.current);
+  if (!ch) return [];
+  const fields: SubpanelField[] = [];
+  const isCamera = ch.kind === "camera";
+  const isRobot = ch.kind === "robot";
+
+  // Group: Channel ---------------------------------------------------
+  fields.push({
+    id: "channel_name",
+    groupSubtitle: "Channel",
+    label: "Name",
+    value: ch.name ?? device.current.name,
+    kind: "text",
+    editId: `device_name:${device.name}` as EditableFieldId,
+    editInitialValue: ch.name ?? ch.channel_type ?? device.current.name,
+    rangeHint: "unique non-empty string",
+  });
+  fields.push({
+    id: "channel_label",
+    label: "Display label",
+    value: ch.channel_label ?? device.display_name,
+    kind: "readonly",
+    rangeHint: "from driver query --json",
+  });
+  fields.push({
+    id: "channel_kind",
+    label: "Kind",
+    value: ch.kind,
+    kind: "readonly",
+    rangeHint: "camera|robot",
+  });
+  fields.push({
+    id: "preview_enabled",
+    label: "Preview enabled",
+    value: fmtBool(ch.preview_enabled),
+    kind: "cycle",
+    cycleAction: "setup_subpanel_toggle_preview_enabled",
+    rangeHint: "on|off",
+  });
+  fields.push({
+    id: "record_enabled",
+    label: "Record enabled",
+    value: fmtBool(ch.record_enabled),
+    kind: "cycle",
+    cycleAction: "setup_subpanel_toggle_record_enabled",
+    rangeHint: "on|off",
+  });
+
+  if (isCamera) {
+    // Group: Profile ----------------------------------------------
+    const profile = ch.profile;
+    fields.push({
+      id: "profile_resolution",
+      groupSubtitle: "Profile",
+      label: "Resolution",
+      value: profile
+        ? `${profile.width}x${profile.height} @ ${profile.fps}fps ${profile.pixel_format}`
+        : "(none)",
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_primary",
+      rangeHint: "driver-advertised profiles",
+    });
+    fields.push({
+      id: "profile_native_pixel_format",
+      label: "Native pixel format",
+      value: profile?.native_pixel_format ?? "(driver picks)",
+      kind: "readonly",
+      rangeHint: "v4l2 fourcc",
+    });
+
+    // Group: Record encoder ---------------------------------------
+    // All fields are editable; the controller materializes the
+    // `record` block on first edit so the operator doesn't have to
+    // opt in manually. Unset fields render their effective default
+    // (from RECORD_DEFAULTS) so the column shows what the controller
+    // will actually use.
+    const record = ch.record;
+    fields.push({
+      id: "rec_video_codec",
+      groupSubtitle: "Record encoder",
+      label: "Video codec",
+      value: fmtOpt(record?.video_codec, RECORD_DEFAULTS.video_codec),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "video_codec",
+      rangeHint: RECORD_VIDEO_CODEC_OPTS,
+    });
+    fields.push({
+      id: "rec_depth_codec",
+      label: "Depth codec",
+      value: fmtOpt(record?.depth_codec, RECORD_DEFAULTS.depth_codec),
+      // RVL is the only supported depth codec today; the depth
+      // backend registry never grew libav adapters. Render this row
+      // as read-only so the operator doesn't think `h/l` is broken
+      // when it's actually a no-op.
+      kind: "readonly",
+      rangeHint: RECORD_DEPTH_CODEC_OPTS,
+    });
+    fields.push({
+      id: "rec_video_backend",
+      label: "Video backend",
+      value: fmtOpt(
+        record?.video_backend ?? record?.backend,
+        RECORD_DEFAULTS.video_backend,
+      ),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "video_backend",
+      rangeHint: RECORD_BACKEND_OPTS,
+    });
+    fields.push({
+      id: "rec_depth_backend",
+      label: "Depth backend",
+      value: fmtOpt(
+        record?.depth_backend ?? record?.backend,
+        RECORD_DEFAULTS.depth_backend,
+      ),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "depth_backend",
+      rangeHint: RECORD_BACKEND_OPTS,
+    });
+    fields.push({
+      id: "rec_crf",
+      label: "CRF",
+      // `crf` has no resolved default (`None` means "libav decides per
+      // codec") so we leave the value blank rather than picking an
+      // arbitrary number. Same for `preset` / `tune`.
+      value: fmtOpt(record?.crf),
+      kind: "text",
+      editId: "subpanel_record:crf",
+      editInitialValue: record?.crf != null ? String(record.crf) : "",
+      fieldKey: "crf",
+      rangeHint: "0..=51",
+    });
+    fields.push({
+      id: "rec_preset",
+      label: "Preset",
+      value: fmtOpt(record?.preset, "(default)"),
+      // Cycle through the standard x264 / x265 / NVENC preset names.
+      // `(default)` represents `None` — libav picks per-codec.
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "preset",
+      rangeHint: RECORD_PRESET_OPTS,
+    });
+    fields.push({
+      id: "rec_tune",
+      label: "Tune",
+      value: fmtOpt(record?.tune),
+      kind: "text",
+      editId: "subpanel_record:tune",
+      editInitialValue: record?.tune ?? "",
+      fieldKey: "tune",
+      rangeHint: "x264/x265 tune string",
+    });
+    fields.push({
+      id: "rec_bit_depth",
+      label: "Bit depth",
+      value: fmtOpt(record?.bit_depth, RECORD_DEFAULTS.bit_depth),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "bit_depth",
+      rangeHint: RECORD_BIT_DEPTH_OPTS,
+    });
+    fields.push({
+      id: "rec_chroma",
+      label: "Chroma subsampling",
+      value: fmtOpt(record?.chroma_subsampling, RECORD_DEFAULTS.chroma_subsampling),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "chroma_subsampling",
+      rangeHint: RECORD_CHROMA_OPTS,
+    });
+    fields.push({
+      id: "rec_color_space",
+      label: "Color space",
+      value: fmtOpt(record?.color_space, RECORD_DEFAULTS.color_space),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_record_field",
+      fieldKey: "color_space",
+      rangeHint: RECORD_COLOR_SPACE_OPTS,
+    });
+    fields.push({
+      id: "rec_queue_size",
+      label: "Queue size",
+      value: fmtOpt(record?.queue_size, RECORD_DEFAULTS.queue_size),
+      kind: "text",
+      editId: "subpanel_record:queue_size",
+      editInitialValue: record?.queue_size != null ? String(record.queue_size) : "",
+      fieldKey: "queue_size",
+      rangeHint: ">0",
+    });
+
+    // Group: Preview encoder --------------------------------------
+    const preview = ch.preview_config;
+    fields.push({
+      id: "prv_output_mode",
+      groupSubtitle: "Preview encoder",
+      label: "Output mode",
+      value: fmtOpt(preview?.output_mode, PREVIEW_DEFAULTS.output_mode),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_preview_field",
+      fieldKey: "output_mode",
+      rangeHint: PREVIEW_OUTPUT_MODE_OPTS,
+    });
+    fields.push({
+      id: "prv_color_codec",
+      label: "Color codec",
+      value: fmtOpt(preview?.color_codec, PREVIEW_DEFAULTS.color_codec),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_preview_field",
+      fieldKey: "color_codec",
+      rangeHint: RECORD_VIDEO_CODEC_OPTS,
+    });
+    fields.push({
+      id: "prv_depth_codec",
+      label: "Depth codec",
+      value: fmtOpt(preview?.depth_codec, PREVIEW_DEFAULTS.depth_codec),
+      // Same as record.depth_codec — RVL is the only supported
+      // option, render as read-only.
+      kind: "readonly",
+      rangeHint: RECORD_DEPTH_CODEC_OPTS,
+    });
+    fields.push({
+      id: "prv_backend",
+      label: "Backend",
+      value: fmtOpt(preview?.backend, PREVIEW_DEFAULTS.backend),
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_preview_field",
+      fieldKey: "backend",
+      rangeHint: RECORD_BACKEND_OPTS,
+    });
+    fields.push({
+      id: "prv_width",
+      label: "Width",
+      value: fmtOpt(preview?.width, PREVIEW_DEFAULTS.width),
+      kind: "text",
+      editId: "subpanel_preview:width",
+      editInitialValue: preview?.width != null ? String(preview.width) : "",
+      fieldKey: "width",
+      rangeHint: ">0, h264 needs >=160 multiple of 16",
+    });
+    fields.push({
+      id: "prv_height",
+      label: "Height",
+      value: fmtOpt(preview?.height, PREVIEW_DEFAULTS.height),
+      kind: "text",
+      editId: "subpanel_preview:height",
+      editInitialValue: preview?.height != null ? String(preview.height) : "",
+      fieldKey: "height",
+      rangeHint: ">0, h264 needs >=160 multiple of 16",
+    });
+    fields.push({
+      id: "prv_fps",
+      label: "FPS",
+      value: fmtOpt(preview?.fps, PREVIEW_DEFAULTS.fps),
+      kind: "text",
+      editId: "subpanel_preview:fps",
+      editInitialValue: preview?.fps != null ? String(preview.fps) : "",
+      fieldKey: "fps",
+      rangeHint: "1..=1000",
+    });
+    fields.push({
+      id: "prv_gop",
+      label: "GOP seconds",
+      value: fmtOpt(preview?.gop_seconds, PREVIEW_DEFAULTS.gop_seconds),
+      kind: "text",
+      editId: "subpanel_preview:gop_seconds",
+      editInitialValue: preview?.gop_seconds != null ? String(preview.gop_seconds) : "",
+      fieldKey: "gop_seconds",
+      rangeHint: ">0",
+    });
+    fields.push({
+      id: "prv_crf",
+      label: "CRF",
+      value: fmtOpt(preview?.crf, PREVIEW_DEFAULTS.crf),
+      kind: "text",
+      editId: "subpanel_preview:crf",
+      editInitialValue: preview?.crf != null ? String(preview.crf) : "",
+      fieldKey: "crf",
+      rangeHint: "0..=51",
+    });
+    fields.push({
+      id: "prv_jpeg_quality",
+      label: "JPEG quality",
+      value: fmtOpt(preview?.jpeg_quality, PREVIEW_DEFAULTS.jpeg_quality),
+      kind: "text",
+      editId: "subpanel_preview:jpeg_quality",
+      editInitialValue:
+        preview?.jpeg_quality != null ? String(preview.jpeg_quality) : "",
+      fieldKey: "jpeg_quality",
+      rangeHint: "1..=100",
+    });
+  }
+
+  if (isRobot) {
+    fields.push({
+      id: "robot_mode",
+      groupSubtitle: "Robot",
+      label: "Mode",
+      value: ch.mode ?? "?",
+      kind: "cycle",
+      cycleAction: "setup_subpanel_cycle_primary",
+      rangeHint: "free-drive|command-following",
+    });
+    fields.push({
+      id: "robot_dof",
+      label: "DoF",
+      value: fmtOpt(ch.dof),
+      kind: "readonly",
+      rangeHint: "1..=15",
+    });
+    fields.push({
+      id: "robot_control_freq",
+      label: "Control frequency (Hz)",
+      value: fmtOpt(ch.control_frequency_hz),
+      kind: "text",
+      editId: "subpanel_control_frequency_hz",
+      editInitialValue: ch.control_frequency_hz != null
+        ? String(ch.control_frequency_hz)
+        : "60.0",
+      rangeHint: ">0",
+    });
+    fields.push({
+      id: "robot_publish_states",
+      groupSubtitle: "States",
+      label: "publish_states",
+      value: (ch.publish_states ?? []).join(", ") || "(none)",
+      kind: "readonly",
+      rangeHint: "edit via States step",
+    });
+    fields.push({
+      id: "robot_recorded_states",
+      label: "recorded_states",
+      value: (ch.recorded_states ?? []).join(", ") || "(none)",
+      kind: "readonly",
+      rangeHint: "edit via States step",
+    });
+  }
+
+  return fields;
+}
+
 function buildSettingsFields(setupState: SetupStateMessage | null): SettingsField[] {
   if (!setupState) {
     return [];
@@ -1010,13 +1765,6 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       : (setupState.config.storage.endpoint ?? "");
 
   const episodeFps = setupState.config.episode.fps ?? 30;
-  const crf = setupState.encoder.crf;
-  const encPreset = setupState.encoder.preset;
-  const bitDepth = setupState.encoder.bit_depth ?? 8;
-  const colorSpace = setupState.encoder.color_space ?? "auto";
-  const chroma = setupState.encoder.chroma_subsampling;
-  const jpegQ = setupState.encoder.preview?.jpeg_quality ?? 30;
-  const previewFps = setupState.encoder.preview?.fps ?? 15;
 
   return [
     {
@@ -1050,76 +1798,34 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
       editableFieldId: "episode_fps",
     },
     {
-      id: "video_codec",
-      groupSubtitle: "RGB & depth encoders",
-      label: "RGB codec",
-      value: formatCodecBackend(
-        setupState.encoder.video_codec,
-        setupState.encoder.video_backend ?? setupState.encoder.backend,
-      ),
-      kind: "cycle",
-      action: "setup_cycle_video_codec",
-    },
-    {
-      id: "depth_codec",
-      label: "Depth codec",
-      value: formatCodecBackend(
-        setupState.encoder.depth_codec,
-        setupState.encoder.depth_backend ?? setupState.encoder.backend,
-      ),
-      kind: "cycle",
-      action: "setup_cycle_depth_codec",
-    },
-    {
-      id: "jpeg_quality",
-      groupSubtitle: "Preview encoder",
-      label: "JPEG quality",
-      value: String(jpegQ),
+      id: "episode_chunk_size",
+      label: "Episode chunk size",
+      value: String(setupState.config.episode.chunk_size ?? 1000),
       kind: "text",
-      editableFieldId: "jpeg_quality",
+      editableFieldId: "episode_chunk_size",
     },
     {
-      id: "preview_fps",
-      label: "Preview fps",
-      value: String(previewFps),
+      id: "controller_shutdown_timeout_ms",
+      groupSubtitle: "Controller",
+      label: "Shutdown timeout (ms)",
+      value: String(setupState.config.controller?.shutdown_timeout_ms ?? 30000),
       kind: "text",
-      editableFieldId: "preview_fps",
+      editableFieldId: "controller_shutdown_timeout_ms",
     },
     {
-      id: "encoder_crf",
-      groupSubtitle: "Encoder quality (optional)",
-      label: "CRF",
-      value: formatCrfCycleLabel(crf),
-      kind: "cycle",
-      action: "setup_cycle_encoder_crf",
+      id: "controller_child_poll_interval_ms",
+      label: "Child poll interval (ms)",
+      value: String(setupState.config.controller?.child_poll_interval_ms ?? 100),
+      kind: "text",
+      editableFieldId: "controller_child_poll_interval_ms",
     },
     {
-      id: "encoder_preset",
-      label: "Preset",
-      value: formatPresetCycleLabel(encPreset),
-      kind: "cycle",
-      action: "setup_cycle_encoder_preset",
-    },
-    {
-      id: "chroma_subsampling",
-      label: "Chroma subsampling",
-      value: formatChromaShort(chroma),
-      kind: "cycle",
-      action: "setup_cycle_chroma_subsampling",
-    },
-    {
-      id: "encoder_bit_depth",
-      label: "Bit depth",
-      value: String(bitDepth),
-      kind: "cycle",
-      action: "setup_cycle_encoder_bit_depth",
-    },
-    {
-      id: "encoder_color_space",
-      label: "Color space",
-      value: colorSpace,
-      kind: "cycle",
-      action: "setup_cycle_encoder_color_space",
+      id: "visualizer_port",
+      groupSubtitle: "Visualizer",
+      label: "WebSocket port",
+      value: String(setupState.config.visualizer?.port ?? 19090),
+      kind: "text",
+      editableFieldId: "visualizer_port",
     },
     {
       id: "storage_backend",
@@ -1146,12 +1852,84 @@ function buildSettingsFields(setupState: SetupStateMessage | null): SettingsFiel
           : "storage_endpoint",
     },
     {
+      id: "storage_queue_size",
+      label: "Queue size",
+      value: String(setupState.config.storage.queue_size ?? 32),
+      kind: "text",
+      editableFieldId: "storage_queue_size",
+    },
+    {
+      id: "assembler_staging_dir",
+      groupSubtitle: "Assembler",
+      label: "Staging dir",
+      value: setupState.config.assembler?.staging_dir ?? "",
+      kind: "text",
+      editableFieldId: "assembler_staging_dir",
+    },
+    {
+      id: "assembler_staging_slots",
+      label: "Staging slots",
+      value: String(setupState.config.assembler?.staging_slots ?? 4),
+      kind: "text",
+      editableFieldId: "assembler_staging_slots",
+    },
+    {
+      id: "assembler_missing_eos_timeout_ms",
+      label: "Missing EOS timeout (ms)",
+      value: String(setupState.config.assembler?.missing_eos_timeout_ms ?? 30000),
+      kind: "text",
+      editableFieldId: "assembler_missing_eos_timeout_ms",
+    },
+    {
+      id: "monitor_metrics_frequency_hz",
+      groupSubtitle: "Monitor",
+      label: "Metrics frequency (Hz)",
+      value: String(setupState.config.monitor?.metrics_frequency_hz ?? 1.0),
+      kind: "text",
+      editableFieldId: "monitor_metrics_frequency_hz",
+    },
+    {
       id: "ui_http_host",
       groupSubtitle: "Browser UI",
       label: "UI host",
       value: setupState.config.ui?.http_host ?? "",
       kind: "text",
       editableFieldId: "ui_http_host",
+    },
+    {
+      id: "ui_http_port",
+      label: "UI port",
+      value: String(setupState.config.ui?.http_port ?? 3000),
+      kind: "text",
+      editableFieldId: "ui_http_port",
+    },
+    {
+      id: "ui_start_key",
+      label: "Start key",
+      value: setupState.config.ui?.start_key ?? "s",
+      kind: "text",
+      editableFieldId: "ui_start_key",
+    },
+    {
+      id: "ui_stop_key",
+      label: "Stop key",
+      value: setupState.config.ui?.stop_key ?? "e",
+      kind: "text",
+      editableFieldId: "ui_stop_key",
+    },
+    {
+      id: "ui_keep_key",
+      label: "Keep key",
+      value: setupState.config.ui?.keep_key ?? "k",
+      kind: "text",
+      editableFieldId: "ui_keep_key",
+    },
+    {
+      id: "ui_discard_key",
+      label: "Discard key",
+      value: setupState.config.ui?.discard_key ?? "x",
+      kind: "text",
+      editableFieldId: "ui_discard_key",
     },
   ];
 }
@@ -1795,31 +2573,96 @@ function buildDetailLines(
         ...messageLines,
       ];
     }
-    case "preview":
-      return [
+    case "preview": {
+      const cfg = setupState.config;
+      const overviewLines: DetailLine[] = [
+        textLine("preview-header", "Overview — review and save", {
+          color: "cyan",
+          bold: true,
+        }),
         buildDetailLine("preview-project", [
           textSegment("Project: ", { color: "cyan", bold: true }),
-          textSegment(`${setupState.config.project_name} | Mode: ${setupState.config.mode}`),
+          textSegment(`${cfg.project_name} | Mode: ${cfg.mode}`),
         ]),
-        buildDetailLine("preview-format", [
-          textSegment("Format: ", { color: "cyan", bold: true }),
+        buildDetailLine("preview-episode", [
+          textSegment("Episode: ", { color: "cyan", bold: true }),
           textSegment(
-            `${setupState.config.episode.format} | RGB: ${setupState.encoder.video_codec} | Depth: ${setupState.encoder.depth_codec}`,
+            `${cfg.episode.format} @ ${cfg.episode.fps} fps, chunk ${cfg.episode.chunk_size ?? 1000}`,
           ),
         ]),
         buildDetailLine("preview-storage", [
           textSegment("Storage: ", { color: "cyan", bold: true }),
           textSegment(
-            `${setupState.config.storage.backend} -> ${storageSummary(setupState)}`,
+            `${cfg.storage.backend} -> ${storageSummary(setupState)}` +
+              (cfg.storage.queue_size != null
+                ? ` (queue ${cfg.storage.queue_size})`
+                : ""),
           ),
         ]),
-        buildDetailLine("preview-counts", [
-          textSegment("Devices: ", { color: "cyan", bold: true }),
+        buildDetailLine("preview-assembler", [
+          textSegment("Assembler: ", { color: "cyan", bold: true }),
           textSegment(
-            `${setupState.config.devices.length} | Pairings: ${setupState.config.pairings.length}`,
+            cfg.assembler
+              ? `staging ${cfg.assembler.staging_dir} (${cfg.assembler.staging_slots} slots, ${cfg.assembler.missing_eos_timeout_ms} ms eos)`
+              : "(defaults)",
           ),
         ]),
-        ...previewActions.map((action, index) =>
+        buildDetailLine("preview-ui", [
+          textSegment("UI: ", { color: "cyan", bold: true }),
+          textSegment(
+            cfg.ui
+              ? `${cfg.ui.http_host}:${cfg.ui.http_port}  keys s=${cfg.ui.start_key ?? "?"} e=${cfg.ui.stop_key ?? "?"} k=${cfg.ui.keep_key ?? "?"} x=${cfg.ui.discard_key ?? "?"}`
+              : "(defaults)",
+          ),
+        ]),
+      ];
+
+      // Per-device summary (one line per enabled channel).
+      cfg.devices.forEach((device, deviceIndex) => {
+        device.channels.forEach((channel, channelIndex) => {
+          if (channel.enabled === false) return;
+          const detail =
+            channel.kind === "camera" && channel.profile
+              ? `${channel.profile.width}x${channel.profile.height}@${channel.profile.fps} ${channel.profile.pixel_format}`
+              : channel.kind === "robot"
+                ? `dof=${channel.dof ?? "?"} mode=${channel.mode ?? "?"}`
+                : channel.kind;
+          const flags = [
+            channel.preview_enabled !== false ? "prev" : null,
+            channel.record_enabled !== false ? "rec" : null,
+          ]
+            .filter(Boolean)
+            .join("+");
+          overviewLines.push(
+            buildDetailLine(`preview-device:${deviceIndex}:${channelIndex}`, [
+              textSegment("  • ", { color: "gray" }),
+              textSegment(
+                `${device.name}/${channel.channel_type} (${device.driver})`,
+                { color: "cyan" },
+              ),
+              textSegment(`  ${detail}  [${flags}]`),
+            ]),
+          );
+        });
+      });
+
+      // Per-pairing summary.
+      cfg.pairings.forEach((pair, idx) => {
+        overviewLines.push(
+          buildDetailLine(`preview-pairing:${idx}`, [
+            textSegment("  ↻ ", { color: "magenta" }),
+            textSegment(
+              `${pair.leader_device}/${pair.leader_channel_type} → ${pair.follower_device}/${pair.follower_channel_type}`,
+              { color: "magenta" },
+            ),
+            textSegment(`  (${pair.mapping})`, { color: "gray" }),
+          ]),
+        );
+      });
+
+      // Live-pipeline action lines (existing focus + save behavior).
+      previewActions.forEach((action, index) => {
+        overviewLines.push(
           buildDetailLine(`preview-action:${index}`, [
             focusPrefix(index === focusedIndex),
             textSegment(`[${index + 1}] `, { color: "cyan" }),
@@ -1828,10 +2671,12 @@ function buildDetailLines(
               color: action.kind === "save" ? "green" : undefined,
             }),
           ]),
-        ),
-        ...messageLines,
-        ...warningLines,
-      ];
+        );
+      });
+
+      overviewLines.push(...messageLines, ...warningLines);
+      return overviewLines;
+    }
   }
 }
 
@@ -2054,6 +2899,64 @@ function settingsFieldLine(
   ]);
 }
 
+/** Render a single subpanel row using the same layout as the Settings
+ *  step: focus indicator, padded label, padded value, optional
+ *  `rangeHint` (valid range / option list), trailing interaction
+ *  hint. Read-only rows omit the focus indicator and use gray
+ *  throughout so the operator can tell at a glance what's
+ *  interactive. */
+function subpanelFieldLine(
+  field: SubpanelField,
+  focused: boolean,
+  editingField: EditableFieldId | null,
+  draftValue: string,
+  labelWidth: number,
+  valueWidth: number,
+  rangeHintWidth: number,
+): DetailLine {
+  const paddedLabel = `${field.label}:`.padEnd(labelWidth + 1) + " ";
+  // The range hint column is padded to the widest hint in the list
+  // so the trailing `[h/l cycle]` / `[Enter edit]` chips line up
+  // across rows that have hints and rows that don't.
+  const rangeHintText = field.rangeHint
+    ? `(${field.rangeHint})`.padEnd(rangeHintWidth)
+    : "".padEnd(rangeHintWidth);
+  if (field.kind === "cycle") {
+    return buildDetailLine(`subpanel:${field.id}`, [
+      focusPrefix(focused),
+      textSegment(paddedLabel, { bold: true }),
+      textSegment(field.value.padEnd(valueWidth), { color: "green" }),
+      textSegment(rangeHintText ? `  ${rangeHintText}` : "", { color: "gray" }),
+      textSegment(" [h/l cycle]", { color: "cyan" }),
+    ]);
+  }
+  if (field.kind === "text") {
+    const isEditing = field.editId === editingField;
+    const rawValue = isEditing ? `${draftValue}|` : field.value || "(empty)";
+    const displayValue = rawValue.padEnd(valueWidth);
+    return buildDetailLine(`subpanel:${field.id}`, [
+      focusPrefix(focused),
+      textSegment(paddedLabel, { bold: true }),
+      textSegment(displayValue, {
+        color: field.value || isEditing ? undefined : "gray",
+      }),
+      textSegment(rangeHintText ? `  ${rangeHintText}` : "", { color: "gray" }),
+      textSegment(
+        isEditing ? " [Enter save, Esc cancel]" : " [Enter edit]",
+        { color: "cyan" },
+      ),
+    ]);
+  }
+  // readonly
+  return buildDetailLine(`subpanel:${field.id}`, [
+    textSegment("  ", { color: "gray" }),
+    textSegment(paddedLabel, { bold: true, color: "gray" }),
+    textSegment(field.value.padEnd(valueWidth), { color: "gray" }),
+    textSegment(rangeHintText ? `  ${rangeHintText}` : "", { color: "gray" }),
+    textSegment(" [read-only]", { color: "gray" }),
+  ]);
+}
+
 function executePreviewAction(
   action: PreviewAction,
   send: (message: string) => void,
@@ -2071,16 +2974,7 @@ function executePreviewAction(
 
 function editCommandForField(
   field: StaticEditableFieldId,
-): Extract<
-  CommandAction,
-  | "setup_set_project_name"
-  | "setup_set_storage_output_path"
-  | "setup_set_storage_endpoint"
-  | "setup_set_ui_http_host"
-  | "setup_set_episode_fps"
-  | "setup_set_jpeg_quality"
-  | "setup_set_preview_fps"
-> {
+): Extract<CommandAction, `setup_set_${string}`> {
   switch (field) {
     case "project_name":
       return "setup_set_project_name";
@@ -2092,10 +2986,34 @@ function editCommandForField(
       return "setup_set_ui_http_host";
     case "episode_fps":
       return "setup_set_episode_fps";
-    case "jpeg_quality":
-      return "setup_set_jpeg_quality";
-    case "preview_fps":
-      return "setup_set_preview_fps";
+    case "episode_chunk_size":
+      return "setup_set_episode_chunk_size";
+    case "controller_shutdown_timeout_ms":
+      return "setup_set_controller_shutdown_timeout_ms";
+    case "controller_child_poll_interval_ms":
+      return "setup_set_controller_child_poll_interval_ms";
+    case "visualizer_port":
+      return "setup_set_visualizer_port";
+    case "ui_http_port":
+      return "setup_set_ui_http_port";
+    case "ui_start_key":
+      return "setup_set_ui_start_key";
+    case "ui_stop_key":
+      return "setup_set_ui_stop_key";
+    case "ui_keep_key":
+      return "setup_set_ui_keep_key";
+    case "ui_discard_key":
+      return "setup_set_ui_discard_key";
+    case "assembler_missing_eos_timeout_ms":
+      return "setup_set_assembler_missing_eos_timeout_ms";
+    case "assembler_staging_dir":
+      return "setup_set_assembler_staging_dir";
+    case "assembler_staging_slots":
+      return "setup_set_assembler_staging_slots";
+    case "storage_queue_size":
+      return "setup_set_storage_queue_size";
+    case "monitor_metrics_frequency_hz":
+      return "setup_set_monitor_metrics_frequency_hz";
   }
 }
 
@@ -2434,9 +3352,11 @@ function buildSetupKeyHints({
       return [
         { key: "j/k", label: "Switch Focus" },
         { key: "space", label: "Toggle Select" },
+        { key: "i", label: "Identify" },
+        { key: "s", label: "Subpanel" },
+        { key: "a", label: "Add Device" },
         { key: "enter", label: "Rename" },
         { key: "[/]", label: "Switch Profile" },
-        { key: "i", label: "Identify" },
         ...navTail,
       ];
     case "states":
