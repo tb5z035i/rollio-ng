@@ -647,7 +647,10 @@ pub(crate) fn backend_hw_device_type(
     Some(match backend {
         EncoderBackend::Nvidia => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
         EncoderBackend::Vaapi => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-        EncoderBackend::Cpu | EncoderBackend::Auto | EncoderBackend::Passthrough | EncoderBackend::HorizonX5 => return None,
+        EncoderBackend::Cpu
+        | EncoderBackend::Auto
+        | EncoderBackend::Passthrough
+        | EncoderBackend::HorizonX5 => return None,
     })
 }
 

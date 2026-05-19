@@ -306,10 +306,8 @@ struct GripperPublish {
     effort: Option<f64>,
 }
 
-type JointVectorPublisher =
-    iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>;
-type ShutdownSubscriber =
-    iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
+type JointVectorPublisher = iceoryx2::port::publisher::Publisher<ipc::Service, JointVector15, ()>;
+type ShutdownSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
 type ChannelModePublisher =
     iceoryx2::port::publisher::Publisher<ipc::Service, DeviceChannelMode, ()>;
 
@@ -352,21 +350,24 @@ fn run_publisher(
             Ok(item) => {
                 if let (Some(v), Some(pub_)) = (item.position, position_pub.as_ref()) {
                     let payload = JointVector15::from_slice(item.ts_us, &[v]);
-                    pub_.send_copy(payload).map_err(|e| -> Box<dyn Error + Send + Sync> {
-                        format!("gripper-cora: send joint_position failed: {e}").into()
-                    })?;
+                    pub_.send_copy(payload)
+                        .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                            format!("gripper-cora: send joint_position failed: {e}").into()
+                        })?;
                 }
                 if let (Some(v), Some(pub_)) = (item.velocity, velocity_pub.as_ref()) {
                     let payload = JointVector15::from_slice(item.ts_us, &[v]);
-                    pub_.send_copy(payload).map_err(|e| -> Box<dyn Error + Send + Sync> {
-                        format!("gripper-cora: send joint_velocity failed: {e}").into()
-                    })?;
+                    pub_.send_copy(payload)
+                        .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                            format!("gripper-cora: send joint_velocity failed: {e}").into()
+                        })?;
                 }
                 if let (Some(v), Some(pub_)) = (item.effort, effort_pub.as_ref()) {
                     let payload = JointVector15::from_slice(item.ts_us, &[v]);
-                    pub_.send_copy(payload).map_err(|e| -> Box<dyn Error + Send + Sync> {
-                        format!("gripper-cora: send joint_effort failed: {e}").into()
-                    })?;
+                    pub_.send_copy(payload)
+                        .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                            format!("gripper-cora: send joint_effort failed: {e}").into()
+                        })?;
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -385,12 +386,13 @@ fn open_state_publisher(
     kind: RobotStateKind,
 ) -> Result<JointVectorPublisher, Box<dyn Error + Send + Sync>> {
     let topic = channel_state_service_name(bus_root, channel_type, kind.topic_suffix());
-    let service_name: ServiceName = topic
-        .as_str()
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("bad state service name \"{topic}\": {e}").into()
-        })?;
+    let service_name: ServiceName =
+        topic
+            .as_str()
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad state service name \"{topic}\": {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<JointVector15>()
@@ -403,23 +405,25 @@ fn open_state_publisher(
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("gripper-cora: open_or_create state service \"{topic}\": {e}").into()
         })?;
-    let publisher = service
-        .publisher_builder()
-        .create()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("gripper-cora: publisher_builder for \"{topic}\" failed: {e}").into()
-        })?;
+    let publisher =
+        service
+            .publisher_builder()
+            .create()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("gripper-cora: publisher_builder for \"{topic}\" failed: {e}").into()
+            })?;
     Ok(publisher)
 }
 
 fn open_shutdown_subscriber(
     node: &Node<ipc::Service>,
 ) -> Result<ShutdownSubscriber, Box<dyn Error + Send + Sync>> {
-    let service_name: ServiceName = CONTROL_EVENTS_SERVICE
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("bad CONTROL_EVENTS_SERVICE name: {e}").into()
-        })?;
+    let service_name: ServiceName =
+        CONTROL_EVENTS_SERVICE
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad CONTROL_EVENTS_SERVICE name: {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
@@ -427,12 +431,13 @@ fn open_shutdown_subscriber(
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("gripper-cora: open_or_create control/events: {e}").into()
         })?;
-    let subscriber = service
-        .subscriber_builder()
-        .create()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("gripper-cora: subscriber_builder failed: {e}").into()
-        })?;
+    let subscriber =
+        service
+            .subscriber_builder()
+            .create()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("gripper-cora: subscriber_builder failed: {e}").into()
+            })?;
     Ok(subscriber)
 }
 
@@ -442,10 +447,13 @@ fn open_mode_info_publisher(
     channel_type: &str,
 ) -> Result<ChannelModePublisher, Box<dyn Error + Send + Sync>> {
     let topic = channel_mode_info_service_name(bus_root, channel_type);
-    let service_name: ServiceName = topic
-        .as_str()
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("bad mode service \"{topic}\": {e}").into() })?;
+    let service_name: ServiceName =
+        topic
+            .as_str()
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad mode service \"{topic}\": {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -456,12 +464,13 @@ fn open_mode_info_publisher(
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("gripper-cora: open_or_create mode/info: {e}").into()
         })?;
-    let publisher = service
-        .publisher_builder()
-        .create()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("gripper-cora: mode publisher_builder failed: {e}").into()
-        })?;
+    let publisher =
+        service
+            .publisher_builder()
+            .create()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("gripper-cora: mode publisher_builder failed: {e}").into()
+            })?;
     Ok(publisher)
 }
 

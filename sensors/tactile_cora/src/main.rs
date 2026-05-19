@@ -23,7 +23,9 @@ pub fn driver_name() -> &'static str {
 
 #[derive(Debug, Parser)]
 #[command(name = "rollio-device-tactile-cora")]
-#[command(about = "Cora sensor_msgs/PointCloud2 → iceoryx2 SensorStateKind::TactilePointCloud2 passthrough")]
+#[command(
+    about = "Cora sensor_msgs/PointCloud2 → iceoryx2 SensorStateKind::TactilePointCloud2 passthrough"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

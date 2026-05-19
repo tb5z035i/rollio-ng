@@ -8,7 +8,11 @@ use serde_json::json;
 use crate::driver_name;
 use crate::query::DEFAULT_CHANNEL_TYPE;
 
-pub fn run(id: &str, channel_types: &[String], json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    id: &str,
+    channel_types: &[String],
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut unknown = Vec::new();
     for ct in channel_types {
         if ct != DEFAULT_CHANNEL_TYPE {

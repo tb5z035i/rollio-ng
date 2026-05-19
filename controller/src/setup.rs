@@ -17,10 +17,10 @@ use rollio_bus::{
 };
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelKindInfo, ChannelPairingConfig,
-    ChannelPreviewConfig, ChannelRecordConfig, ChannelStateKind, ChromaSubsampling,
-    CollectionMode, DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec,
-    EncoderColorSpace, EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig,
-    RobotCommandKind, RobotMode, RobotStateKind, SensorStateKind, StorageBackend,
+    ChannelPreviewConfig, ChannelRecordConfig, ChannelStateKind, ChromaSubsampling, CollectionMode,
+    DeviceChannelConfigV2, DeviceType, EncoderBackend, EncoderCodec, EncoderColorSpace,
+    EncoderConfig, EpisodeFormat, MappingStrategy, ProjectConfig, RobotCommandKind, RobotMode,
+    RobotStateKind, SensorStateKind, StorageBackend,
 };
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, PixelFormat, SetupCommandMessage, SetupStateMessage,
@@ -3177,8 +3177,10 @@ fn build_channel_config_from_meta(
         }
         DiscoveredKindInfo::Robot(robot) => {
             let mode = Some(select_supported_mode(&robot.modes, preferred_mode));
-            let robot_publish: Vec<RobotStateKind> =
-                default_publish_states_for_robot(robot, &robot_publish_states_fallback(channel_type));
+            let robot_publish: Vec<RobotStateKind> = default_publish_states_for_robot(
+                robot,
+                &robot_publish_states_fallback(channel_type),
+            );
             let publish_states: Vec<ChannelStateKind> = robot_publish
                 .iter()
                 .copied()
@@ -4487,10 +4489,9 @@ fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, DiscoveredChanne
                     })
                 }
                 DeviceType::Sensor => DiscoveredKindInfo::Sensor(SensorDiscoveredInfo {
-                    supported_sensor_kinds:
-                        crate::device_query::parse_query_supported_sensor_kinds(
-                            channel.get("supported_sensor_kinds"),
-                        ),
+                    supported_sensor_kinds: crate::device_query::parse_query_supported_sensor_kinds(
+                        channel.get("supported_sensor_kinds"),
+                    ),
                     sensor_shape_hints: crate::device_query::parse_query_sensor_shape_hints(
                         channel.get("sensor_shape_hints"),
                     ),
@@ -7144,8 +7145,8 @@ port = 19090
     /// uses.
     #[test]
     fn apply_wizard_encoder_to_channels_writes_per_channel_record_and_preview_blocks() {
-        let mut config = build_discovery_config(&[camera_discovery("cam0")])
-            .expect("config should build");
+        let mut config =
+            build_discovery_config(&[camera_discovery("cam0")]).expect("config should build");
         // Verify the starting point: no record/preview blocks on the channel.
         let channel = &config.devices[0].channels[0];
         assert!(channel.record.is_none());
@@ -7188,8 +7189,7 @@ port = 19090
         let toml_text = toml::to_string_pretty(&config).expect("serialize");
         assert!(toml_text.contains("[devices.channels.record]"));
         assert!(toml_text.contains("[devices.channels.preview_config]"));
-        let _reparsed: ProjectConfig =
-            toml_text.parse().expect("saved TOML must reparse cleanly");
+        let _reparsed: ProjectConfig = toml_text.parse().expect("saved TOML must reparse cleanly");
     }
 
     /// Regression: `SetupSession::new` previously hard-coded `self.encoder =
@@ -7199,8 +7199,8 @@ port = 19090
     /// Seed from the first camera channel that already carries a record block.
     #[test]
     fn setup_session_new_seeds_encoder_from_existing_record_block() {
-        let mut config = build_discovery_config(&[camera_discovery("cam0")])
-            .expect("config should build");
+        let mut config =
+            build_discovery_config(&[camera_discovery("cam0")]).expect("config should build");
         config.devices[0].channels[0].record = Some(ChannelRecordConfig {
             video_codec: Some(EncoderCodec::H265),
             crf: Some(20),

@@ -13,7 +13,9 @@ pub enum ConfigError {
         key: &'static str,
         expected: &'static str,
     },
-    #[error("device \"{device}\" channel \"{channel}\": [devices.channels.extra].{key} is required")]
+    #[error(
+        "device \"{device}\" channel \"{channel}\": [devices.channels.extra].{key} is required"
+    )]
     MissingChannelExtra {
         device: String,
         channel: String,

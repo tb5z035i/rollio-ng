@@ -13,7 +13,9 @@ pub enum ConfigError {
         key: &'static str,
         expected: &'static str,
     },
-    #[error("device \"{device}\" channel \"{channel}\": [devices.channels.extra].{key} is required")]
+    #[error(
+        "device \"{device}\" channel \"{channel}\": [devices.channels.extra].{key} is required"
+    )]
     MissingChannelExtra {
         device: String,
         channel: String,
@@ -38,11 +40,10 @@ pub enum ConfigError {
         channel: String,
         got: String,
     },
-    #[error("device \"{device}\" channel \"{channel}\": tactile_point_count must be a positive integer")]
-    BadPointCount {
-        device: String,
-        channel: String,
-    },
+    #[error(
+        "device \"{device}\" channel \"{channel}\": tactile_point_count must be a positive integer"
+    )]
+    BadPointCount { device: String, channel: String },
 }
 
 #[derive(Debug, Clone)]

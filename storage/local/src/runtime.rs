@@ -49,7 +49,9 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
         (None, None) => Err("rollio-storage-local requires --config or --config-inline".into()),
-        (Some(_), Some(_)) => Err("rollio-storage-local config flags are mutually exclusive".into()),
+        (Some(_), Some(_)) => {
+            Err("rollio-storage-local config flags are mutually exclusive".into())
+        }
     }
 }
 
@@ -75,7 +77,9 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
             let _ = worker_main(worker_config, command_rx, event_tx);
         })
         .map_err(|error| {
-            io::Error::other(format!("failed to spawn rollio-storage-local worker: {error}"))
+            io::Error::other(format!(
+                "failed to spawn rollio-storage-local worker: {error}"
+            ))
         })?;
 
     let mut shutdown_sent = false;

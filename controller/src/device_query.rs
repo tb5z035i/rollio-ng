@@ -57,8 +57,7 @@ pub(crate) fn refresh_value_limits_from_devices(
         // query (robot copies `value_limits` etc., sensor copies
         // `sensor_shape_hints` + optional `sample_rate_hz`).
         let needs_refresh = device.channels.iter().any(|channel| {
-            channel.enabled
-                && matches!(channel.kind, DeviceType::Robot | DeviceType::Sensor)
+            channel.enabled && matches!(channel.kind, DeviceType::Robot | DeviceType::Sensor)
         });
         if !needs_refresh {
             continue;

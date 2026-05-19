@@ -21,7 +21,9 @@ use rollio_bus::{
     channel_mode_info_service_name, channel_sample_service_name, CONTROL_EVENTS_SERVICE,
     SAMPLE_BUFFER, SAMPLE_MAX_NODES, SAMPLE_MAX_PUBLISHERS, SAMPLE_MAX_SUBSCRIBERS,
 };
-use rollio_types::config::{BinaryDeviceConfig, DeviceChannelConfigV2, DeviceType, SensorStateKind};
+use rollio_types::config::{
+    BinaryDeviceConfig, DeviceChannelConfigV2, DeviceType, SensorStateKind,
+};
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, SensorDType, SensorFrameHeader, SENSOR_FRAME_MAX_DIMS,
 };
@@ -114,25 +116,23 @@ fn run_device(device: BinaryDeviceConfig) -> Result<(), Box<dyn Error>> {
         let sub = bridge.subscribe_point_cloud2(
             &channel_extra.cora_topic,
             channel_extra.cora_qos,
-            move |sample| {
-                match convert(
-                    &sample,
-                    expected_n,
-                    &field_map,
-                    &warn_bigendian,
-                    &warn_count_mismatch,
-                    &warn_datatype,
-                    &warn_missing_field,
-                    &warn_short_payload,
-                    &channel_type_for_log,
-                    &topic_for_log,
-                ) {
-                    Ok(item) => {
-                        let _ = tx.send(item);
-                    }
-                    Err(_) => {
-                        dropped_counter.fetch_add(1, Ordering::Relaxed);
-                    }
+            move |sample| match convert(
+                &sample,
+                expected_n,
+                &field_map,
+                &warn_bigendian,
+                &warn_count_mismatch,
+                &warn_datatype,
+                &warn_missing_field,
+                &warn_short_payload,
+                &channel_type_for_log,
+                &topic_for_log,
+            ) {
+                Ok(item) => {
+                    let _ = tx.send(item);
+                }
+                Err(_) => {
+                    dropped_counter.fetch_add(1, Ordering::Relaxed);
                 }
             },
         )?;
@@ -338,10 +338,8 @@ fn warn_once<F: FnOnce()>(gate: &Arc<AtomicBool>, emit: F) {
     }
 }
 
-type SamplePublisher =
-    iceoryx2::port::publisher::Publisher<ipc::Service, [u8], SensorFrameHeader>;
-type ShutdownSubscriber =
-    iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
+type SamplePublisher = iceoryx2::port::publisher::Publisher<ipc::Service, [u8], SensorFrameHeader>;
+type ShutdownSubscriber = iceoryx2::port::subscriber::Subscriber<ipc::Service, ControlEvent, ()>;
 type ChannelModePublisher =
     iceoryx2::port::publisher::Publisher<ipc::Service, DeviceChannelMode, ()>;
 
@@ -427,10 +425,13 @@ fn open_sample_publisher(
         channel_type,
         SensorStateKind::TactilePointCloud2.topic_suffix(),
     );
-    let service_name: ServiceName = topic
-        .as_str()
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("bad service name \"{topic}\": {e}").into() })?;
+    let service_name: ServiceName =
+        topic
+            .as_str()
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad service name \"{topic}\": {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<[u8]>()
@@ -458,11 +459,12 @@ fn open_sample_publisher(
 fn open_shutdown_subscriber(
     node: &Node<ipc::Service>,
 ) -> Result<ShutdownSubscriber, Box<dyn Error + Send + Sync>> {
-    let service_name: ServiceName = CONTROL_EVENTS_SERVICE
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("bad CONTROL_EVENTS_SERVICE name: {e}").into()
-        })?;
+    let service_name: ServiceName =
+        CONTROL_EVENTS_SERVICE
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad CONTROL_EVENTS_SERVICE name: {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
@@ -470,12 +472,13 @@ fn open_shutdown_subscriber(
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("tactile-cora: open_or_create control/events: {e}").into()
         })?;
-    let subscriber = service
-        .subscriber_builder()
-        .create()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("tactile-cora: subscriber_builder failed: {e}").into()
-        })?;
+    let subscriber =
+        service
+            .subscriber_builder()
+            .create()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("tactile-cora: subscriber_builder failed: {e}").into()
+            })?;
     Ok(subscriber)
 }
 
@@ -485,10 +488,13 @@ fn open_mode_info_publisher(
     channel_type: &str,
 ) -> Result<ChannelModePublisher, Box<dyn Error + Send + Sync>> {
     let topic = channel_mode_info_service_name(bus_root, channel_type);
-    let service_name: ServiceName = topic
-        .as_str()
-        .try_into()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("bad mode service \"{topic}\": {e}").into() })?;
+    let service_name: ServiceName =
+        topic
+            .as_str()
+            .try_into()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("bad mode service \"{topic}\": {e}").into()
+            })?;
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<DeviceChannelMode>()
@@ -499,12 +505,13 @@ fn open_mode_info_publisher(
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("tactile-cora: open_or_create mode/info: {e}").into()
         })?;
-    let publisher = service
-        .publisher_builder()
-        .create()
-        .map_err(|e| -> Box<dyn Error + Send + Sync> {
-            format!("tactile-cora: mode publisher_builder failed: {e}").into()
-        })?;
+    let publisher =
+        service
+            .publisher_builder()
+            .create()
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                format!("tactile-cora: mode publisher_builder failed: {e}").into()
+            })?;
     Ok(publisher)
 }
 

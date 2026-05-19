@@ -11,7 +11,9 @@ pub fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", serde_json::to_string_pretty(&ids)?);
     } else {
         let _ = json!(ids);
-        println!("imu-cora: static-config driver; no auto-discovery (declare devices in config.toml)");
+        println!(
+            "imu-cora: static-config driver; no auto-discovery (declare devices in config.toml)"
+        );
     }
     Ok(())
 }

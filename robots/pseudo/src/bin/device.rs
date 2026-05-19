@@ -664,12 +664,7 @@ fn element_count(shape: &[u32]) -> usize {
     shape.iter().map(|&d| d as usize).product()
 }
 
-fn fill_sensor_payload(
-    kind: SensorStateKind,
-    elements: usize,
-    sample_index: u64,
-    out: &mut [u8],
-) {
+fn fill_sensor_payload(kind: SensorStateKind, elements: usize, sample_index: u64, out: &mut [u8]) {
     let phase = sample_index as f32 * 0.01;
     match kind {
         SensorStateKind::ImuAccelGyro => {
@@ -732,18 +727,13 @@ fn run_sensor_channel(
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()?;
     let shutdown_subscriber = open_shutdown_subscriber(&node)?;
-    let mode_info_publisher =
-        open_channel_mode_publisher(&node, &bus_root, &channel.channel_type)?;
+    let mode_info_publisher = open_channel_mode_publisher(&node, &bus_root, &channel.channel_type)?;
 
     struct SensorPublisher {
         kind: SensorStateKind,
         shape: Vec<u32>,
         elements: usize,
-        publisher: iceoryx2::port::publisher::Publisher<
-            ipc::Service,
-            [u8],
-            SensorFrameHeader,
-        >,
+        publisher: iceoryx2::port::publisher::Publisher<ipc::Service, [u8], SensorFrameHeader>,
     }
 
     let mut publishers: Vec<SensorPublisher> = Vec::new();
@@ -793,7 +783,12 @@ fn run_sensor_channel(
                 let payload_bytes = pub_entry.elements * dtype.byte_size();
                 scratch.clear();
                 scratch.resize(payload_bytes, 0);
-                fill_sensor_payload(pub_entry.kind, pub_entry.elements, sample_index, &mut scratch);
+                fill_sensor_payload(
+                    pub_entry.kind,
+                    pub_entry.elements,
+                    sample_index,
+                    &mut scratch,
+                );
                 let mut shape_arr = [0u32; SENSOR_FRAME_MAX_DIMS];
                 for (i, &d) in pub_entry.shape.iter().enumerate() {
                     if i < SENSOR_FRAME_MAX_DIMS {
@@ -1385,9 +1380,8 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
                     profiles: ALL_PIXEL_FORMATS
                         .iter()
                         .flat_map(|&pf| {
-                            [(640, 480), (1280, 720)]
-                                .iter()
-                                .map(move |&(w, h)| CameraChannelProfile {
+                            [(640, 480), (1280, 720)].iter().map(move |&(w, h)| {
+                                CameraChannelProfile {
                                     width: w,
                                     height: h,
                                     fps: 30,
@@ -1399,7 +1393,8 @@ fn query_pseudo_device(id: &str) -> Option<DeviceQueryDevice> {
                                     h264_preset: None,
                                     h264_tune: None,
                                     h264_profile: None,
-                                })
+                                }
+                            })
                         })
                         .collect(),
                 }),
@@ -1558,7 +1553,11 @@ fn print_query_human(response: &DeviceQueryResponse) {
     for device in &response.devices {
         println!("{} ({})", device.device_label, device.id);
         for channel in &device.channels {
-            println!("  - {} [{}]", channel.channel_type, kind_name(channel.kind()));
+            println!(
+                "  - {} [{}]",
+                channel.channel_type,
+                kind_name(channel.kind())
+            );
         }
     }
 }

@@ -57,9 +57,11 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=fastrtps");
     println!("cargo:rustc-link-lib=dylib=fastcdr");
 
-    let runtime_rpath = env::var("CORA_SDK_RUNTIME_RPATH")
-        .ok()
-        .or_else(|| sdk_root.as_ref().map(|r| r.join("lib").display().to_string()));
+    let runtime_rpath = env::var("CORA_SDK_RUNTIME_RPATH").ok().or_else(|| {
+        sdk_root
+            .as_ref()
+            .map(|r| r.join("lib").display().to_string())
+    });
     if let Some(rp) = runtime_rpath {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", rp);
     }
