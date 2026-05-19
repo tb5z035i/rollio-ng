@@ -241,8 +241,8 @@ fn store_episode(
 ) -> Result<PathBuf, Box<dyn Error>> {
     match config.backend {
         StorageBackend::Local => store_episode_local(config, request),
-        StorageBackend::Http => {
-            Err("rollio-storage-local-lerobot: backend=http is reserved for future work".into())
+        StorageBackend::Http | StorageBackend::Dataloop => {
+            Err("rollio-storage-local-lerobot: only backend=local is supported".into())
         }
     }
 }

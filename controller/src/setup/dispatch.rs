@@ -306,6 +306,22 @@ impl SetupSession {
                     self.set_storage_endpoint(value)?,
                 ))
             }
+            "setup_set_dataloop_project_id" => {
+                let Some(value) = command.value.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_dataloop_project_id(value)?,
+                ))
+            }
+            "setup_set_dataloop_token" => {
+                let Some(value) = command.value.as_deref() else {
+                    return Ok(SessionMutation::default());
+                };
+                Ok(SessionMutation::config_changed(
+                    self.set_dataloop_token(value)?,
+                ))
+            }
             "setup_set_ui_http_host" => {
                 let Some(value) = command.value.as_deref() else {
                     return Ok(SessionMutation::default());

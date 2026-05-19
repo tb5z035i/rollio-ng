@@ -12,6 +12,7 @@ members = [
     "episode-mcap",
     "storage/local",
     "storage/local-lerobot",
+    "storage/dataloop",
     "monitor",
     "robots/pseudo",
     "robots/airbot_play_rust",

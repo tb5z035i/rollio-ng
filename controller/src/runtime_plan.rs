@@ -502,6 +502,7 @@ pub(crate) fn storage_binary_for(
         (_, StorageBackend::Http) => {
             Err("storage.backend = http is not implemented yet".into())
         }
+        (_, StorageBackend::Dataloop) => Ok("rollio-storage-dataloop"),
     }
 }
 
