@@ -89,22 +89,28 @@ pub(crate) fn build_collect_specs(
     // service negotiation.
     let embedded_config_toml = toml::to_string(config)?;
     let assembler_config = config.assembler_runtime_config_v2(embedded_config_toml);
-    specs.push(build_assembler_spec(
-        &assembler_config,
-        workspace_root,
-        child_working_dir,
-        current_exe_dir,
-    )?);
+    specs.push(with_pipeline_log_env(
+        build_assembler_spec(
+            &assembler_config,
+            workspace_root,
+            child_working_dir,
+            current_exe_dir,
+        )?,
+        config.runtime.advanced_pipeline_logs,
+    ));
 
     let storage_config = config.storage_runtime_config();
-    specs.push(build_storage_spec(
-        &storage_config,
-        config.episode.format,
-        workspace_root,
-        child_working_dir,
-        current_exe_dir,
-        invocation_cwd,
-    )?);
+    specs.push(with_pipeline_log_env(
+        build_storage_spec(
+            &storage_config,
+            config.episode.format,
+            workspace_root,
+            child_working_dir,
+            current_exe_dir,
+            invocation_cwd,
+        )?,
+        config.runtime.advanced_pipeline_logs,
+    ));
 
     let mut ui_runtime_config = config.ui_runtime_config();
     if ui_runtime_config.control_websocket_url.is_none() {
@@ -816,6 +822,71 @@ port = 19090
         .expect("preview specs should build");
 
         for id in ["visualizer", "device-cam", "encoder-preview-cam-color"] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("missing spec {id}: {specs:?}"));
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|(key, value)| { key == ADVANCED_PIPELINE_LOGS_ENV && value == "1" }),
+                "expected {id} to receive {ADVANCED_PIPELINE_LOGS_ENV}=1, got {:?}",
+                spec.env
+            );
+        }
+    }
+
+    #[test]
+    fn build_collect_specs_passes_advanced_pipeline_log_env_to_recording_children() {
+        let config = ProjectConfig::from_str(
+            r#"
+project_name = "advanced-collect-logs"
+mode = "intervention"
+
+[runtime]
+advanced_pipeline_logs = true
+
+[episode]
+format = "lerobot-v2.1"
+fps = 30
+
+[[devices]]
+name = "cam"
+driver = "pseudo"
+id = "pseudo_camera_0"
+bus_root = "cam"
+
+[[devices.channels]]
+channel_type = "color"
+kind = "camera"
+profile = { width = 640, height = 480, fps = 30, pixel_format = "rgb24" }
+
+[storage]
+backend = "local"
+output_path = "./out"
+
+[visualizer]
+port = 19090
+"#,
+        )
+        .expect("config should parse");
+        let share_root = tempfile::TempDir::new().expect("share root");
+        let web_dist = share_root.path().join("ui/web/dist");
+        std::fs::create_dir_all(&web_dist).expect("web dist dir");
+        std::fs::write(web_dist.join("index.html"), "").expect("web index");
+
+        let specs = build_collect_specs(
+            &config,
+            Path::new("/workspace"),
+            share_root.path(),
+            Path::new("/var/lib/rollio"),
+            Path::new("/opt/rollio/bin"),
+            Path::new("/userdata"),
+            0,
+        )
+        .expect("collect specs should build");
+
+        for id in ["assembler", "storage"] {
             let spec = specs
                 .iter()
                 .find(|spec| spec.id == id)

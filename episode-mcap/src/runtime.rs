@@ -58,6 +58,250 @@ struct CameraSubscriber {
     packet_subscriber: PacketSubscriber,
 }
 
+const ASSEMBLER_STATS_LOG_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Default)]
+struct MetricStats {
+    count: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+
+impl MetricStats {
+    fn observe(&mut self, value: f64) {
+        if self.count == 0 {
+            self.min = value;
+            self.max = value;
+        } else {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+        self.sum += value;
+        self.count += 1;
+    }
+
+    fn avg(self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum / self.count as f64
+        }
+    }
+
+    fn summary(self) -> String {
+        if self.count == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.1}/{:.1}/{:.1}", self.avg(), self.min, self.max)
+        }
+    }
+}
+
+#[derive(Default)]
+struct AssemblerChannelStats {
+    configs: u64,
+    packets: u64,
+    eos: u64,
+    packet_bytes_total: u64,
+    config_bytes_total: u64,
+    sequence_gaps: u64,
+    source_frame_gaps: u64,
+    payload_len_mismatches: u64,
+    payload_bytes: MetricStats,
+    source_age_ms: MetricStats,
+    source_gap_ms: MetricStats,
+    receive_gap_ms: MetricStats,
+    last_receive_at: Option<Instant>,
+    last_source_timestamp_us: Option<u64>,
+    last_source_frame_index: Option<u64>,
+    last_sequence_number: Option<u64>,
+}
+
+impl AssemblerChannelStats {
+    fn record(&mut self, header: &EncodedPacketHeader, payload: &[u8], receive_at: Instant) {
+        if let Some(last) = self.last_receive_at.replace(receive_at) {
+            self.receive_gap_ms
+                .observe(receive_at.duration_since(last).as_secs_f64() * 1000.0);
+        }
+        if header.payload_len as usize != payload.len() {
+            self.payload_len_mismatches += 1;
+        }
+        match header.kind {
+            EncodedPacketKind::Config => {
+                self.configs += 1;
+                self.config_bytes_total =
+                    self.config_bytes_total.saturating_add(payload.len() as u64);
+                if header.sequence_number == 0 {
+                    self.last_sequence_number = None;
+                    self.last_source_frame_index = None;
+                }
+            }
+            EncodedPacketKind::Packet => {
+                self.packets += 1;
+                self.packet_bytes_total =
+                    self.packet_bytes_total.saturating_add(payload.len() as u64);
+                self.payload_bytes.observe(payload.len() as f64);
+                if header.source_timestamp_us != 0 {
+                    self.source_age_ms
+                        .observe(source_age_ms(header.source_timestamp_us));
+                    if let Some(last) = self
+                        .last_source_timestamp_us
+                        .replace(header.source_timestamp_us)
+                    {
+                        self.source_gap_ms
+                            .observe(timestamp_delta_ms(header.source_timestamp_us, last));
+                    }
+                }
+                if let Some(last) = self
+                    .last_source_frame_index
+                    .replace(header.source_frame_index)
+                {
+                    if header.source_frame_index != last.wrapping_add(1) {
+                        self.source_frame_gaps += 1;
+                    }
+                }
+            }
+            EncodedPacketKind::EndOfStream => {
+                self.eos += 1;
+            }
+        }
+        if let Some(last) = self.last_sequence_number.replace(header.sequence_number) {
+            let config_reset = matches!(header.kind, EncodedPacketKind::Config)
+                && header.sequence_number == 0
+                && last != u64::MAX;
+            if !config_reset && header.sequence_number != last.wrapping_add(1) {
+                self.sequence_gaps += 1;
+            }
+        }
+    }
+
+    fn has_activity(&self) -> bool {
+        self.configs > 0
+            || self.packets > 0
+            || self.eos > 0
+            || self.sequence_gaps > 0
+            || self.source_frame_gaps > 0
+            || self.payload_len_mismatches > 0
+    }
+
+    fn reset_window(&mut self) {
+        let last_receive_at = self.last_receive_at;
+        let last_source_timestamp_us = self.last_source_timestamp_us;
+        let last_source_frame_index = self.last_source_frame_index;
+        let last_sequence_number = self.last_sequence_number;
+        *self = Self::default();
+        self.last_receive_at = last_receive_at;
+        self.last_source_timestamp_us = last_source_timestamp_us;
+        self.last_source_frame_index = last_source_frame_index;
+        self.last_sequence_number = last_sequence_number;
+    }
+}
+
+struct AssemblerPipelineStats {
+    interval_started_at: Instant,
+    last_log_at: Instant,
+    channels: BTreeMap<String, AssemblerChannelStats>,
+}
+
+impl AssemblerPipelineStats {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            interval_started_at: now,
+            last_log_at: now,
+            channels: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, channel_id: &str, header: &EncodedPacketHeader, payload: &[u8]) {
+        self.channels
+            .entry(channel_id.to_string())
+            .or_default()
+            .record(header, payload, Instant::now());
+    }
+
+    fn maybe_log(&mut self, manager: &EpisodeManager) {
+        if self.last_log_at.elapsed() < ASSEMBLER_STATS_LOG_INTERVAL {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed_sec = now.duration_since(self.interval_started_at).as_secs_f64();
+        for (channel_id, stats) in &mut self.channels {
+            if !stats.has_activity() {
+                continue;
+            }
+            eprintln!(
+                "rollio-episode-mcap: assembler pipeline process={} channel={} \
+                 configs={} packets={} eos={} packet_fps={:.1} packet_bytes_total={} \
+                 config_bytes_total={} payload_bytes={} source_age_ms={} source_gap_ms={} \
+                 receive_gap_ms={} seq_gaps={} source_frame_gaps={} payload_len_mismatch={} \
+                 pending_episodes={} in_flight={}",
+                manager.config.process_id,
+                channel_id,
+                stats.configs,
+                stats.packets,
+                stats.eos,
+                rate(stats.packets, elapsed_sec),
+                stats.packet_bytes_total,
+                stats.config_bytes_total,
+                stats.payload_bytes.summary(),
+                stats.source_age_ms.summary(),
+                stats.source_gap_ms.summary(),
+                stats.receive_gap_ms.summary(),
+                stats.sequence_gaps,
+                stats.source_frame_gaps,
+                stats.payload_len_mismatches,
+                manager.episodes.len(),
+                manager.in_flight.len(),
+            );
+            stats.reset_window();
+        }
+        self.interval_started_at = now;
+        self.last_log_at = now;
+    }
+}
+
+fn rate(count: u64, elapsed_sec: f64) -> f64 {
+    if elapsed_sec > 0.0 {
+        count as f64 / elapsed_sec
+    } else {
+        0.0
+    }
+}
+
+fn source_age_ms(source_timestamp_us: u64) -> f64 {
+    signed_delta_us(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros(),
+        u128::from(source_timestamp_us),
+    ) as f64
+        / 1000.0
+}
+
+fn timestamp_delta_ms(current_us: u64, previous_us: u64) -> f64 {
+    signed_delta_us(u128::from(current_us), u128::from(previous_us)) as f64 / 1000.0
+}
+
+fn signed_delta_us(lhs: u128, rhs: u128) -> i128 {
+    if lhs >= rhs {
+        (lhs - rhs) as i128
+    } else {
+        -((rhs - lhs) as i128)
+    }
+}
+
+fn advanced_pipeline_logs_enabled() -> bool {
+    matches!(
+        std::env::var("ROLLIO_ADVANCED_PIPELINE_LOGS").as_deref(),
+        Ok(value)
+            if !value.is_empty()
+                && !matches!(value, "0" | "false" | "FALSE" | "off" | "OFF")
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Robot state / action subscribers
 // ---------------------------------------------------------------------------
@@ -218,8 +462,7 @@ impl EpisodeManager {
             .map(|c| c.channel_id.clone())
             .collect();
         let staging_slots = config.staging_slots as usize;
-        let stale_after =
-            Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
+        let stale_after = Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
         Self {
             config,
             active_episode_index: None,
@@ -333,14 +576,10 @@ impl EpisodeManager {
             return;
         };
         let key = format!("{}/{}", channel_id, command_kind.topic_suffix());
-        episode
-            .action_samples
-            .entry(key)
-            .or_default()
-            .push(Sample {
-                timestamp_us,
-                values,
-            });
+        episode.action_samples.entry(key).or_default().push(Sample {
+            timestamp_us,
+            values,
+        });
     }
 
     fn on_packet(&mut self, channel_id: &str, header: &EncodedPacketHeader, payload: &[u8]) {
@@ -519,14 +758,49 @@ fn stage_worker_main(
     cmd_rx: mpsc::Receiver<WorkerCommand>,
     evt_tx: mpsc::Sender<WorkerEvent>,
 ) {
+    let advanced_logs = advanced_pipeline_logs_enabled();
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             WorkerCommand::Stage(episode) => {
+                let episode_index = episode.episode_index;
+                let (camera_packets, packet_bytes, observations, actions) =
+                    episode_input_counts(&episode);
+                let started = Instant::now();
                 match stage_episode_mcap(&config, &bfbs_dir, &episode) {
                     Ok(result) => {
+                        if advanced_logs {
+                            eprintln!(
+                                "rollio-episode-mcap: assembler stage pipeline process={} \
+                                 episode={} result=ok camera_packets={} packet_bytes={} \
+                                 observations={} actions={} stage_ms={:.1} staging_dir={}",
+                                config.process_id,
+                                episode_index,
+                                camera_packets,
+                                packet_bytes,
+                                observations,
+                                actions,
+                                started.elapsed().as_secs_f64() * 1000.0,
+                                result.staging_dir.display(),
+                            );
+                        }
                         let _ = evt_tx.send(WorkerEvent::Staged(result));
                     }
                     Err(error) => {
+                        if advanced_logs {
+                            eprintln!(
+                                "rollio-episode-mcap: assembler stage pipeline process={} \
+                                 episode={} result=error camera_packets={} packet_bytes={} \
+                                 observations={} actions={} stage_ms={:.1} error={}",
+                                config.process_id,
+                                episode_index,
+                                camera_packets,
+                                packet_bytes,
+                                observations,
+                                actions,
+                                started.elapsed().as_secs_f64() * 1000.0,
+                                error,
+                            );
+                        }
                         let _ = evt_tx.send(WorkerEvent::Error(error.to_string()));
                     }
                 }
@@ -537,14 +811,39 @@ fn stage_worker_main(
     let _ = evt_tx.send(WorkerEvent::ShutdownComplete);
 }
 
+fn episode_input_counts(episode: &PendingEpisode) -> (u64, u64, u64, u64) {
+    let camera_packets = episode
+        .camera_streams
+        .values()
+        .map(|stream| stream.packets.len() as u64)
+        .sum();
+    let packet_bytes = episode
+        .camera_streams
+        .values()
+        .flat_map(|stream| stream.packets.iter())
+        .map(|packet| packet.data.len() as u64)
+        .sum();
+    let observations = episode
+        .observation_samples
+        .values()
+        .map(|samples| samples.len() as u64)
+        .sum();
+    let actions = episode
+        .action_samples
+        .values()
+        .map(|samples| samples.len() as u64)
+        .sum();
+    (camera_packets, packet_bytes, observations, actions)
+}
+
 /// Write a pending episode to an MCAP file in the staging directory.
 fn stage_episode_mcap(
     config: &AssemblerRuntimeConfigV2,
     bfbs_dir: &Path,
     episode: &PendingEpisode,
 ) -> Result<StagedResult, Box<dyn Error>> {
-    let episode_dir = Path::new(&config.staging_dir)
-        .join(format!("episode_{:06}", episode.episode_index));
+    let episode_dir =
+        Path::new(&config.staging_dir).join(format!("episode_{:06}", episode.episode_index));
     std::fs::create_dir_all(&episode_dir)?;
 
     let mcap_path = episode_dir.join("episode.mcap");
@@ -569,8 +868,12 @@ fn stage_episode_mcap(
             };
 
             for packet in &stream.packets {
-                let fb_data =
-                    encode::encode_compressed_video(packet.timestamp_us, &camera_config.channel_id, format, &packet.data);
+                let fb_data = encode::encode_compressed_video(
+                    packet.timestamp_us,
+                    &camera_config.channel_id,
+                    format,
+                    &packet.data,
+                );
                 writer.write_message(channel_idx, us_to_ns(packet.timestamp_us), &fb_data)?;
             }
         }
@@ -591,11 +894,8 @@ fn stage_episode_mcap(
 
     // Register action channels and write samples
     for (key, samples) in &episode.action_samples {
-        let channel_idx = writer.add_channel(
-            &format!("/action/{key}"),
-            SchemaType::JointStates,
-            bfbs_dir,
-        )?;
+        let channel_idx =
+            writer.add_channel(&format!("/action/{key}"), SchemaType::JointStates, bfbs_dir)?;
         for sample in samples {
             let fb_data = encode::encode_joint_states(sample.timestamp_us, &sample.values, None);
             writer.write_message(channel_idx, us_to_ns(sample.timestamp_us), &fb_data)?;
@@ -604,13 +904,22 @@ fn stage_episode_mcap(
 
     // Write episode metadata
     let mut meta = BTreeMap::new();
-    meta.insert("episode_index".to_string(), episode.episode_index.to_string());
-    meta.insert("start_time_us".to_string(), episode.start_time_us.to_string());
+    meta.insert(
+        "episode_index".to_string(),
+        episode.episode_index.to_string(),
+    );
+    meta.insert(
+        "start_time_us".to_string(),
+        episode.start_time_us.to_string(),
+    );
     if let Some(stop) = episode.stop_time_us {
         meta.insert("stop_time_us".to_string(), stop.to_string());
     }
     if !config.embedded_config_toml.is_empty() {
-        meta.insert("config_toml".to_string(), config.embedded_config_toml.clone());
+        meta.insert(
+            "config_toml".to_string(),
+            config.embedded_config_toml.clone(),
+        );
     }
     writer.write_metadata("episode", meta)?;
 
@@ -674,6 +983,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let process_id = config.process_id.clone();
     let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone(), bfbs_dir)?;
     let mut manager = EpisodeManager::new(config);
+    let mut pipeline_stats = advanced_pipeline_logs_enabled().then(AssemblerPipelineStats::new);
 
     log::info!("rollio-episode-mcap: runtime started");
 
@@ -683,9 +993,13 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         if drain_control_events(&control_subscriber, &mut manager)? {
             shutdown_requested = true;
         }
-        made_progress |= drain_camera_packets(&camera_subscribers, &mut manager)?;
+        made_progress |=
+            drain_camera_packets(&camera_subscribers, &mut manager, pipeline_stats.as_mut())?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
+        if let Some(stats) = pipeline_stats.as_mut() {
+            stats.maybe_log(&manager);
+        }
 
         let outcome = manager.dispatch_ready_episodes(&worker_tx)?;
         made_progress |= outcome.changed;
@@ -727,9 +1041,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
                 WorkerEvent::Staged(result) => {
                     episode_ready_publisher.send_copy(EpisodeReady {
                         episode_index: result.episode_index,
-                        staging_dir: FixedString256::new(
-                            &result.staging_dir.to_string_lossy(),
-                        ),
+                        staging_dir: FixedString256::new(&result.staging_dir.to_string_lossy()),
                     })?;
                     made_progress = true;
                 }
@@ -769,7 +1081,10 @@ fn resolve_bfbs_dir(config: &AssemblerRuntimeConfigV2) -> Result<PathBuf, Box<dy
         }
     }
     // Fall back to a `bfbs/` directory next to the staging dir
-    let candidate = Path::new(&config.staging_dir).parent().unwrap_or(Path::new(".")).join("bfbs");
+    let candidate = Path::new(&config.staging_dir)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("bfbs");
     if candidate.is_dir() {
         return Ok(candidate);
     }
@@ -810,10 +1125,8 @@ fn create_episode_ready_publisher(
 
 fn create_backpressure_publisher(
     node: &Node<ipc::Service>,
-) -> Result<
-    iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>,
-    Box<dyn Error>,
-> {
+) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>, Box<dyn Error>>
+{
     let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
     let service = node
         .service_builder(&service_name)
@@ -962,9 +1275,7 @@ fn create_observation_subscribers(
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ObservationSubscriberKind::JointVector15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ObservationSubscriberKind::JointVector15(service.subscriber_builder().create()?)
                 }
             };
             Ok(ObservationSubscriber {
@@ -1007,9 +1318,7 @@ fn create_action_subscribers(
                         .max_subscribers(STATE_MAX_SUBSCRIBERS)
                         .max_nodes(STATE_MAX_NODES)
                         .open_or_create()?;
-                    ActionSubscriberKind::JointMitCommand15(
-                        service.subscriber_builder().create()?,
-                    )
+                    ActionSubscriberKind::JointMitCommand15(service.subscriber_builder().create()?)
                 }
                 RobotCommandKind::ParallelPosition => {
                     let service = node
@@ -1079,6 +1388,7 @@ fn drain_control_events(
 fn drain_camera_packets(
     subscribers: &[CameraSubscriber],
     manager: &mut EpisodeManager,
+    mut stats: Option<&mut AssemblerPipelineStats>,
 ) -> Result<bool, Box<dyn Error>> {
     let mut changed = false;
     for cam in subscribers {
@@ -1086,6 +1396,9 @@ fn drain_camera_packets(
             let Some(sample) = cam.config_subscriber.receive()? else {
                 break;
             };
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.record(&cam.channel_id, sample.user_header(), sample.payload());
+            }
             manager.on_packet(&cam.channel_id, sample.user_header(), sample.payload());
             changed = true;
         }
@@ -1093,6 +1406,9 @@ fn drain_camera_packets(
             let Some(sample) = cam.packet_subscriber.receive()? else {
                 break;
             };
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.record(&cam.channel_id, sample.user_header(), sample.payload());
+            }
             manager.on_packet(&cam.channel_id, sample.user_header(), sample.payload());
             changed = true;
         }

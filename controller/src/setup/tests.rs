@@ -840,6 +840,7 @@ fn known_device_executables_skip_pseudo_and_standalone_eef_by_default() {
             "rollio-device-realsense",
             "rollio-device-v4l2",
             "rollio-device-agx-nero",
+            "rollio-device-coracam",
         ]
     );
     assert!(

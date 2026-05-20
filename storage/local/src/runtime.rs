@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -23,6 +23,7 @@ pub struct RunArgs {
 struct EpisodeReadyRequest {
     episode_index: u32,
     staging_dir: PathBuf,
+    received_at: Instant,
 }
 
 enum WorkerCommand {
@@ -49,7 +50,9 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
         (None, None) => Err("rollio-storage-local requires --config or --config-inline".into()),
-        (Some(_), Some(_)) => Err("rollio-storage-local config flags are mutually exclusive".into()),
+        (Some(_), Some(_)) => {
+            Err("rollio-storage-local config flags are mutually exclusive".into())
+        }
     }
 }
 
@@ -75,7 +78,9 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
             let _ = worker_main(worker_config, command_rx, event_tx);
         })
         .map_err(|error| {
-            io::Error::other(format!("failed to spawn rollio-storage-local worker: {error}"))
+            io::Error::other(format!(
+                "failed to spawn rollio-storage-local worker: {error}"
+            ))
         })?;
 
     let mut shutdown_sent = false;
@@ -112,6 +117,7 @@ pub fn run_with_config(config: StorageRuntimeConfig) -> Result<(), Box<dyn Error
             let request = EpisodeReadyRequest {
                 episode_index: sample.payload().episode_index,
                 staging_dir: PathBuf::from(sample.payload().staging_dir.as_str()),
+                received_at: Instant::now(),
             };
             command_tx.send(WorkerCommand::Store(request))?;
         }
@@ -165,20 +171,42 @@ fn worker_main(
     receiver: mpsc::Receiver<WorkerCommand>,
     events: mpsc::Sender<WorkerEvent>,
 ) -> Result<(), Box<dyn Error>> {
+    let advanced_logs = advanced_pipeline_logs_enabled();
     loop {
         match receiver.recv() {
-            Ok(WorkerCommand::Store(request)) => match store_episode_local(&config, &request) {
-                Ok(output_path) => {
-                    let _ = events.send(WorkerEvent::Stored {
-                        episode_index: request.episode_index,
-                        output_path,
-                    });
+            Ok(WorkerCommand::Store(request)) => {
+                let queue_wait_ms = request.received_at.elapsed().as_secs_f64() * 1000.0;
+                let staging_bytes = if advanced_logs {
+                    directory_size(&request.staging_dir).ok()
+                } else {
+                    None
+                };
+                let started = Instant::now();
+                let result = store_episode_local(&config, &request);
+                if advanced_logs {
+                    log_storage_pipeline(
+                        "rollio-storage-local",
+                        &config,
+                        &request,
+                        staging_bytes,
+                        queue_wait_ms,
+                        started.elapsed(),
+                        &result,
+                    );
                 }
-                Err(error) => {
-                    let _ = events.send(WorkerEvent::Error(error.to_string()));
-                    return Err(error);
+                match result {
+                    Ok(output_path) => {
+                        let _ = events.send(WorkerEvent::Stored {
+                            episode_index: request.episode_index,
+                            output_path,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = events.send(WorkerEvent::Error(error.to_string()));
+                        return Err(error);
+                    }
                 }
-            },
+            }
             Ok(WorkerCommand::Shutdown) | Err(_) => {
                 let _ = events.send(WorkerEvent::ShutdownComplete);
                 return Ok(());
@@ -260,6 +288,66 @@ fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     }
 }
 
+fn directory_size(path: &Path) -> io::Result<u64> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        total = total.saturating_add(directory_size(&entry?.path())?);
+    }
+    Ok(total)
+}
+
+fn log_storage_pipeline(
+    prefix: &str,
+    config: &StorageRuntimeConfig,
+    request: &EpisodeReadyRequest,
+    staging_bytes: Option<u64>,
+    queue_wait_ms: f64,
+    store_elapsed: Duration,
+    result: &Result<PathBuf, Box<dyn Error>>,
+) {
+    let staging_bytes = staging_bytes
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    match result {
+        Ok(output_path) => eprintln!(
+            "{prefix}: storage pipeline process={} episode={} result=ok staging_bytes={} \
+             queue_wait_ms={:.1} store_ms={:.1} output={}",
+            config.process_id,
+            request.episode_index,
+            staging_bytes,
+            queue_wait_ms,
+            store_elapsed.as_secs_f64() * 1000.0,
+            output_path.display(),
+        ),
+        Err(error) => eprintln!(
+            "{prefix}: storage pipeline process={} episode={} result=error staging_bytes={} \
+             queue_wait_ms={:.1} store_ms={:.1} error={}",
+            config.process_id,
+            request.episode_index,
+            staging_bytes,
+            queue_wait_ms,
+            store_elapsed.as_secs_f64() * 1000.0,
+            error,
+        ),
+    }
+}
+
+fn advanced_pipeline_logs_enabled() -> bool {
+    matches!(
+        std::env::var("ROLLIO_ADVANCED_PIPELINE_LOGS").as_deref(),
+        Ok(value)
+            if !value.is_empty()
+                && !matches!(value, "0" | "false" | "FALSE" | "off" | "OFF")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +379,7 @@ mod tests {
         let request = EpisodeReadyRequest {
             episode_index: 7,
             staging_dir: staging_dir.clone(),
+            received_at: Instant::now(),
         };
 
         let output = store_episode_local(&config, &request).expect("store should succeed");
@@ -317,6 +406,7 @@ mod tests {
         let request = EpisodeReadyRequest {
             episode_index: 3,
             staging_dir,
+            received_at: Instant::now(),
         };
         let output = store_episode_local(&config, &request).expect("store should succeed");
         assert!(!output.join("stale.txt").exists(), "stale file removed");
