@@ -219,7 +219,7 @@ fn forward_runtime_env(spec: &mut ChildSpec, config: &ProjectConfig) {
 fn is_cora_device(executable_name: &str) -> bool {
     matches!(
         executable_name,
-        "rollio-device-coracam"
+        "rollio-device-camera-cora"
             | "rollio-device-imu-cora"
             | "rollio-device-tactile-cora"
             | "rollio-device-gripper-cora"

@@ -411,8 +411,8 @@ advanced_pipeline_logs = false
 #
 # [[devices]]
 # name = "cora_cam"
-# executable = "rollio-device-coracam"
-# driver = "coracam"
+# executable = "rollio-device-camera-cora"
+# driver = "camera-cora"
 # id = "cora-head"
 # bus_root = "cora_cam"
 # # DDS knobs (all optional; SDK defaults apply when unset)

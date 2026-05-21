@@ -171,7 +171,7 @@ auto run_probe_test() -> void {
                                      " in output: " + out);
         }
     }
-    std::cerr << "rollio-devices-coracam-tests: probe OK\n";
+    std::cerr << "camera-cora-tests: probe OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ auto run_dry_run_test() -> void {
         throw std::runtime_error("dry-run subset: unexpected channel wiring\noutput: " +
                                  subset_out);
     }
-    std::cerr << "rollio-devices-coracam-tests: dry-run OK\n";
+    std::cerr << "camera-cora-tests: dry-run OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ auto run_annexb_parser_test() -> void {
         throw std::runtime_error("annexb parser: B slice type was not detected");
     }
 
-    std::cerr << "rollio-devices-coracam-tests: annexb parser OK\n";
+    std::cerr << "camera-cora-tests: annexb parser OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +366,7 @@ auto run_au_assembler_test() -> void {
         throw std::runtime_error("au_assembler: delta AU missing start code");
     }
 
-    std::cerr << "rollio-devices-coracam-tests: AU assembler OK\n";
+    std::cerr << "camera-cora-tests: AU assembler OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -475,7 +475,7 @@ auto run_eager_assembler_test() -> void {
         }
     }
 
-    std::cerr << "rollio-devices-coracam-tests: eager assembler OK\n";
+    std::cerr << "camera-cora-tests: eager assembler OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +616,7 @@ auto run_cdr_golden_bytes_test() -> void {
         throw std::runtime_error("golden foxglove compressed video: AU payload mismatch");
     }
 
-    std::cerr << "rollio-devices-coracam-tests: CDR golden bytes OK\n";
+    std::cerr << "camera-cora-tests: CDR golden bytes OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +692,7 @@ auto run_cora_mapping_test() -> void {
         throw std::runtime_error("mapping: duplicate channel_type not rejected");
     }
 
-    std::cerr << "rollio-devices-coracam-tests: cora_mapping parser OK\n";
+    std::cerr << "camera-cora-tests: cora_mapping parser OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -702,7 +702,7 @@ auto run_cora_mapping_test() -> void {
 auto run_device_config_extra_test() -> void {
     const std::string toml =
         "name = \"coracam_righthand\"\n"
-        "executable = \"rollio-device-coracam\"\n"
+        "executable = \"rollio-device-camera-cora\"\n"
         "driver = \"coracam\"\n"
         "id = \"cora-righthand\"\n"
         "bus_root = \"coracam_righthand\"\n"
@@ -724,7 +724,7 @@ auto run_device_config_extra_test() -> void {
         "pixel_format = \"bgr24\"\n";
 
     const auto config = rollio::parse_binary_device_config(toml);
-    if (config.name != "coracam_righthand" || config.driver != "coracam") {
+    if (config.name != "coracam_righthand" || config.driver != "camera-cora") {
         throw std::runtime_error("device_config: root fields mismatch");
     }
     if (!config.dds_domain_id || *config.dds_domain_id != 31U) {
@@ -744,7 +744,7 @@ auto run_device_config_extra_test() -> void {
         throw std::runtime_error("device_config: channel profile after [extra] not parsed");
     }
 
-    std::cerr << "rollio-devices-coracam-tests: device_config [extra] parser OK\n";
+    std::cerr << "camera-cora-tests: device_config [extra] parser OK\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -877,7 +877,7 @@ auto run_runtime_test() -> void {
     ctrl_pub.send_copy(ev).value();
     wait_for_exit(pid, std::chrono::seconds(5));
 
-    std::cerr << "rollio-devices-coracam-tests: runtime OK\n";
+    std::cerr << "camera-cora-tests: runtime OK\n";
 }
 
 }  // namespace
@@ -895,7 +895,7 @@ auto main() -> int {
         run_runtime_test();
         return 0;
     } catch (const std::exception& ex) {
-        std::cerr << "rollio-devices-coracam-tests: FAILED: " << ex.what() << '\n';
+        std::cerr << "camera-cora-tests: FAILED: " << ex.what() << '\n';
         return 1;
     }
 }

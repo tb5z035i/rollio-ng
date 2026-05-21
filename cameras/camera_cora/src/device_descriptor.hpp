@@ -8,7 +8,7 @@
 namespace rollio::coracam {
 
 // One descriptor per physical Coracam mount point. A single
-// `rollio-device-coracam` executable exposes all descriptors through
+// `rollio-device-camera-cora` executable exposes all descriptors through
 // probe/query and selects one at run time from BinaryDeviceConfig.id.
 // Topic name suffix conventions are documented in
 // signal_other/analysis/rollio-device/cora-topic-to-rollio-bus-device方案.zh.md.
@@ -51,8 +51,8 @@ inline constexpr const char* kH264PacketDdsTypeName = "foxglove_msgs::msg::dds_:
 // DDS domain id used by the cora middleware (default ROS2 domain).
 inline constexpr uint32_t kCoraDdsDomainId = 0;
 // Single executable + single driver name for all three physical mounts.
-inline constexpr const char* kCoracamProgramName = "rollio-device-coracam";
-inline constexpr const char* kCoracamDriver = "coracam";
+inline constexpr const char* kCoracamProgramName = "rollio-device-camera-cora";
+inline constexpr const char* kCoracamDriver = "camera-cora";
 
 inline constexpr DeviceDescriptor kHeadDescriptor{
     "cora-head",

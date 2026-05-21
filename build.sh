@@ -60,6 +60,9 @@ CORE_BINS=(
     rollio-device-pseudo
     rollio-device-airbot-play
     rollio-device-v4l2
+    rollio-device-imu-cora
+    rollio-device-tactile-cora
+    rollio-device-gripper-cora
     rollio-bus-tap
     rollio-test-publisher
 )
@@ -78,7 +81,7 @@ CORE_BINS=(
 # discoverable by the controller (see cameras/README.md).
 CAMERA_BINS=(
     "realsense/rollio-device-realsense"
-    "rollio-devices-coracam/rollio-device-coracam"
+    "camera_cora/rollio-device-camera-cora"
 )
 
 # On arm64, include the Horizon X5 VPU encoder binary.
@@ -324,7 +327,7 @@ stage_cora_sdk_runtime() {
     # x86_64 libs.
     local root="$1"
     [[ "$DEB_ARCH" == "arm64" ]] || return 0
-    [[ -x "$root/usr/bin/rollio-device-coracam" ]] || return 0
+    [[ -x "$root/usr/bin/rollio-device-camera-cora" ]] || return 0
 
     local src="$CORA_SDK_ROOT"
     [[ -d "$src/lib" ]] || die "missing Cora SDK lib dir: $src/lib -- run \`make prepare-cora-sdk\`"

@@ -37,7 +37,7 @@ set(IMPORT_DEPTH_CAM_FW OFF CACHE BOOL "" FORCE)
 set(ENABLE_CCACHE OFF CACHE BOOL "" FORCE)
 set(ROLLIO_CORA_SDK_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../prebuild/cora-sdk_1.2.0_20260517124657_linux_aarch64/opt/cora"
-    CACHE PATH "Cora SDK root used by rollio-devices-coracam")
+    CACHE PATH "Cora SDK root used by camera-cora")
 # librealsense's CMake/unix_config.cmake unconditionally appends `-Werror`,
 # `-pedantic`, `-Wno-deprecated-builtins`, etc. to CMAKE_CXX_FLAGS via plain
 # `set()` (no PARENT_SCOPE), so the flags leak into every subdir added
@@ -84,5 +84,5 @@ if(EXISTS "${ROLLIO_CORA_SDK_ROOT}/lib/cmake/cora/coraConfig.cmake")
 endif()
 
 if(ROLLIO_BUILD_CORACAM)
-    add_subdirectory(rollio-devices-coracam)
+    add_subdirectory(camera_cora)
 endif()
