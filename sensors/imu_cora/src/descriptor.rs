@@ -5,13 +5,15 @@
 //! encodes the full topic (slashes → `__`) so `query --json <id>` can
 //! recover the original wire name without a separate cache.
 
+use rollio_bus::cora_discovery::dds_leaf_type;
+
 pub const DEVICE_TYPE: &str = "sensor";
 
-/// Match Fast-DDS / ROS2 type-name strings for `sensor_msgs/Imu`.
-/// FastDDS reports the IDL-derived name (e.g. `sensor_msgs::msg::dds_::Imu_`),
-/// substring match keeps us robust to minor variations.
+/// Exact-match against the Fast-DDS leaf type. `sensor_msgs::msg::dds_::Imu_`
+/// reduces to `Imu`; subtypes like `ImuStamped` / `ImuCalibration` are
+/// rejected on purpose.
 pub fn is_supported_type(type_name: &str) -> bool {
-    type_name.contains("Imu")
+    dds_leaf_type(type_name) == "Imu"
 }
 
 /// id = topic stripped of leading `/`, with `/` replaced by `__`.

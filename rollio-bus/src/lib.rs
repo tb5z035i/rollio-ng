@@ -1,3 +1,5 @@
+pub mod cora_discovery;
+
 pub const CONTROL_EVENTS_SERVICE: &str = "control/events";
 pub const EPISODE_COMMAND_SERVICE: &str = "control/episode-command";
 pub const EPISODE_STATUS_SERVICE: &str = "control/episode-status";

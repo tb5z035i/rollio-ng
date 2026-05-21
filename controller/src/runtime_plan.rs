@@ -226,17 +226,16 @@ fn is_cora_device(executable_name: &str) -> bool {
     )
 }
 
-/// Pick the DDS domain id forwarded to a cora driver: the controller's
-/// own `ROLLIO_DDS_DOMAIN_ID` env wins (operator-level override), then
-/// the per-device `dds_domain_id` in config. Returns `None` so the
-/// driver falls back to its SDK default when neither is set.
+/// Pick the DDS domain id forwarded to a cora driver: explicit
+/// per-device override first, then the shared resolver
+/// (`ROLLIO_DDS_DOMAIN_ID` → `/opt/robot_app/configs/framework_config.json`
+/// → `ROS_DOMAIN_ID` → 0). Returns the resolved value unconditionally so
+/// every cora child sees the same domain as the rest of the robot stack.
 fn resolve_cora_dds_domain(device: &BinaryDeviceConfig) -> Option<u32> {
-    if let Ok(raw) = std::env::var("ROLLIO_DDS_DOMAIN_ID") {
-        if let Ok(parsed) = raw.trim().parse::<u32>() {
-            return Some(parsed);
-        }
+    if let Some(domain) = device.dds_domain_id {
+        return Some(domain);
     }
-    device.dds_domain_id
+    u32::try_from(rollio_bus::cora_discovery::resolve_dds_domain_id()).ok()
 }
 
 pub(crate) fn build_visualizer_spec(

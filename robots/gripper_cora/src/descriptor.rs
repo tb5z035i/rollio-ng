@@ -1,10 +1,13 @@
 //! Live-discovery helpers shared by `probe` and `query` for gripper-cora.
 
+use rollio_bus::cora_discovery::dds_leaf_type;
+
 pub const DEVICE_TYPE: &str = "robot";
 
-/// Match Fast-DDS / ROS2 type-name strings for `sensor_msgs/JointState`.
+/// Exact-match against the Fast-DDS leaf type. `sensor_msgs::msg::dds_::JointState_`
+/// reduces to `JointState`.
 pub fn is_supported_type(type_name: &str) -> bool {
-    type_name.contains("JointState")
+    dds_leaf_type(type_name) == "JointState"
 }
 
 pub fn id_from_topic(topic: &str) -> String {

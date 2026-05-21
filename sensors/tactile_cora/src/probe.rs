@@ -1,22 +1,30 @@
 //! `probe --json` performs a live Fast-DDS topic sweep and reports one
 //! entry per discovered `sensor_msgs/PointCloud2` publisher.
 
+use rollio_bus::cora_discovery::{
+    is_external_topic, resolve_dds_domain_id, DEFAULT_PROBE_DURATION,
+};
 use serde_json::json;
 
 use crate::{cora, descriptor, driver_name};
 
-const DEFAULT_PROBE_MS: u32 = 800;
-
 pub fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let wait_ms = std::env::var("ROLLIO_CORA_PROBE_MS")
+    let wait_ms: u32 = std::env::var("ROLLIO_CORA_PROBE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PROBE_MS);
-    let domain_id = std::env::var("ROLLIO_CORA_DOMAIN_ID")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0i32);
+        .unwrap_or_else(|| DEFAULT_PROBE_DURATION.as_millis() as u32);
+    let domain_id = resolve_dds_domain_id();
     let participant_name = format!("rollio_probe_{}_{}", driver_name(), std::process::id());
+
+    if std::env::var("ROLLIO_CORA_PROBE_DEBUG").is_ok() {
+        eprintln!(
+            "{}: probing DDS domain {} (wait {} ms, participant {})",
+            driver_name(),
+            domain_id,
+            wait_ms,
+            participant_name,
+        );
+    }
 
     let topics = match cora::discover_topics(domain_id, &participant_name, wait_ms) {
         Ok(t) => t,
@@ -28,7 +36,7 @@ pub fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut entries: Vec<serde_json::Value> = topics
         .into_iter()
-        .filter(|(_, ty)| descriptor::is_supported_type(ty))
+        .filter(|(topic, ty)| is_external_topic(topic) && descriptor::is_supported_type(ty))
         .map(|(topic, _)| {
             json!({
                 "id": descriptor::id_from_topic(&topic),

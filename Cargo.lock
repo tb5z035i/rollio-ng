@@ -2340,6 +2340,10 @@ dependencies = [
 [[package]]
 name = "rollio-bus"
 version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "rollio-bus-tap"

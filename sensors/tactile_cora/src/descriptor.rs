@@ -1,10 +1,13 @@
 //! Live-discovery helpers shared by `probe` and `query` for tactile-cora.
 
+use rollio_bus::cora_discovery::dds_leaf_type;
+
 pub const DEVICE_TYPE: &str = "sensor";
 
-/// Match Fast-DDS / ROS2 type-name strings for `sensor_msgs/PointCloud2`.
+/// Exact-match against the Fast-DDS leaf type. `sensor_msgs::msg::dds_::PointCloud2_`
+/// reduces to `PointCloud2`.
 pub fn is_supported_type(type_name: &str) -> bool {
-    type_name.contains("PointCloud2")
+    dds_leaf_type(type_name) == "PointCloud2"
 }
 
 pub fn id_from_topic(topic: &str) -> String {
