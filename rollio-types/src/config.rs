@@ -98,6 +98,51 @@ pub enum DeviceType {
     Camera,
     #[default]
     Robot,
+    Sensor,
+}
+
+/// Sample kinds a sensor channel can publish.
+///
+/// Each variant has a fixed memory layout consumers can rely on without
+/// re-reading the schema:
+/// - `ImuAccelGyro` is a 6-float packet `[ax, ay, az, gx, gy, gz]`.
+///   Accel + gyro are combined so consumers cannot observe cross-topic
+///   skew between halves of the same IMU sample. shape = `[6]`.
+/// - `TactilePointCloud2` is `N_points × 6` floats per sample, each
+///   point being `[x, y, z, fx, fy, fz]` (3D position + 3D contact
+///   force). `N_points` is fixed per channel and reported by the driver
+///   via `query --json` so the assembler can pre-allocate Parquet
+///   columns. shape = `[N_points, 6]`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorStateKind {
+    ImuAccelGyro,
+    TactilePointCloud2,
+}
+
+impl SensorStateKind {
+    /// Stable string segment used in IPC topic names (and elsewhere we
+    /// need a canonical lowercase identifier).
+    pub fn topic_suffix(self) -> &'static str {
+        match self {
+            Self::ImuAccelGyro => "imu_accel_gyro",
+            Self::TactilePointCloud2 => "tactile_point_cloud2",
+        }
+    }
+
+    /// Number of scalar values per sample, when fixed by the kind alone.
+    /// `None` for variable-shape kinds (tactile clouds) where the
+    /// driver reports the shape per channel.
+    pub fn fixed_value_len(self) -> Option<u32> {
+        match self {
+            Self::ImuAccelGyro => Some(6),
+            Self::TactilePointCloud2 => None,
+        }
+    }
+
+    pub fn is_variable_shape(self) -> bool {
+        self.fixed_value_len().is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1765,6 +1810,20 @@ pub struct DeviceChannelConfigV2 {
     /// `query --json`. Refreshed on every controller startup; not persisted.
     #[serde(skip)]
     pub supported_commands: Vec<RobotCommandKind>,
+    /// Sensor sample kinds this channel publishes. Only meaningful when
+    /// `kind = "sensor"`; rejected by validation otherwise. Robot
+    /// channels keep using `publish_states`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publish_sensors: Vec<SensorStateKind>,
+    /// Sample rate for `kind = "sensor"` channels. Required (positive,
+    /// finite) when the channel is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<f64>,
+    /// Shape per published sensor kind. The driver reports this in
+    /// `query --json`; not persisted because operators never hand-edit
+    /// it and a stale shape silently corrupts downstream Parquet.
+    #[serde(skip)]
+    pub sensor_shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
     #[serde(flatten, default)]
     pub extra: toml::Table,
 }
@@ -1877,6 +1936,66 @@ impl DeviceChannelConfigV2 {
                 self.command_defaults
                     .validate(device, &self.channel_type, dof as usize)?;
             }
+            DeviceType::Sensor => {
+                if self.mode.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept mode",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.dof.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept dof",
+                        device.name, self.channel_type
+                    )));
+                }
+                if self.control_frequency_hz.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept control_frequency_hz",
+                        device.name, self.channel_type
+                    )));
+                }
+                if !self.publish_states.is_empty() || !self.recorded_states.is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels use publish_sensors, not publish_states/recorded_states",
+                        device.name, self.channel_type
+                    )));
+                }
+                if let Some(profile) = &self.profile {
+                    return Err(ConfigError::Validation(format!(
+                        "device \"{}\" channel \"{}\": sensor channels do not accept profile ({:?})",
+                        device.name, self.channel_type, profile
+                    )));
+                }
+                if self.enabled {
+                    if self.publish_sensors.is_empty() {
+                        return Err(ConfigError::Validation(format!(
+                            "device \"{}\" channel \"{}\": enabled sensor channels require publish_sensors",
+                            device.name, self.channel_type
+                        )));
+                    }
+                    let rate = self.sample_rate_hz.ok_or_else(|| {
+                        ConfigError::Validation(format!(
+                            "device \"{}\" channel \"{}\": enabled sensor channels require sample_rate_hz",
+                            device.name, self.channel_type
+                        ))
+                    })?;
+                    if !rate.is_finite() || rate <= 0.0 {
+                        return Err(ConfigError::Validation(format!(
+                            "device \"{}\" channel \"{}\": sample_rate_hz must be a positive finite number",
+                            device.name, self.channel_type
+                        )));
+                    }
+                }
+            }
+        }
+        if !matches!(self.kind, DeviceType::Sensor)
+            && (!self.publish_sensors.is_empty() || self.sample_rate_hz.is_some())
+        {
+            return Err(ConfigError::Validation(format!(
+                "device \"{}\" channel \"{}\": publish_sensors and sample_rate_hz are sensor-only fields",
+                device.name, self.channel_type
+            )));
         }
         Ok(())
     }
@@ -3136,6 +3255,18 @@ pub struct DeviceQueryChannel {
     /// limit-aware bars and (later) the safety layer can clip targets.
     #[serde(default)]
     pub value_limits: Vec<StateValueLimitsEntry>,
+    /// Sensor sample kinds this channel can publish. Only populated for
+    /// `kind = "sensor"` driver entries.
+    #[serde(default)]
+    pub supported_sensor_kinds: Vec<SensorStateKind>,
+    /// Driver-suggested sample period for sensor channels (`None` for
+    /// camera/robot). Only populated for `kind = "sensor"`.
+    #[serde(default)]
+    pub default_sample_rate_hz: Option<f64>,
+    /// Per-kind shape hints reported by the driver (`[N, 6]` for a
+    /// tactile cloud, etc.). Only populated for `kind = "sensor"`.
+    #[serde(default)]
+    pub sensor_shape_hints: std::collections::BTreeMap<SensorStateKind, Vec<u32>>,
     #[serde(default)]
     pub optional_info: toml::Table,
 }

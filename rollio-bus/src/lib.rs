@@ -125,6 +125,27 @@ pub fn channel_command_service_name(
     format!("{bus_root}/{channel_type}/commands/{command_kind}")
 }
 
+/// Per-sensor sample topic. Dynamic-payload `publish_subscribe::<[u8]>()`
+/// service carrying a `SensorFrameHeader` user header. Path is
+/// deliberately `samples/{kind}` (not `states/{kind}`) so consumers
+/// (visualizer, assembler) can route sensor and robot-state traffic
+/// independently.
+pub fn channel_sample_service_name(
+    bus_root: &str,
+    channel_type: &str,
+    sensor_kind: &str,
+) -> String {
+    format!("{bus_root}/{channel_type}/samples/{sensor_kind}")
+}
+
+/// Ring depth for sensor sample services. Sensors run at lower rates
+/// than robot state (≤ a few hundred Hz) but produce variable payload
+/// sizes (tactile clouds), so a moderate ring is enough.
+pub const SAMPLE_BUFFER: usize = 256;
+pub const SAMPLE_MAX_PUBLISHERS: usize = 4;
+pub const SAMPLE_MAX_SUBSCRIBERS: usize = 4;
+pub const SAMPLE_MAX_NODES: usize = 8;
+
 // ---------------------------------------------------------------------------
 // Encoded packet topics
 // ---------------------------------------------------------------------------
@@ -207,6 +228,18 @@ mod tests {
         assert_eq!(
             preview_control_service_name("cam1", "color"),
             "cam1/color/preview-control"
+        );
+    }
+
+    #[test]
+    fn sensor_sample_topic_uses_samples_segment() {
+        assert_eq!(
+            channel_sample_service_name("imu1", "main", "imu_accel_gyro"),
+            "imu1/main/samples/imu_accel_gyro"
+        );
+        assert_eq!(
+            channel_sample_service_name("tac1", "left", "tactile_point_cloud2"),
+            "tac1/left/samples/tactile_point_cloud2"
         );
     }
 }

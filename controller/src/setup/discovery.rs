@@ -5,8 +5,8 @@ use super::state::{AvailableDevice, CameraProfile, DiscoveredChannelMeta, Discov
 use crate::discovery::{discover_probe_entries, run_driver_json, DiscoveryOptions};
 use crate::runtime_paths::{default_device_executable_name, resolve_registered_program};
 use rollio_types::config::{
-    BinaryDeviceConfig, CameraChannelProfile, CollectionMode, DeviceChannelConfigV2, DeviceType,
-    ProjectConfig, RobotMode, RobotStateKind,
+    BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, CollectionMode,
+    DeviceChannelConfigV2, DeviceType, ProjectConfig, RobotMode, RobotStateKind,
 };
 use rollio_types::messages::PixelFormat;
 use serde_json::Value;
@@ -110,6 +110,9 @@ pub(super) fn build_channel_config_from_meta(
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
                 supported_commands: meta.supported_commands.clone(),
+                publish_sensors: Vec::new(),
+                sample_rate_hz: None,
+                sensor_shape_hints: Default::default(),
                 extra: toml::Table::new(),
             }
         }
@@ -138,9 +141,37 @@ pub(super) fn build_channel_config_from_meta(
                 value_limits: meta.value_limits.clone(),
                 direct_joint_compatibility: meta.direct_joint_compatibility.clone(),
                 supported_commands: meta.supported_commands.clone(),
+                publish_sensors: Vec::new(),
+                sample_rate_hz: None,
+                sensor_shape_hints: Default::default(),
                 extra: toml::Table::new(),
             }
         }
+        DeviceType::Sensor => DeviceChannelConfigV2 {
+            channel_type: channel_type.to_owned(),
+            kind: DeviceType::Sensor,
+            enabled: true,
+            name: channel_name,
+            channel_label: meta.channel_label.clone(),
+            mode: None,
+            dof: None,
+            publish_states: Vec::new(),
+            recorded_states: Vec::new(),
+            control_frequency_hz: None,
+            profile: None,
+            preview_enabled: false,
+            record_enabled: true,
+            record: None,
+            preview_settings: None,
+            command_defaults: ChannelCommandDefaults::default(),
+            value_limits: Vec::new(),
+            direct_joint_compatibility: Default::default(),
+            supported_commands: Vec::new(),
+            publish_sensors: meta.supported_sensor_kinds.clone(),
+            sample_rate_hz: meta.default_sample_rate_hz,
+            sensor_shape_hints: meta.sensor_shape_hints.clone(),
+            extra: toml::Table::new(),
+        },
     }
 }
 
@@ -774,6 +805,7 @@ pub(super) fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, Disco
                 .and_then(|s| match s.as_str() {
                     "camera" => Some(DeviceType::Camera),
                     "robot" => Some(DeviceType::Robot),
+                    "sensor" => Some(DeviceType::Sensor),
                     _ => None,
                 })
                 .unwrap_or(DeviceType::Robot);
@@ -803,6 +835,11 @@ pub(super) fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, Disco
                 crate::device_query::parse_query_direct_joint_compatibility(
                     channel.get("direct_joint_compatibility"),
                 );
+            let supported_sensor_kinds =
+                parse_query_supported_sensor_kinds(channel.get("supported_sensor_kinds"));
+            let default_sample_rate_hz = value_as_f64(channel.get("default_sample_rate_hz"));
+            let sensor_shape_hints =
+                parse_query_sensor_shape_hints(channel.get("sensor_shape_hints"));
             Some((
                 channel_type,
                 DiscoveredChannelMeta {
@@ -818,6 +855,9 @@ pub(super) fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, Disco
                     supported_states,
                     supported_commands,
                     direct_joint_compatibility,
+                    supported_sensor_kinds,
+                    default_sample_rate_hz,
+                    sensor_shape_hints,
                 },
             ))
         })
@@ -848,6 +888,48 @@ pub(super) fn parse_channel_camera_profiles(channel: &Value) -> Vec<CameraProfil
                 stream: stream.clone(),
                 channel: None,
             })
+        })
+        .collect()
+}
+
+fn parse_sensor_kind_name(name: &str) -> Option<rollio_types::config::SensorStateKind> {
+    use rollio_types::config::SensorStateKind;
+    match name {
+        "imu_accel_gyro" => Some(SensorStateKind::ImuAccelGyro),
+        "tactile_point_cloud2" => Some(SensorStateKind::TactilePointCloud2),
+        _ => None,
+    }
+}
+
+pub(super) fn parse_query_supported_sensor_kinds(
+    value: Option<&Value>,
+) -> Vec<rollio_types::config::SensorStateKind> {
+    value
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(parse_sensor_kind_name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn parse_query_sensor_shape_hints(
+    value: Option<&Value>,
+) -> BTreeMap<rollio_types::config::SensorStateKind, Vec<u32>> {
+    let Some(obj) = value.and_then(|v| v.as_object()) else {
+        return BTreeMap::new();
+    };
+    obj.iter()
+        .filter_map(|(key, dims_value)| {
+            let kind = parse_sensor_kind_name(key)?;
+            let dims = dims_value.as_array()?;
+            let shape: Vec<u32> = dims.iter().filter_map(|d| value_as_u32(Some(d))).collect();
+            if shape.is_empty() {
+                None
+            } else {
+                Some((kind, shape))
+            }
         })
         .collect()
 }
@@ -1061,6 +1143,7 @@ pub(super) fn available_device_key_from_binary(device: &BinaryDeviceConfig) -> S
     let kind = match ch.kind {
         DeviceType::Camera => "camera",
         DeviceType::Robot => "robot",
+        DeviceType::Sensor => "sensor",
     };
     format!(
         "{kind}|{}|{}|{}|-",

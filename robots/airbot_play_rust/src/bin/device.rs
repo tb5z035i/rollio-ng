@@ -377,6 +377,9 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
             },
             defaults: ChannelCommandDefaults::default(),
             value_limits: arm_value_limits(),
+            supported_sensor_kinds: Vec::new(),
+            default_sample_rate_hz: None,
+            sensor_shape_hints: Default::default(),
             optional_info: Default::default(),
         }];
         let mounted = instance
@@ -466,6 +469,9 @@ async fn probe_devices(timeout: Duration) -> Result<Vec<DeviceQueryDevice>, Box<
                 direct_joint_compatibility,
                 defaults,
                 value_limits: eef_value_limits(),
+                supported_sensor_kinds: Vec::new(),
+                default_sample_rate_hz: None,
+                sensor_shape_hints: Default::default(),
                 optional_info: Default::default(),
             });
         }

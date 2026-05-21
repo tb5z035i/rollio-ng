@@ -135,6 +135,17 @@ pub(super) struct DiscoveredChannelMeta {
     /// validation can consult the schema instead of any vendor table.
     #[serde(default)]
     pub(super) direct_joint_compatibility: rollio_types::config::DirectJointCompatibility,
+    /// Sensor sample kinds this channel publishes. Empty for camera/robot.
+    #[serde(default)]
+    pub(super) supported_sensor_kinds: Vec<rollio_types::config::SensorStateKind>,
+    /// Driver-suggested sample period for sensor channels (`None` for
+    /// camera/robot).
+    #[serde(default)]
+    pub(super) default_sample_rate_hz: Option<f64>,
+    /// Per-kind shape hints reported by the driver for sensor channels.
+    #[serde(default)]
+    pub(super) sensor_shape_hints:
+        std::collections::BTreeMap<rollio_types::config::SensorStateKind, Vec<u32>>,
 }
 
 pub(super) fn default_channel_kind() -> DeviceType {

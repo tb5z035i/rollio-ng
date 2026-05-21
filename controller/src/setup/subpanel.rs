@@ -176,6 +176,9 @@ impl SetupSession {
             value_limits: Vec::new(),
             direct_joint_compatibility: DirectJointCompatibility::default(),
             supported_commands: Vec::new(),
+            publish_sensors: Vec::new(),
+            sample_rate_hz: None,
+            sensor_shape_hints: Default::default(),
             extra: toml::Table::new(),
         };
         let mut extra = toml::Table::new();
@@ -252,6 +255,9 @@ impl SetupSession {
             value_limits: Vec::new(),
             direct_joint_compatibility: DirectJointCompatibility::default(),
             supported_commands: Vec::new(),
+            publish_sensors: Vec::new(),
+            sample_rate_hz: None,
+            sensor_shape_hints: Default::default(),
             extra: toml::Table::new(),
         };
         let mut extra = toml::Table::new();
@@ -326,6 +332,9 @@ impl SetupSession {
             value_limits: Vec::new(),
             direct_joint_compatibility: DirectJointCompatibility::default(),
             supported_commands: Vec::new(),
+            publish_sensors: Vec::new(),
+            sample_rate_hz: None,
+            sensor_shape_hints: Default::default(),
             extra: toml::Table::new(),
         };
         let device = BinaryDeviceConfig {
@@ -464,6 +473,7 @@ impl SetupSession {
         match kind {
             DeviceType::Camera => self.cycle_device_profile(name, delta),
             DeviceType::Robot => self.cycle_robot_mode(name, delta),
+            DeviceType::Sensor => Ok(false),
         }
     }
 
