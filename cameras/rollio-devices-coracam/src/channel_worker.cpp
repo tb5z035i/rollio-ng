@@ -72,6 +72,7 @@ auto positive_source_age_us(uint64_t now_us, uint64_t source_ts_us) -> uint64_t 
 struct PublishResult {
     bool ok{false};
     uint64_t elapsed_us{0};
+    uint64_t copy_us{0};  // write_from_slice duration only
 };
 
 struct MetricStats {
@@ -107,6 +108,11 @@ struct PipelineWindowStats {
     MetricStats callback_to_publish_ms;
     MetricStats publish_ms;
     MetricStats raw_convert_ms;
+    // Advanced-only metrics (only populated when advanced_pipeline_logs=true).
+    MetricStats unread_count;       // reader.getUnreadCount() sampled before each receive
+    MetricStats take_sample_ms;     // reader.receive() duration for non-empty samples
+    MetricStats validation_ms;      // payload validation (start-code + sps/pps [+ slice scan])
+    MetricStats publish_copy_ms;    // write_from_slice copy duration within publish_frame
     uint64_t h264_i_frames{0};
     uint64_t h264_p_frames{0};
     uint64_t h264_b_frames{0};
@@ -255,6 +261,16 @@ auto log_pipeline_status(const std::string& prog, const ChannelStatus& status,
         << " max_callback_to_publish_ms="
         << static_cast<double>(status.max_callback_to_publish_us) / 1000.0
         << " max_publish_ms=" << static_cast<double>(status.max_publish_us) / 1000.0;
+    if (window.unread_count.count > 0U) {
+        out << " " << metric_summary("unread_count", window.unread_count)
+            << " " << metric_summary("take_sample_ms", window.take_sample_ms);
+    }
+    if (window.validation_ms.count > 0U) {
+        out << " " << metric_summary("validation_ms", window.validation_ms);
+    }
+    if (window.publish_copy_ms.count > 0U) {
+        out << " " << metric_summary("publish_copy_ms", window.publish_copy_ms);
+    }
     std::cerr << out.str() << '\n';
 }
 
@@ -481,9 +497,13 @@ auto publish_frame(iox2::Publisher<iox2::ServiceType::Ipc, iox2::bb::Slice<uint8
     header.frame_index = frame_index;
 
     auto frame_slice = iox2::bb::ImmutableSlice<uint8_t>(payload_ptr, payload_len);
+    const auto copy_start = SteadyClock::now();
     auto initialized = sample.write_from_slice(frame_slice);
+    const auto copy_end = SteadyClock::now();
     send(std::move(initialized)).value();
-    return PublishResult{true, steady_elapsed_us(publish_start, SteadyClock::now())};
+    const auto copy_us = steady_elapsed_us(copy_start, copy_end);
+    const auto total_us = steady_elapsed_us(publish_start, SteadyClock::now());
+    return PublishResult{true, total_us, copy_us};
 }
 
 // Update the idle_seconds counter when no sample arrived during the last
@@ -592,6 +612,12 @@ void ChannelWorker::worker_loop_cora_h264() {
         uint64_t frame_index = 0;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
+            // Advanced: sample reader queue depth before blocking receive so
+            // unread_count > 0 indicates the reader is behind the producer.
+            uint64_t pre_receive_unread = 0;
+            if (advanced_logs) {
+                pre_receive_unread = reader.getUnreadCount();
+            }
             const auto receive_started = SteadyClock::now();
             auto msg = reader.receive(200);
             const auto receive_finished = SteadyClock::now();
@@ -603,6 +629,11 @@ void ChannelWorker::worker_loop_cora_h264() {
                 continue;
             }
             window_stats.dds_wait_ms.observe(steady_elapsed_ms(receive_started, receive_finished));
+            if (advanced_logs) {
+                window_stats.unread_count.observe(static_cast<double>(pre_receive_unread));
+                window_stats.take_sample_ms.observe(
+                    steady_elapsed_ms(receive_started, receive_finished));
+            }
             if (have_last_arrival) {
                 window_stats.recv_gap_ms.observe(steady_elapsed_ms(last_arrival, receive_finished));
             }
@@ -628,6 +659,11 @@ void ChannelWorker::worker_loop_cora_h264() {
                 status_.frames_dropped += 1;
                 continue;
             }
+
+            // Validation: start-code check + SPS/PPS/IDR scan.  When
+            // advanced_logs is on, also run the full slice-type scan and
+            // time the whole block.
+            const auto validation_started = SteadyClock::now();
             if (!has_annexb_start_code(data.data(), data.size())) {
                 std::cerr << prog << ": missing Annex-B start code, dropping\n";
                 status_.frames_dropped += 1;
@@ -645,17 +681,21 @@ void ChannelWorker::worker_loop_cora_h264() {
 
             bool has_sps = false, has_pps = false, has_idr = false;
             scan_sps_pps(data.data(), data.size(), has_sps, has_pps, has_idr);
-            if (advanced_logs || !dump_dir.empty()) {
+            if (!dump_dir.empty()) {
                 const auto slice_stats = scan_h264_slice_types(data.data(), data.size());
-                const char picture_type = update_h264_type_stats(status_, window_stats, slice_stats);
-                if (!dump_dir.empty()) {
-                    append_h264_dump(dump_dir, cfg_.channel_type, data);
-                    log_h264_sample_debug(cfg_.channel_type, frame_index, data, has_sps, has_pps,
-                                          has_idr, picture_type, slice_stats);
+                if (advanced_logs) {
+                    window_stats.validation_ms.observe(
+                        steady_elapsed_ms(validation_started, SteadyClock::now()));
                 }
-            } else if (has_idr) {
-                ++status_.h264_idr_frames;
-                ++window_stats.h264_idr_frames;
+                const char picture_type = update_h264_type_stats(status_, window_stats, slice_stats);
+                append_h264_dump(dump_dir, cfg_.channel_type, data);
+                log_h264_sample_debug(cfg_.channel_type, frame_index, data, has_sps, has_pps,
+                                      has_idr, picture_type, slice_stats);
+            } else {
+                if (has_idr) {
+                    ++status_.h264_idr_frames;
+                    ++window_stats.h264_idr_frames;
+                }
             }
 
             if (has_idr) {
@@ -716,6 +756,10 @@ void ChannelWorker::worker_loop_cora_h264() {
             status_.max_publish_us = std::max(status_.max_publish_us, publish_result.elapsed_us);
             window_stats.publish_ms.observe(static_cast<double>(publish_result.elapsed_us) /
                                             1000.0);
+            if (advanced_logs && publish_result.ok) {
+                window_stats.publish_copy_ms.observe(
+                    static_cast<double>(publish_result.copy_us) / 1000.0);
+            }
             const auto callback_to_publish_us =
                 steady_elapsed_us(callback_started, SteadyClock::now());
             status_.max_callback_to_publish_us =
@@ -805,6 +849,11 @@ void ChannelWorker::worker_loop_cora_raw() {
         uint64_t frame_index = 0;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
+            // Advanced: sample reader queue depth before blocking receive.
+            uint64_t pre_receive_unread = 0;
+            if (advanced_logs) {
+                pre_receive_unread = reader.getUnreadCount();
+            }
             const auto receive_started = SteadyClock::now();
             auto msg = reader.receive(200);
             const auto receive_finished = SteadyClock::now();
@@ -816,6 +865,11 @@ void ChannelWorker::worker_loop_cora_raw() {
                 continue;
             }
             window_stats.dds_wait_ms.observe(steady_elapsed_ms(receive_started, receive_finished));
+            if (advanced_logs) {
+                window_stats.unread_count.observe(static_cast<double>(pre_receive_unread));
+                window_stats.take_sample_ms.observe(
+                    steady_elapsed_ms(receive_started, receive_finished));
+            }
             if (have_last_arrival) {
                 window_stats.recv_gap_ms.observe(steady_elapsed_ms(last_arrival, receive_finished));
             }
@@ -852,6 +906,8 @@ void ChannelWorker::worker_loop_cora_raw() {
                 continue;
             }
 
+            // Advanced: time the encoding/format validation block.
+            const auto validation_started = advanced_logs ? SteadyClock::now() : SteadyClock::time_point{};
             if (!cfg_.raw_expected_encoding.empty() && !encoding.empty() &&
                 encoding != cfg_.raw_expected_encoding) {
                 std::cerr << prog << ": raw encoding mismatch '" << encoding << "' vs expected '"
@@ -929,6 +985,10 @@ void ChannelWorker::worker_loop_cora_raw() {
                 status_.frames_dropped += 1;
                 continue;
             }
+            if (advanced_logs) {
+                window_stats.validation_ms.observe(
+                    steady_elapsed_ms(validation_started, SteadyClock::now()));
+            }
 
             uint64_t ts_us = 0;
             const auto& stamp = img.header().stamp();
@@ -973,6 +1033,10 @@ void ChannelWorker::worker_loop_cora_raw() {
             status_.max_publish_us = std::max(status_.max_publish_us, publish_result.elapsed_us);
             window_stats.publish_ms.observe(static_cast<double>(publish_result.elapsed_us) /
                                             1000.0);
+            if (advanced_logs && publish_result.ok) {
+                window_stats.publish_copy_ms.observe(
+                    static_cast<double>(publish_result.copy_us) / 1000.0);
+            }
             const auto callback_to_publish_us =
                 steady_elapsed_us(callback_started, SteadyClock::now());
             status_.max_callback_to_publish_us =

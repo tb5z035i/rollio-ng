@@ -12,6 +12,7 @@ export function DebugPanel({ snapshot, streamInfo }: DebugPanelProps) {
     `Layout: ${gaugeValue(snapshot, "ui.layout")} | Cameras: ${gaugeValue(snapshot, "ui.camera_count")} | Robots: ${gaugeValue(snapshot, "ui.robot_count")}`,
     `WS: ${gaugeValue(snapshot, "ws.connected")} | Stream info: ${gaugeValue(snapshot, "ws.stream_info_status")} | Episode: ${gaugeValue(snapshot, "ws.episode_status")}`,
     `Preview path: ${formatPreviewPath(streamInfo)} | target: ${gaugeValue(snapshot, "ui.preview_target")} | Active: ${gaugeValue(snapshot, "ui.preview_active")} | Active WS: ${gaugeValue(snapshot, "ws.active_preview_size")}`,
+    `Decoder: hw=${gaugeValue(snapshot, "ui.video_decoder_hw")} | reset>${gaugeValue(snapshot, "ui.video_decode_reset_threshold_ms")}ms | resets=${gaugeValue(snapshot, "ui.video_decode_resets_total", "0")}`,
     `Frames: rx=${gaugeValue(snapshot, "ws.frames_received_total")} | robots=${gaugeValue(snapshot, "ws.robot_messages_total")} | flush=${formatTiming(snapshot, "ws.flush")}`,
     `Receive latency: ${formatTiming(snapshot, "ws.frame_latency.receive")} | Parse: bin=${formatTiming(snapshot, "ws.parse.binary")} json=${formatTiming(snapshot, "ws.parse.json")}`,
     `App render: ${formatTiming(snapshot, "app.render")} | Camera commit: ${formatTiming(snapshot, "ui.camera_commit")}`,
@@ -19,7 +20,19 @@ export function DebugPanel({ snapshot, streamInfo }: DebugPanelProps) {
       streamInfo?.cameras?.find((camera) => camera.name === cameraName)?.received_fps_estimate,
     ),
     formatPerCameraLine("Bytes", cameraNames, (cameraName) =>
-      numericGaugeValue(snapshot, `ws.jpeg_bytes.${cameraName}`, Number.NaN),
+      cameraBytes(snapshot, cameraName),
+    ),
+    formatPerCameraLine("WS recv ms", cameraNames, (cameraName) =>
+      numericGaugeValue(snapshot, `ws.encoded_receive_latency_ms.${cameraName}`, Number.NaN),
+    ),
+    formatPerCameraLine("Decode ms", cameraNames, (cameraName) =>
+      numericGaugeValue(snapshot, `ui.video_decode_latency_ms.${cameraName}`, Number.NaN),
+    ),
+    formatPerCameraLine("Decode wait", cameraNames, (cameraName) =>
+      numericGaugeValue(snapshot, `ui.video_decode_wait_ms.${cameraName}`, Number.NaN),
+    ),
+    formatPerCameraLine("Decode q", cameraNames, (cameraName) =>
+      numericGaugeValue(snapshot, `ui.video_decode_queue_size.${cameraName}`, Number.NaN),
     ),
     formatPerCameraLine("Display ms", cameraNames, (cameraName) =>
       numericGaugeValue(snapshot, `ui.display_latency_ms.${cameraName}`, Number.NaN),
@@ -100,6 +113,22 @@ function formatNumber(value: number | null | undefined): string {
   return numericValue >= 10
     ? numericValue.toFixed(1)
     : numericValue.toFixed(2);
+}
+
+function cameraBytes(snapshot: DebugSnapshot, cameraName: string): number {
+  const jpegBytes = numericGaugeValue(
+    snapshot,
+    `ws.jpeg_bytes.${cameraName}`,
+    Number.NaN,
+  );
+  if (Number.isFinite(jpegBytes)) {
+    return jpegBytes;
+  }
+  return numericGaugeValue(
+    snapshot,
+    `ws.encoded_payload_bytes.${cameraName}`,
+    Number.NaN,
+  );
 }
 
 /// Map the visualizer's `preview_output_mode` to the operator-facing

@@ -19,6 +19,12 @@ import {
   type DecodedFrame,
   type DecoderRegistry,
 } from "./preview-decoder";
+import {
+  observeDecodeOutput,
+  observeDecodeSubmit,
+  observeWsPacket,
+  setUiPipelineLoggingEnabled,
+} from "./pipeline-logger";
 
 /**
  * Tagged union emitted from `usePreviewSocket`. Two payload kinds:
@@ -434,6 +440,34 @@ export function usePreviewSocket(
         receivedAtWallTimeMs - decoded.sourceTimestampUs / 1_000,
       );
       setGauge(`ui.video_decode_latency_ms.${decoded.name}`, decodeLatencyMs);
+      recordTiming("ui.video_decode_latency", decodeLatencyMs);
+      if (typeof decoded.submittedAtWallTimeMs === "number") {
+        const decodeWaitMs = Math.max(
+          0,
+          receivedAtWallTimeMs - decoded.submittedAtWallTimeMs,
+        );
+        setGauge(`ui.video_decode_wait_ms.${decoded.name}`, decodeWaitMs);
+        recordTiming("ui.video_decode_wait", decodeWaitMs);
+      }
+      if (typeof decoded.decodeQueueSizeAtOutput === "number") {
+        setGauge(
+          `ui.video_decode_queue_size.${decoded.name}`,
+          decoded.decodeQueueSizeAtOutput,
+        );
+      }
+      if (typeof decoded.pendingFrameCountAtOutput === "number") {
+        setGauge(
+          `ui.video_decode_pending_frames.${decoded.name}`,
+          decoded.pendingFrameCountAtOutput,
+        );
+      }
+      observeDecodeOutput({
+        name: decoded.name,
+        sourceTimestampUs: decoded.sourceTimestampUs,
+        submittedAtWallTimeMs: decoded.submittedAtWallTimeMs,
+        outputAtWallTimeMs: receivedAtWallTimeMs,
+        queueSize: decoded.decodeQueueSizeAtOutput,
+      });
     },
     [revokeObjectUrl],
   );
@@ -459,6 +493,7 @@ export function usePreviewSocket(
         streamInfoRef.current = null;
         encodedCodecRef.current.clear();
         decoderRegistryRef.current?.closeAll();
+        setUiPipelineLoggingEnabled(false);
         frameSequenceRef.current = 0;
         dirtyRef.current = true;
         wsRef.current = null;
@@ -483,6 +518,11 @@ export function usePreviewSocket(
           "ws.active_preview_size",
           `${msg.active_preview_width}x${msg.active_preview_height}`,
         );
+        setGauge(
+          "ws.advanced_pipeline_logs",
+          msg.advanced_pipeline_logs ? "on" : "off",
+        );
+        setUiPipelineLoggingEnabled(Boolean(msg.advanced_pipeline_logs));
       }
     },
     onArrayBuffer: (buffer) => {
@@ -506,6 +546,11 @@ export function usePreviewSocket(
         return;
       }
       if (msg.type === "encoded_packet") {
+        const receivedAtWallTimeMs = Date.now();
+        const receiveLatencyMs = Math.max(
+          0,
+          receivedAtWallTimeMs - msg.sourceTimestampUs / 1_000,
+        );
         incrementGauge(`ws.encoded_packets_total.${msg.name}`);
         // Mirror the JPEG-path bump so InfoPanel's `Frames: rx=` shows
         // a non-zero counter in encoded mode too. Without this, the
@@ -516,6 +561,8 @@ export function usePreviewSocket(
         if (msg.isKeyframe) {
           incrementGauge(`ws.encoded_keyframes_total.${msg.name}`);
         }
+        setGauge(`ws.encoded_receive_latency_ms.${msg.name}`, receiveLatencyMs);
+        recordTiming("ws.encoded_receive_latency", receiveLatencyMs);
         // Stash the most-recent payload size in the live frame entry
         // for the canvas tile's meta line; the registry's onFrame
         // callback fires asynchronously after `decode`, so we update
@@ -530,6 +577,16 @@ export function usePreviewSocket(
           dirtyRef.current = true;
         }
         setGauge(`ws.encoded_payload_bytes.${msg.name}`, msg.payload.byteLength);
+        observeWsPacket({
+          name: msg.name,
+          sequence: msg.sequence,
+          sourceTimestampUs: msg.sourceTimestampUs,
+          payloadBytes: msg.payload.byteLength,
+          isKeyframe: msg.isKeyframe,
+          receivedAtWallTimeMs,
+        });
+        const queueBefore =
+          decoderRegistryRef.current?.diagnostics?.(msg.name) ?? null;
         decoderRegistryRef.current?.decode(
           msg.name,
           msg.payload,
@@ -537,6 +594,23 @@ export function usePreviewSocket(
           msg.sourceTimestampUs,
           msg.isKeyframe,
         );
+        const queueAfter =
+          decoderRegistryRef.current?.diagnostics?.(msg.name) ?? null;
+        if (queueAfter) {
+          setGauge(
+            `ui.video_decode_queue_size.${msg.name}`,
+            queueAfter.decodeQueueSize,
+          );
+          setGauge(
+            `ui.video_decode_pending_frames.${msg.name}`,
+            queueAfter.pendingFrameCount,
+          );
+        }
+        observeDecodeSubmit({
+          name: msg.name,
+          queueSizeBefore: queueBefore?.decodeQueueSize,
+          queueSizeAfter: queueAfter?.decodeQueueSize,
+        });
         return;
       }
 

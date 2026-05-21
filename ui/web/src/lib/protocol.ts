@@ -133,6 +133,8 @@ export interface StreamInfoMessage {
   server_timestamp_ms: number;
   /** Visualizer's preview output mode. */
   preview_output_mode: "jpeg" | "encoded";
+  /** Mirrors `[runtime].advanced_pipeline_logs` from the visualizer process. */
+  advanced_pipeline_logs?: boolean;
   active_preview_width: number;
   active_preview_height: number;
   cameras: StreamInfoCamera[];

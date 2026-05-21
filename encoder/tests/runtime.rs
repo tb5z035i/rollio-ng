@@ -7,9 +7,9 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    camera_frames_service_name, preview_config_service_name, preview_control_service_name,
-    preview_jpeg_service_name, preview_packet_service_name, recording_config_service_name,
-    recording_packet_service_name, BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE,
+    preview_config_service_name, preview_control_service_name, preview_jpeg_service_name,
+    preview_packet_service_name, recording_config_service_name, recording_packet_service_name,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE,
 };
 use rollio_encoder::media::{decode_artifact, probe_capabilities};
 use rollio_types::config::{EncoderBackend, EncoderCapabilityDirection, EncoderCodec};
@@ -703,6 +703,7 @@ fn recording_config_inline(
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
         EncoderBackend::Passthrough => "passthrough",
+        EncoderBackend::HorizonX5 => "horizon-x5",
     };
     format!(
         "process_id = \"{process_id}\"\n\
@@ -810,7 +811,7 @@ fn test_guard() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = Command::new("pkill")
-        .args(["-f", "rollio-encoder"])
+        .args(["-x", "rollio-encoder"])
         .status();
     guard
 }

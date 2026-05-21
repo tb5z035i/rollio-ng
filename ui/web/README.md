@@ -7,6 +7,25 @@ Currently, two official plugins are available:
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
 - [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
+## Rollio preview decoder options
+
+Encoded H.264 preview uses browser WebCodecs `VideoDecoder`. The decoder can be
+tuned with URL parameters or `localStorage` without rebuilding the UI.
+
+| Setting | URL parameters | `localStorage` keys | Values / default |
+| --- | --- | --- | --- |
+| WebCodecs hardware acceleration | `previewHardwareAcceleration`, `previewDecoderHardwareAcceleration`, `decoder_hw` | `rollio.preview.hardwareAcceleration`, `rollio.previewDecoder.hardwareAcceleration` | `no-preference` by default; also supports `prefer-hardware`, `prefer-software` |
+| Decode reset threshold | `previewDecodeResetMs`, `previewDecoderResetMs`, `decoder_reset_ms` | `rollio.preview.decodeResetMs`, `rollio.previewDecoder.resetMs` | `120` ms by default; `off`, `false`, `disabled`, `none`, or `0` disable reset |
+
+Example:
+
+```text
+http://127.0.0.1:3000/?previewHardwareAcceleration=prefer-software&previewDecodeResetMs=120
+```
+
+These options only affect the browser preview path. Recording does not pass
+through WebCodecs or the Web UI canvas.
+
 ## React Compiler
 
 The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).

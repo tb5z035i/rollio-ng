@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { MAX_PREVIEW_CAMERAS } from "../lib/camera-layout";
 import { incrementGauge, nowMs, recordTiming, setGauge } from "../lib/debug-metrics";
 import type { PreviewDimensions } from "../lib/layout";
+import { observeDisplay } from "../lib/pipeline-logger";
 import { codecName } from "../lib/protocol";
 import type { CameraFrame } from "../lib/websocket";
 
@@ -56,13 +57,39 @@ function VideoCanvasTile({ name, frame }: VideoCanvasTileProps) {
       // The websocket layer owns `frame.videoFrame.close()`; we read
       // it synchronously here and never retain a reference past this
       // useEffect.
+      const drawStartMs = nowMs();
+      const displayedAtWallTimeMs = Date.now();
       ctx.drawImage(frame.videoFrame, 0, 0, frame.width, frame.height);
+      const canvasDrawMs = nowMs() - drawStartMs;
+      const decodeToDisplayMs = Math.max(
+        0,
+        displayedAtWallTimeMs - frame.receivedAtWallTimeMs,
+      );
+      setGauge(`ui.canvas_draw_ms.${name}`, canvasDrawMs);
+      setGauge(`ui.decode_to_display_ms.${name}`, decodeToDisplayMs);
+      recordTiming("ui.canvas_draw", canvasDrawMs);
+      recordTiming("ui.decode_to_display", decodeToDisplayMs);
+      observeDisplay({
+        name,
+        sourceTimestampUs: frame.sourceTimestampUs,
+        decodedAtWallTimeMs: frame.receivedAtWallTimeMs,
+        displayedAtWallTimeMs,
+        canvasDrawMs,
+      });
     } catch (error) {
       console.warn(
         `[camera-grid] drawImage failed for ${name}: ${String(error)}`,
       );
     }
-  }, [frame.sequence, frame.width, frame.height, frame.videoFrame, name]);
+  }, [
+    frame.sequence,
+    frame.width,
+    frame.height,
+    frame.videoFrame,
+    frame.receivedAtWallTimeMs,
+    frame.sourceTimestampUs,
+    name,
+  ]);
 
   return (
     <canvas

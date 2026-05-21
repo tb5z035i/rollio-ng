@@ -185,6 +185,7 @@ profile = { width = 640, height = 480, fps = 25, pixel_format = "bgr24" }
 channel_type = "left_h264"
 kind = "camera"
 enabled = true
+record_enabled = true
 preview_enabled = true
 profile = { width = 640, height = 480, fps = 25, pixel_format = "h264-annex-b" }
 
@@ -198,8 +199,21 @@ fps = 25
 ```
 
 For H.264 Annex-B preview, `preview_config.output_mode` must be `"encoded"`.
+With `pixel_format = "h264-annex-b"` and encoded H.264 preview, the controller
+uses the preview-role encoder as a fixed-source passthrough relay: it does not
+decode, scale, or re-encode the Cora bytes. The effective preview dimensions
+therefore stay at the source profile size even if `preview_config.width` /
+`height` are present.
+
+`record_enabled` and `preview_enabled` are independent. Recording uses the
+recording-role encoder and publishes `recording-config` / `recording-packets`.
+Live Web UI preview uses the preview-role encoder, visualizer WebSocket, and
+browser decoder. Browser-side preview decoder options do not change the
+recorded data.
+
 The setup terminal preview path forces JPEG preview, so it is not suitable for
-previewing H.264 Annex-B camera sources directly.
+previewing H.264 Annex-B camera sources directly. Use the web UI for Coracam
+encoded preview.
 
 The DDS domain id is not stored in `config.toml`. Set it when starting collect:
 

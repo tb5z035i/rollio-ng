@@ -92,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_config.port,
         runtime_config.preview_output_mode.as_str(),
     );
+    let advanced_logs = advanced_pipeline_logs_enabled();
 
     let (broadcast_tx, _) = broadcast::channel::<BroadcastMessage>(64);
     let stream_info = Arc::new(Mutex::new(StreamInfoRegistry::new(
@@ -101,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             PreviewOutputMode::Jpeg => "jpeg",
             PreviewOutputMode::Encoded => "encoded",
         },
+        advanced_logs,
         320,
         240,
     )));
@@ -143,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ws_preview_config,
             preview_control_sender,
             ws_cached_configs,
+            advanced_logs,
         )
         .await;
     });
@@ -511,7 +514,13 @@ fn ipc_poll_loop(
                         header.height,
                         &payload,
                     );
-                    let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    let _ = broadcast_tx.send(BroadcastMessage::jpeg_frame(
+                        Arc::new(bytes),
+                        &name,
+                        header.timestamp_us,
+                        header.frame_index,
+                        payload.len(),
+                    ));
                     ipc_stats.record_frame(
                         &name,
                         header.timestamp_us,
@@ -544,7 +553,11 @@ fn ipc_poll_loop(
                     );
                     let payload_len = bytes.len();
                     cache_config(&cached_configs, &name, &bytes);
-                    let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    let _ = broadcast_tx.send(BroadcastMessage::encoded_config(
+                        Arc::new(bytes),
+                        &name,
+                        payload_len,
+                    ));
                     ipc_stats.record_config(&name, payload_len, bridge_started.elapsed());
                 }
                 IpcMessage::EncodedPacket {
@@ -595,7 +608,13 @@ fn ipc_poll_loop(
                         header.source_timestamp_us,
                         &payload_bytes,
                     );
-                    let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    let _ = broadcast_tx.send(BroadcastMessage::encoded_packet(
+                        Arc::new(bytes),
+                        &name,
+                        header.source_timestamp_us,
+                        header.sequence_number,
+                        payload_len,
+                    ));
                     ipc_stats.record_frame(
                         &name,
                         header.source_timestamp_us,
@@ -620,7 +639,7 @@ fn ipc_poll_loop(
                         &value_min,
                         &value_max,
                     );
-                    let _ = broadcast_tx.send(BroadcastMessage::Text(Arc::new(json)));
+                    let _ = broadcast_tx.send(BroadcastMessage::robot_state(Arc::new(json)));
                 }
             }
         }

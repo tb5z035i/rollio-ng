@@ -15,6 +15,7 @@ pub struct StreamInfoRegistry {
     camera_order: Vec<String>,
     robot_order: Vec<String>,
     output_mode: &'static str,
+    advanced_pipeline_logs: bool,
     active_preview_width: u32,
     active_preview_height: u32,
     cameras: HashMap<String, CameraRuntimeInfo>,
@@ -53,6 +54,7 @@ pub struct StreamInfoSnapshot {
     pub msg_type: &'static str,
     pub server_timestamp_ms: u64,
     pub preview_output_mode: &'static str,
+    pub advanced_pipeline_logs: bool,
     pub active_preview_width: u32,
     pub active_preview_height: u32,
     pub cameras: Vec<CameraInfoSnapshot>,
@@ -83,6 +85,7 @@ impl StreamInfoRegistry {
         camera_sources: &[VisualizerCameraSourceConfig],
         robot_names: &[String],
         output_mode: &'static str,
+        advanced_pipeline_logs: bool,
         active_preview_width: u32,
         active_preview_height: u32,
     ) -> Self {
@@ -104,6 +107,7 @@ impl StreamInfoRegistry {
             camera_order,
             robot_order: robot_names.to_vec(),
             output_mode,
+            advanced_pipeline_logs,
             active_preview_width,
             active_preview_height,
             cameras,
@@ -197,6 +201,7 @@ impl StreamInfoRegistry {
             msg_type: "stream_info",
             server_timestamp_ms: now_ms,
             preview_output_mode: self.output_mode,
+            advanced_pipeline_logs: self.advanced_pipeline_logs,
             active_preview_width: self.active_preview_width,
             active_preview_height: self.active_preview_height,
             cameras,
@@ -273,7 +278,7 @@ mod tests {
             source_width: Some(640),
             source_height: Some(480),
         }];
-        let registry = StreamInfoRegistry::new(&sources, &[], "encoded", 320, 240);
+        let registry = StreamInfoRegistry::new(&sources, &[], "encoded", false, 320, 240);
 
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.cameras.len(), 1);
@@ -305,7 +310,7 @@ mod tests {
             source_width: None,
             source_height: None,
         }];
-        let mut registry = StreamInfoRegistry::new(&sources, &[], "encoded", 320, 240);
+        let mut registry = StreamInfoRegistry::new(&sources, &[], "encoded", false, 320, 240);
 
         // Initially the flag is false until we see a packet.
         assert!(!registry.snapshot().cameras[0].scaling_locked);

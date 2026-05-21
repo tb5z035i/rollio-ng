@@ -15,6 +15,7 @@
  */
 
 import { videoDecoderAvailability } from "./browser-codecs";
+import { incrementGauge, setGauge } from "./debug-metrics";
 
 export interface DecodedFrame {
   name: string;
@@ -29,9 +30,32 @@ export interface DecodedFrame {
    *  capture-to-display latency metrics. */
   sourceTimestampUs: number;
   receivedAtWallTimeMs: number;
+  submittedAtWallTimeMs?: number;
+  decodeQueueSizeAtOutput?: number;
+  pendingFrameCountAtOutput?: number;
 }
 
 export type DecoderRegistryFrameCallback = (frame: DecodedFrame) => void;
+
+export interface DecodeDiagnostics {
+  decodeQueueSize: number;
+  pendingFrameCount: number;
+}
+
+export type PreviewDecoderHardwareAcceleration =
+  | "no-preference"
+  | "prefer-hardware"
+  | "prefer-software";
+
+export interface PreviewDecoderOptions {
+  hardwareAcceleration?: PreviewDecoderHardwareAcceleration;
+  resetDecodeWaitMs?: number;
+}
+
+interface ResolvedPreviewDecoderOptions {
+  hardwareAcceleration: PreviewDecoderHardwareAcceleration;
+  resetDecodeWaitMs: number;
+}
 
 export interface DecoderRegistry {
   /**
@@ -66,6 +90,9 @@ export interface DecoderRegistry {
 
   /** Tear down every decoder. Called on hook unmount and on socket flap. */
   closeAll(): void;
+
+  /** Best-effort WebCodecs queue snapshot for latency diagnostics. */
+  diagnostics?(name: string): DecodeDiagnostics | null;
 }
 
 /** EncodedCodecId discriminants from `rollio-types/src/messages.rs`.
@@ -87,17 +114,169 @@ interface DecoderEntry {
    *  `decode()` time. Entries are removed on lookup; entries that
    *  the decoder drops (B-frame reorder, dim change, etc.) age out
    *  via a size cap to bound memory. */
-  pendingSourceTs: Map<number, number>;
+  pendingFrames: Map<number, PendingDecodeFrame>;
 }
 
-/** Upper bound on the per-decoder ptsUs → sourceTimestampUs map.
+interface PendingDecodeFrame {
+  sourceTimestampUs: number;
+  submittedAtWallTimeMs: number;
+}
+
+interface DecodeFrame {
+  payload: Uint8Array;
+  ptsUs: number;
+  sourceTimestampUs: number;
+  isKeyframe: boolean;
+}
+
+/** Upper bound on the per-decoder ptsUs → pending frame map.
  *  At 60 fps the decoder usually outputs within ~1 frame, so a few
  *  hundred entries is generous; this cap exists only to bound memory
  *  in case the decoder silently drops frames. */
 const MAX_PENDING_SOURCE_TS = 256;
+const DEFAULT_HARDWARE_ACCELERATION: PreviewDecoderHardwareAcceleration =
+  "no-preference";
+const DEFAULT_DECODE_RESET_WAIT_MS = 120;
+const MAX_DECODE_RESET_WAIT_MS = 5_000;
+const HARDWARE_ACCELERATION_VALUES = new Set<PreviewDecoderHardwareAcceleration>(
+  ["no-preference", "prefer-hardware", "prefer-software"],
+);
+const HARDWARE_ACCELERATION_QUERY_KEYS = [
+  "previewHardwareAcceleration",
+  "previewDecoderHardwareAcceleration",
+  "decoder_hw",
+] as const;
+const DECODE_RESET_QUERY_KEYS = [
+  "previewDecodeResetMs",
+  "previewDecoderResetMs",
+  "decoder_reset_ms",
+] as const;
+const HARDWARE_ACCELERATION_STORAGE_KEYS = [
+  "rollio.preview.hardwareAcceleration",
+  "rollio.previewDecoder.hardwareAcceleration",
+] as const;
+const DECODE_RESET_STORAGE_KEYS = [
+  "rollio.preview.decodeResetMs",
+  "rollio.previewDecoder.resetMs",
+] as const;
+
+interface PreviewDecoderOptionRuntime {
+  location?: Pick<Location, "search">;
+  localStorage?: Pick<Storage, "getItem">;
+}
+
+export function resolvePreviewDecoderOptions(
+  runtime: PreviewDecoderOptionRuntime = globalThis,
+): ResolvedPreviewDecoderOptions {
+  return {
+    hardwareAcceleration: normalizeHardwareAcceleration(
+      readStringOption(
+        runtime,
+        HARDWARE_ACCELERATION_QUERY_KEYS,
+        HARDWARE_ACCELERATION_STORAGE_KEYS,
+      ),
+    ),
+    resetDecodeWaitMs: normalizeDecodeResetWaitMs(
+      readStringOption(runtime, DECODE_RESET_QUERY_KEYS, DECODE_RESET_STORAGE_KEYS),
+      DEFAULT_DECODE_RESET_WAIT_MS,
+    ),
+  };
+}
+
+function normalizePreviewDecoderOptions(
+  options: PreviewDecoderOptions,
+): ResolvedPreviewDecoderOptions {
+  return {
+    hardwareAcceleration:
+      options.hardwareAcceleration ?? DEFAULT_HARDWARE_ACCELERATION,
+    resetDecodeWaitMs: normalizeDecodeResetWaitMs(
+      options.resetDecodeWaitMs,
+      DEFAULT_DECODE_RESET_WAIT_MS,
+    ),
+  };
+}
+
+function normalizeHardwareAcceleration(
+  value: unknown,
+): PreviewDecoderHardwareAcceleration {
+  if (typeof value !== "string") {
+    return DEFAULT_HARDWARE_ACCELERATION;
+  }
+  const normalized = value.trim().toLowerCase();
+  return HARDWARE_ACCELERATION_VALUES.has(
+    normalized as PreviewDecoderHardwareAcceleration,
+  )
+    ? (normalized as PreviewDecoderHardwareAcceleration)
+    : DEFAULT_HARDWARE_ACCELERATION;
+}
+
+function normalizeDecodeResetWaitMs(value: unknown, fallback: number): number {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (
+      normalized === "off" ||
+      normalized === "false" ||
+      normalized === "disabled" ||
+      normalized === "none"
+    ) {
+      return 0;
+    }
+    const parsed = Number(normalized);
+    return boundedResetWaitMs(parsed, fallback);
+  }
+  if (typeof value === "number") {
+    return boundedResetWaitMs(value, fallback);
+  }
+  return fallback;
+}
+
+function boundedResetWaitMs(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return Math.min(value, MAX_DECODE_RESET_WAIT_MS);
+}
+
+function readStringOption(
+  runtime: PreviewDecoderOptionRuntime,
+  queryKeys: readonly string[],
+  storageKeys: readonly string[],
+): string | null {
+  const search = runtime.location?.search ?? "";
+  if (search) {
+    const params = new URLSearchParams(search);
+    for (const key of queryKeys) {
+      const value = params.get(key);
+      if (value !== null && value.trim() !== "") {
+        return value;
+      }
+    }
+  }
+
+  try {
+    const storage = runtime.localStorage;
+    if (!storage) {
+      return null;
+    }
+    for (const key of storageKeys) {
+      const value = storage.getItem(key);
+      if (value !== null && value.trim() !== "") {
+        return value;
+      }
+    }
+  } catch {
+    /* localStorage can throw for opaque origins; URL params still work. */
+  }
+  return null;
+}
 
 export class PreviewDecoderRegistry implements DecoderRegistry {
   private readonly entries = new Map<string, DecoderEntry>();
+  private readonly options: ResolvedPreviewDecoderOptions;
+
+  constructor(options: PreviewDecoderOptions = resolvePreviewDecoderOptions()) {
+    this.options = normalizePreviewDecoderOptions(options);
+  }
 
   configure(
     name: string,
@@ -135,11 +314,12 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
           return;
         }
         const pts = videoFrame.timestamp ?? 0;
-        // Wall-clock at decode() time; falls back to current Date.now()
-        // for output frames whose PTS doesn't correspond to a recorded
-        // submit (shouldn't happen but keeps the metric finite).
-        const sourceTs = entry.pendingSourceTs.get(pts) ?? Date.now() * 1000;
-        entry.pendingSourceTs.delete(pts);
+        const pending = entry.pendingFrames.get(pts);
+        // Fall back to current Date.now() for output frames whose PTS
+        // does not correspond to a recorded submit. That should not
+        // happen, but it keeps the latency metric finite.
+        const sourceTs = pending?.sourceTimestampUs ?? Date.now() * 1000;
+        entry.pendingFrames.delete(pts);
         entry.onFrame({
           name,
           videoFrame,
@@ -148,6 +328,9 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
           timestampUs: pts,
           sourceTimestampUs: sourceTs,
           receivedAtWallTimeMs: Date.now(),
+          submittedAtWallTimeMs: pending?.submittedAtWallTimeMs,
+          decodeQueueSizeAtOutput: entry.decoder.decodeQueueSize,
+          pendingFrameCountAtOutput: entry.pendingFrames.size,
         });
       },
       error: (error) => {
@@ -155,22 +338,14 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       },
     });
 
-    try {
-      // Annex B mode: omit `description` so WebCodecs expects
-      // start-code-prefixed NAL units in each `EncodedVideoChunk` and
-      // reads SPS/PPS in-band. The visualizer prepends the cached SPS
-      // and PPS NALUs to every keyframe payload, so each IDR carries
-      // the parameter sets the decoder needs to (re)initialize.
-      decoder.configure({
-        codec: codecString,
-        codedWidth: width,
-        codedHeight: height,
-        optimizeForLatency: true,
-      });
-    } catch (error) {
-      console.warn(
-        `[preview-decoder] ${name} configure failed: ${error}`,
-      );
+    const activeHardwareAcceleration = this.configureDecoder(
+      name,
+      decoder,
+      codecString,
+      width,
+      height,
+    );
+    if (!activeHardwareAcceleration) {
       try {
         decoder.close();
       } catch {
@@ -185,8 +360,14 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       width,
       height,
       onFrame,
-      pendingSourceTs: new Map(),
+      pendingFrames: new Map(),
     });
+    setGauge("ui.video_decoder_hw", activeHardwareAcceleration);
+    setGauge(`ui.video_decoder_hw.${name}`, activeHardwareAcceleration);
+    setGauge(
+      "ui.video_decode_reset_threshold_ms",
+      this.options.resetDecodeWaitMs,
+    );
   }
 
   decode(
@@ -203,32 +384,163 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
     if (entry.decoder.state !== "configured") {
       return;
     }
-    entry.pendingSourceTs.set(ptsUs, sourceTimestampUs);
-    if (entry.pendingSourceTs.size > MAX_PENDING_SOURCE_TS) {
-      // Drop the oldest entries (insertion order = Map iteration order
-      // in JS), keeping the most recent. Bounds memory if the decoder
-      // ever stops producing output without notice.
-      const drop = entry.pendingSourceTs.size - MAX_PENDING_SOURCE_TS;
-      let i = 0;
-      for (const key of entry.pendingSourceTs.keys()) {
-        if (i++ >= drop) break;
-        entry.pendingSourceTs.delete(key);
-      }
-    }
+
+    this.resetDecoderIfOverdue(name, entry, isKeyframe);
+    this.submitDecodeFrame(name, entry, {
+      payload,
+      ptsUs,
+      sourceTimestampUs,
+      isKeyframe,
+    });
+  }
+
+  private submitDecodeFrame(
+    name: string,
+    entry: DecoderEntry,
+    frame: DecodeFrame,
+  ): void {
+    entry.pendingFrames.set(frame.ptsUs, {
+      sourceTimestampUs: frame.sourceTimestampUs,
+      submittedAtWallTimeMs: Date.now(),
+    });
+    this.trimPendingFrames(entry);
     try {
       const chunk = new EncodedVideoChunk({
-        type: isKeyframe ? "key" : "delta",
-        timestamp: ptsUs,
+        type: frame.isKeyframe ? "key" : "delta",
+        timestamp: frame.ptsUs,
         // Copy the payload defensively: the caller may reuse the
         // backing ArrayBuffer for the next message, while the
         // EncodedVideoChunk constructor takes a snapshot at call
         // time.
-        data: payload,
+        data: frame.payload,
       });
       entry.decoder.decode(chunk);
     } catch (error) {
+      entry.pendingFrames.delete(frame.ptsUs);
       console.warn(`[preview-decoder] ${name} decode failed: ${error}`);
     }
+  }
+
+  private trimPendingFrames(entry: DecoderEntry): void {
+    if (entry.pendingFrames.size <= MAX_PENDING_SOURCE_TS) {
+      return;
+    }
+    // Drop the oldest entries (insertion order = Map iteration order
+    // in JS), keeping the most recent. Bounds memory if the decoder
+    // ever stops producing output without notice.
+    const drop = entry.pendingFrames.size - MAX_PENDING_SOURCE_TS;
+    let i = 0;
+    for (const key of entry.pendingFrames.keys()) {
+      if (i++ >= drop) break;
+      entry.pendingFrames.delete(key);
+    }
+  }
+
+  private configureDecoder(
+    name: string,
+    decoder: VideoDecoder,
+    codecString: string,
+    width: number,
+    height: number,
+  ): PreviewDecoderHardwareAcceleration | null {
+    const requested = this.options.hardwareAcceleration;
+    try {
+      decoder.configure(this.decoderConfig(codecString, width, height, requested));
+      return requested;
+    } catch (error) {
+      if (requested === DEFAULT_HARDWARE_ACCELERATION) {
+        console.warn(`[preview-decoder] ${name} configure failed: ${error}`);
+        return null;
+      }
+      console.warn(
+        `[preview-decoder] ${name} configure failed with ` +
+          `${requested}: ${error}; falling back to no-preference`,
+      );
+    }
+
+    try {
+      decoder.configure(
+        this.decoderConfig(
+          codecString,
+          width,
+          height,
+          DEFAULT_HARDWARE_ACCELERATION,
+        ),
+      );
+      return DEFAULT_HARDWARE_ACCELERATION;
+    } catch (fallbackError) {
+      console.warn(
+        `[preview-decoder] ${name} fallback configure failed: ${fallbackError}`,
+      );
+      return null;
+    }
+  }
+
+  private decoderConfig(
+    codecString: string,
+    width: number,
+    height: number,
+    hardwareAcceleration: PreviewDecoderHardwareAcceleration,
+  ): VideoDecoderConfig & {
+    hardwareAcceleration: PreviewDecoderHardwareAcceleration;
+  } {
+    // Annex B mode: omit `description` so WebCodecs expects
+    // start-code-prefixed NAL units in each `EncodedVideoChunk` and
+    // reads SPS/PPS in-band. The visualizer prepends the cached SPS
+    // and PPS NALUs to every keyframe payload, so each IDR carries
+    // the parameter sets the decoder needs to (re)initialize.
+    return {
+      codec: codecString,
+      codedWidth: width,
+      codedHeight: height,
+      optimizeForLatency: true,
+      hardwareAcceleration,
+    };
+  }
+
+  private resetDecoderIfOverdue(
+    name: string,
+    entry: DecoderEntry,
+    currentFrameIsKeyframe: boolean,
+  ): void {
+    if (
+      this.options.resetDecodeWaitMs <= 0 ||
+      !currentFrameIsKeyframe ||
+      entry.pendingFrames.size === 0
+    ) {
+      return;
+    }
+    const oldest = entry.pendingFrames.values().next().value;
+    if (!oldest) {
+      return;
+    }
+    const waitMs = Date.now() - oldest.submittedAtWallTimeMs;
+    if (waitMs < this.options.resetDecodeWaitMs) {
+      return;
+    }
+    const droppedFrames = entry.pendingFrames.size;
+    try {
+      entry.decoder.reset();
+      entry.pendingFrames.clear();
+      incrementGauge("ui.video_decode_resets_total");
+      incrementGauge(`ui.video_decode_resets_total.${name}`);
+      setGauge(`ui.video_decode_last_reset_wait_ms.${name}`, waitMs);
+      setGauge(`ui.video_decode_reset_dropped_frames.${name}`, droppedFrames);
+      setGauge(`ui.video_decode_pending_frames.${name}`, 0);
+    } catch (error) {
+      console.warn(`[preview-decoder] ${name} reset failed: ${error}`);
+    }
+  }
+
+  diagnostics(name: string): DecodeDiagnostics | null {
+    const entry = this.entries.get(name);
+    if (!entry) {
+      return null;
+    }
+    return {
+      decodeQueueSize: entry.decoder.decodeQueueSize,
+      pendingFrameCount: entry.pendingFrames.size,
+    };
   }
 
   close(name: string): void {
