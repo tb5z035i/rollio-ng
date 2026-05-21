@@ -18,6 +18,17 @@ const SCHEMA_ENCODING: &str = "flatbuffer";
 /// Message encoding identifier for FlatBuffers in MCAP.
 const MESSAGE_ENCODING: &str = "flatbuffer";
 
+// Schemas are compiled into the binary so deployments don't need to ship
+// a separate bfbs directory or set `ROLLIO_BFBS_DIR`. The files live next
+// to this source under `episode-mcap/schemas/`.
+const BFBS_COMPRESSED_VIDEO: &[u8] = include_bytes!("../schemas/CompressedVideo.bfbs");
+const BFBS_RAW_IMAGE: &[u8] = include_bytes!("../schemas/RawImage.bfbs");
+const BFBS_JOINT_STATES: &[u8] = include_bytes!("../schemas/JointStates.bfbs");
+const BFBS_IMU: &[u8] = include_bytes!("../schemas/Imu.bfbs");
+const BFBS_TACTILE_DATA: &[u8] = include_bytes!("../schemas/TactileData.bfbs");
+const BFBS_CAMERA_CALIBRATION: &[u8] = include_bytes!("../schemas/CameraCalibration.bfbs");
+const BFBS_FRAME_TRANSFORM: &[u8] = include_bytes!("../schemas/FrameTransform.bfbs");
+
 /// Known MCAP channel schema types used by the assembler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SchemaType {
@@ -44,16 +55,16 @@ impl SchemaType {
         }
     }
 
-    /// The .bfbs filename for this schema (binary FlatBuffer reflection schema).
-    pub fn bfbs_filename(self) -> &'static str {
+    /// Compile-time-embedded FlatBuffer reflection schema bytes.
+    pub fn embedded_bfbs(self) -> &'static [u8] {
         match self {
-            Self::CompressedVideo => "CompressedVideo.bfbs",
-            Self::RawImage => "RawImage.bfbs",
-            Self::JointStates => "JointStates.bfbs",
-            Self::Imu => "Imu.bfbs",
-            Self::TactileData => "TactileData.bfbs",
-            Self::CameraCalibration => "CameraCalibration.bfbs",
-            Self::FrameTransform => "FrameTransform.bfbs",
+            Self::CompressedVideo => BFBS_COMPRESSED_VIDEO,
+            Self::RawImage => BFBS_RAW_IMAGE,
+            Self::JointStates => BFBS_JOINT_STATES,
+            Self::Imu => BFBS_IMU,
+            Self::TactileData => BFBS_TACTILE_DATA,
+            Self::CameraCalibration => BFBS_CAMERA_CALIBRATION,
+            Self::FrameTransform => BFBS_FRAME_TRANSFORM,
         }
     }
 }
@@ -81,9 +92,7 @@ pub struct McapEpisodeWriter {
 
 impl McapEpisodeWriter {
     /// Create a new MCAP episode writer at the given path.
-    ///
-    /// `bfbs_dir` is the directory containing .bfbs schema files.
-    pub fn new(output_path: &Path, _bfbs_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(output_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::create(output_path)?;
         let buf_writer = BufWriter::new(file);
         let writer = Writer::new(buf_writer)?;
@@ -100,17 +109,15 @@ impl McapEpisodeWriter {
     pub fn ensure_schema(
         &mut self,
         schema_type: SchemaType,
-        bfbs_dir: &Path,
     ) -> Result<u16, Box<dyn std::error::Error>> {
         if let Some(&id) = self.schema_ids.get(&schema_type) {
             return Ok(id);
         }
-        let bfbs_path = bfbs_dir.join(schema_type.bfbs_filename());
-        let schema_data = std::fs::read(&bfbs_path)
-            .map_err(|e| format!("Failed to read schema file {}: {}", bfbs_path.display(), e))?;
-        let schema_id =
-            self.writer
-                .add_schema(schema_type.schema_name(), SCHEMA_ENCODING, &schema_data)?;
+        let schema_id = self.writer.add_schema(
+            schema_type.schema_name(),
+            SCHEMA_ENCODING,
+            schema_type.embedded_bfbs(),
+        )?;
         self.schema_ids.insert(schema_type, schema_id);
         Ok(schema_id)
     }
@@ -122,9 +129,8 @@ impl McapEpisodeWriter {
         &mut self,
         topic: &str,
         schema_type: SchemaType,
-        bfbs_dir: &Path,
     ) -> Result<usize, Box<dyn std::error::Error>> {
-        let schema_id = self.ensure_schema(schema_type, bfbs_dir)?;
+        let schema_id = self.ensure_schema(schema_type)?;
         let channel_id =
             self.writer
                 .add_channel(schema_id, topic, MESSAGE_ENCODING, &BTreeMap::new())?;

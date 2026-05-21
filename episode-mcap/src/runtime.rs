@@ -499,34 +499,30 @@ type StageWorkerHandles = (
 
 fn spawn_stage_worker(
     config: AssemblerRuntimeConfigV2,
-    bfbs_dir: PathBuf,
 ) -> Result<StageWorkerHandles, Box<dyn Error>> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCommand>();
     let (evt_tx, evt_rx) = mpsc::channel::<WorkerEvent>();
     let handle = thread::Builder::new()
         .name("rollio-mcap-staging-worker".into())
-        .spawn(move || stage_worker_main(config, bfbs_dir, cmd_rx, evt_tx))?;
+        .spawn(move || stage_worker_main(config, cmd_rx, evt_tx))?;
     Ok((cmd_tx, evt_rx, handle))
 }
 
 fn stage_worker_main(
     config: AssemblerRuntimeConfigV2,
-    bfbs_dir: PathBuf,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
     evt_tx: mpsc::Sender<WorkerEvent>,
 ) {
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
-            WorkerCommand::Stage(episode) => {
-                match stage_episode_mcap(&config, &bfbs_dir, &episode) {
-                    Ok(result) => {
-                        let _ = evt_tx.send(WorkerEvent::Staged(result));
-                    }
-                    Err(error) => {
-                        let _ = evt_tx.send(WorkerEvent::Error(error.to_string()));
-                    }
+            WorkerCommand::Stage(episode) => match stage_episode_mcap(&config, &episode) {
+                Ok(result) => {
+                    let _ = evt_tx.send(WorkerEvent::Staged(result));
                 }
-            }
+                Err(error) => {
+                    let _ = evt_tx.send(WorkerEvent::Error(error.to_string()));
+                }
+            },
             WorkerCommand::Shutdown => break,
         }
     }
@@ -536,7 +532,6 @@ fn stage_worker_main(
 /// Write a pending episode to an MCAP file in the staging directory.
 fn stage_episode_mcap(
     config: &AssemblerRuntimeConfigV2,
-    bfbs_dir: &Path,
     episode: &PendingEpisode,
 ) -> Result<StagedResult, Box<dyn Error>> {
     let episode_dir =
@@ -544,14 +539,13 @@ fn stage_episode_mcap(
     std::fs::create_dir_all(&episode_dir)?;
 
     let mcap_path = episode_dir.join("episode.mcap");
-    let mut writer = McapEpisodeWriter::new(&mcap_path, bfbs_dir)?;
+    let mut writer = McapEpisodeWriter::new(&mcap_path)?;
 
     // Register camera channels and write video packets
     for camera_config in &config.cameras {
         let channel_idx = writer.add_channel(
             &format!("/camera/{}/video", camera_config.channel_id),
             SchemaType::CompressedVideo,
-            bfbs_dir,
         )?;
 
         if let Some(stream) = episode.camera_streams.get(&camera_config.channel_id) {
@@ -578,11 +572,8 @@ fn stage_episode_mcap(
 
     // Register observation channels and write samples
     for (key, samples) in &episode.observation_samples {
-        let channel_idx = writer.add_channel(
-            &format!("/observation/{key}"),
-            SchemaType::JointStates,
-            bfbs_dir,
-        )?;
+        let channel_idx =
+            writer.add_channel(&format!("/observation/{key}"), SchemaType::JointStates)?;
         for sample in samples {
             let fb_data = encode::encode_joint_states(sample.timestamp_us, &sample.values, None);
             writer.write_message(channel_idx, us_to_ns(sample.timestamp_us), &fb_data)?;
@@ -591,8 +582,7 @@ fn stage_episode_mcap(
 
     // Register action channels and write samples
     for (key, samples) in &episode.action_samples {
-        let channel_idx =
-            writer.add_channel(&format!("/action/{key}"), SchemaType::JointStates, bfbs_dir)?;
+        let channel_idx = writer.add_channel(&format!("/action/{key}"), SchemaType::JointStates)?;
         for sample in samples {
             let fb_data = encode::encode_joint_states(sample.timestamp_us, &sample.values, None);
             writer.write_message(channel_idx, us_to_ns(sample.timestamp_us), &fb_data)?;
@@ -662,8 +652,6 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     }
 
     // Resolve bfbs schema directory (relative to staging_dir or from env)
-    let bfbs_dir = resolve_bfbs_dir(&config)?;
-
     let node = NodeBuilder::new()
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()?;
@@ -678,7 +666,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let action_subscribers = create_action_subscribers(&node, &config)?;
 
     let process_id = config.process_id.clone();
-    let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone(), bfbs_dir)?;
+    let (worker_tx, worker_rx, worker_handle) = spawn_stage_worker(config.clone())?;
     let mut manager = EpisodeManager::new(config);
 
     log::info!("rollio-episode-mcap: runtime started");
@@ -761,31 +749,6 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     drop(worker_tx);
     let _ = worker_handle.join();
     Ok(())
-}
-
-/// Resolve the directory containing .bfbs schema files.
-fn resolve_bfbs_dir(config: &AssemblerRuntimeConfigV2) -> Result<PathBuf, Box<dyn Error>> {
-    // Check ROLLIO_BFBS_DIR env var first
-    if let Ok(dir) = std::env::var("ROLLIO_BFBS_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Ok(p);
-        }
-    }
-    // Fall back to a `bfbs/` directory next to the staging dir
-    let candidate = Path::new(&config.staging_dir)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("bfbs");
-    if candidate.is_dir() {
-        return Ok(candidate);
-    }
-    // Fall back to /usr/share/rollio/bfbs (installed location)
-    let installed = PathBuf::from("/usr/share/rollio/bfbs");
-    if installed.is_dir() {
-        return Ok(installed);
-    }
-    Err("Cannot find .bfbs schema directory. Set ROLLIO_BFBS_DIR or place schemas in /usr/share/rollio/bfbs".into())
 }
 
 // ---------------------------------------------------------------------------

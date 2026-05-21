@@ -3,50 +3,25 @@
 use rollio_episode_mcap::encode;
 use rollio_episode_mcap::mcap_writer::{us_to_ns, McapEpisodeWriter, SchemaType};
 use std::collections::BTreeMap;
-use std::path::Path;
-
-/// Resolve the bfbs directory for tests.
-fn bfbs_dir() -> &'static Path {
-    // Try the mcap_spec workspace location
-    let candidate = Path::new("/data/tb5z035i/workspace/mcap_spec/data-schema/generated/bfbs");
-    if candidate.is_dir() {
-        return candidate;
-    }
-    // Fallback: env var
-    if let Ok(dir) = std::env::var("ROLLIO_BFBS_DIR") {
-        let p = Path::new(Box::leak(dir.into_boxed_str()));
-        if p.is_dir() {
-            return p;
-        }
-    }
-    panic!("Cannot find bfbs directory for tests");
-}
 
 #[test]
 fn test_write_and_read_mcap_episode() {
     let dir = tempfile::tempdir().unwrap();
     let mcap_path = dir.path().join("test_episode.mcap");
-    let bfbs = bfbs_dir();
 
-    // Create writer and add channels
-    let mut writer = McapEpisodeWriter::new(&mcap_path, bfbs).unwrap();
+    let mut writer = McapEpisodeWriter::new(&mcap_path).unwrap();
 
     let video_ch = writer
-        .add_channel("/camera/cam_left/video", SchemaType::CompressedVideo, bfbs)
+        .add_channel("/camera/cam_left/video", SchemaType::CompressedVideo)
         .unwrap();
     let obs_ch = writer
         .add_channel(
             "/observation/leader/joint_position",
             SchemaType::JointStates,
-            bfbs,
         )
         .unwrap();
     let action_ch = writer
-        .add_channel(
-            "/action/follower/joint_position",
-            SchemaType::JointStates,
-            bfbs,
-        )
+        .add_channel("/action/follower/joint_position", SchemaType::JointStates)
         .unwrap();
 
     // Write some video frames
