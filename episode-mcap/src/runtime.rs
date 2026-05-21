@@ -118,7 +118,6 @@ struct CameraStreamBuffer {
 struct CameraPacket {
     timestamp_us: u64,
     data: Vec<u8>,
-    #[allow(dead_code)] // wired by mcap-keyframe migration step
     is_keyframe: bool,
 }
 
@@ -558,7 +557,15 @@ fn stage_episode_mcap(
                 rollio_types::config::EncoderCodec::Rvl => "rvl",
             };
 
+            let mut keyframe_count: u64 = 0;
+            let mut first_keyframe_us: Option<u64> = None;
+            let mut last_keyframe_us: Option<u64> = None;
             for packet in &stream.packets {
+                if packet.is_keyframe {
+                    keyframe_count += 1;
+                    first_keyframe_us.get_or_insert(packet.timestamp_us);
+                    last_keyframe_us = Some(packet.timestamp_us);
+                }
                 let fb_data = encode::encode_compressed_video(
                     packet.timestamp_us,
                     &camera_config.channel_id,
@@ -567,6 +574,25 @@ fn stage_episode_mcap(
                 );
                 writer.write_message(channel_idx, us_to_ns(packet.timestamp_us), &fb_data)?;
             }
+            // The Foxglove CompressedVideo schema has no per-message
+            // is_key_frame flag, but downstream seek / GOP tooling still
+            // wants to know where the IDRs landed. Persist the summary
+            // as an MCAP metadata record keyed by channel; assemblers
+            // already tagged the packets via EncodedPacketHeader.flags.
+            let mut keyframe_meta = BTreeMap::new();
+            keyframe_meta.insert("channel_id".into(), camera_config.channel_id.clone());
+            keyframe_meta.insert("packet_count".into(), stream.packets.len().to_string());
+            keyframe_meta.insert("keyframe_count".into(), keyframe_count.to_string());
+            if let Some(ts) = first_keyframe_us {
+                keyframe_meta.insert("first_keyframe_us".into(), ts.to_string());
+            }
+            if let Some(ts) = last_keyframe_us {
+                keyframe_meta.insert("last_keyframe_us".into(), ts.to_string());
+            }
+            writer.write_metadata(
+                &format!("camera/{}/keyframes", camera_config.channel_id),
+                keyframe_meta,
+            )?;
         }
     }
 
