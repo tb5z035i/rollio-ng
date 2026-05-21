@@ -15,12 +15,22 @@ const DOF: u32 = 1;
 
 pub fn run(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let default_name = descriptor::name_from_id(id);
+    let cora_topic = descriptor::topic_from_id(id);
 
     let value_limits = vec![
         StateValueLimitsEntry::symmetric(RobotStateKind::JointPosition, 0.1, 1),
         StateValueLimitsEntry::symmetric(RobotStateKind::JointVelocity, 1.0, 1),
         StateValueLimitsEntry::symmetric(RobotStateKind::JointEffort, 10.0, 1),
     ];
+
+    let mut channel_extra = toml::Table::new();
+    channel_extra.insert("cora_topic".to_string(), toml::Value::String(cora_topic));
+    // joint_name placeholder: must match a name inside the publisher's
+    // JointState.names[] at runtime. Operator typically overrides via TOML.
+    channel_extra.insert(
+        "joint_name".to_string(),
+        toml::Value::String(default_name.clone()),
+    );
 
     let channel = DeviceQueryChannel {
         channel_type: DEFAULT_CHANNEL_TYPE.to_string(),
@@ -46,7 +56,7 @@ pub fn run(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
         supported_sensor_kinds: Vec::new(),
         default_sample_rate_hz: None,
         sensor_shape_hints: Default::default(),
-        optional_info: toml::Table::new(),
+        optional_info: channel_extra,
     };
     let device = DeviceQueryDevice {
         id: id.to_string(),

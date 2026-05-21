@@ -24,6 +24,22 @@ pub fn run(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let default_name = descriptor::name_from_id(id);
+    let cora_topic = descriptor::topic_from_id(id);
+
+    let mut channel_extra = toml::Table::new();
+    channel_extra.insert("cora_topic".to_string(), toml::Value::String(cora_topic));
+    channel_extra.insert(
+        "tactile_point_count".to_string(),
+        toml::Value::Integer(DEFAULT_POINT_COUNT_HINT as i64),
+    );
+    let field_map = ["x", "y", "z", "fx", "fy", "fz"]
+        .into_iter()
+        .map(|s| toml::Value::String(s.to_string()))
+        .collect::<Vec<_>>();
+    channel_extra.insert(
+        "pointcloud_field_map".to_string(),
+        toml::Value::Array(field_map),
+    );
 
     let channel = DeviceQueryChannel {
         channel_type: DEFAULT_CHANNEL_TYPE.to_string(),
@@ -45,7 +61,7 @@ pub fn run(id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
         supported_sensor_kinds: vec![SensorStateKind::TactilePointCloud2],
         default_sample_rate_hz: Some(100.0),
         sensor_shape_hints: shape_hints,
-        optional_info: toml::Table::new(),
+        optional_info: channel_extra,
     };
     let device = DeviceQueryDevice {
         id: id.to_string(),
