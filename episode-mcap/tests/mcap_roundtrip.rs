@@ -6,20 +6,26 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Resolve the bfbs directory for tests.
+///
+/// Mirrors `resolve_bfbs_dir` in `src/runtime.rs`: env var override first,
+/// then the installed location populated by the deb package.
 fn bfbs_dir() -> &'static Path {
-    // Try the mcap_spec workspace location
-    let candidate = Path::new("/data/tb5z035i/workspace/mcap_spec/data-schema/generated/bfbs");
-    if candidate.is_dir() {
-        return candidate;
-    }
-    // Fallback: env var
+    // 1. Env var override (set by `eval "$(make set-env)"` for in-tree dev)
     if let Ok(dir) = std::env::var("ROLLIO_BFBS_DIR") {
         let p = Path::new(Box::leak(dir.into_boxed_str()));
         if p.is_dir() {
             return p;
         }
     }
-    panic!("Cannot find bfbs directory for tests");
+    // 2. Installed location (populated by the rollio deb package)
+    let installed = Path::new("/usr/share/rollio/bfbs");
+    if installed.is_dir() {
+        return installed;
+    }
+    panic!(
+        "Cannot find bfbs directory for tests. \
+         Set ROLLIO_BFBS_DIR (e.g. `eval \"$(make set-env)\"`) or install the rollio deb."
+    );
 }
 
 #[test]

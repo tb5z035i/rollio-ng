@@ -21,6 +21,7 @@ members = [
     "test/bus-tap",
     "web-gateway",
     "control-server",
+    "utils/mcap-validate",
 ]
 exclude = ["third_party"]
 

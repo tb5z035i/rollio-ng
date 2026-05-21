@@ -762,14 +762,19 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
 
 /// Resolve the directory containing .bfbs schema files.
 fn resolve_bfbs_dir(config: &AssemblerRuntimeConfigV2) -> Result<PathBuf, Box<dyn Error>> {
-    // Check ROLLIO_BFBS_DIR env var first
+    // 1. Explicit override via env var (set by `eval "$(make set-env)"` for dev)
     if let Ok(dir) = std::env::var("ROLLIO_BFBS_DIR") {
         let p = PathBuf::from(dir);
         if p.is_dir() {
             return Ok(p);
         }
     }
-    // Fall back to a `bfbs/` directory next to the staging dir
+    // 2. Installed location (primary default for deployed systems)
+    let installed = PathBuf::from("/usr/share/rollio/bfbs");
+    if installed.is_dir() {
+        return Ok(installed);
+    }
+    // 3. Relative to staging dir (non-standard layouts)
     let candidate = Path::new(&config.staging_dir)
         .parent()
         .unwrap_or(Path::new("."))
@@ -777,12 +782,7 @@ fn resolve_bfbs_dir(config: &AssemblerRuntimeConfigV2) -> Result<PathBuf, Box<dy
     if candidate.is_dir() {
         return Ok(candidate);
     }
-    // Fall back to /usr/share/rollio/bfbs (installed location)
-    let installed = PathBuf::from("/usr/share/rollio/bfbs");
-    if installed.is_dir() {
-        return Ok(installed);
-    }
-    Err("Cannot find .bfbs schema directory. Set ROLLIO_BFBS_DIR or place schemas in /usr/share/rollio/bfbs".into())
+    Err("Cannot find .bfbs schema directory. Set ROLLIO_BFBS_DIR or install the rollio deb (provides /usr/share/rollio/bfbs)".into())
 }
 
 // ---------------------------------------------------------------------------

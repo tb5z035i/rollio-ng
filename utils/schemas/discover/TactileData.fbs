@@ -1,0 +1,37 @@
+// discover.TactileData - PaXini multi-dimensional tactile sensor data
+// max_field_id: 2
+
+include "Time.fbs";
+
+namespace discover;
+
+/// A single tactile point with 6 dimensions: position (x, y, z) and force (fx, fy, fz)
+struct TactilePoint {
+  /// Position x coordinate
+  x:float;
+  /// Position y coordinate
+  y:float;
+  /// Position z coordinate
+  z:float;
+  /// Force x component
+  fx:float;
+  /// Force y component
+  fy:float;
+  /// Force z component
+  fz:float;
+}
+
+/// Tactile sensor data from PaXini multi-dimensional tactile sensors.
+/// Each point contains position and force vectors (6 dimensions total).
+table TactileData {
+  /// Timestamp of the tactile measurement
+  timestamp:foxglove.Time (id: 0);
+
+  /// Frame of reference
+  frame_id:string (id: 1);
+
+  /// Array of tactile contact points
+  points:[TactilePoint] (id: 2);
+}
+
+root_type TactileData;

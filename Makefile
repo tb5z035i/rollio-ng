@@ -150,6 +150,7 @@ package:
 set-env:
 	@echo 'export PATH="$(CURDIR)/$(TARGET_BUILD_DIR):$$PATH"'
 	@echo 'export ROLLIO_SHARE_DIR="$(CURDIR)"'
+	@echo 'export ROLLIO_BFBS_DIR="$(CURDIR)/bfbs"'
 
 # Apt-side prereqs. The host (amd64) list is always installed; arm64
 # layers the cross toolchain + multiarch :arm64 dev libs on top.

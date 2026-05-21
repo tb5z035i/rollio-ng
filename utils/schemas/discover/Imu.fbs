@@ -1,0 +1,29 @@
+// discover.Imu - IMU sensor data
+// max_field_id: 4
+
+include "Time.fbs";
+include "Quaternion.fbs";
+include "Vector3.fbs";
+
+namespace discover;
+
+/// IMU (Inertial Measurement Unit) sensor data containing orientation,
+/// angular velocity, and linear acceleration.
+table Imu {
+  /// Timestamp of the IMU measurement
+  timestamp:foxglove.Time (id: 0);
+
+  /// Frame of reference
+  frame_id:string (id: 1);
+
+  /// Orientation as a quaternion (x, y, z, w)
+  orientation:foxglove.Quaternion (id: 2);
+
+  /// Angular velocity in rad/s
+  angular_velocity:foxglove.Vector3 (id: 3);
+
+  /// Linear acceleration in m/s²
+  linear_acceleration:foxglove.Vector3 (id: 4);
+}
+
+root_type Imu;

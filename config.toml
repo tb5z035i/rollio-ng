@@ -26,9 +26,9 @@ preview_enabled = true
 record_enabled = true
 
 [devices.channels.profile]
-width = 1920
-height = 1080
-fps = 30
+width = 2592
+height = 1944
+fps = 60
 pixel_format = "mjpeg"
 native_pixel_format = "MJPG"
 
@@ -57,9 +57,9 @@ preview_enabled = true
 record_enabled = true
 
 [devices.channels.profile]
-width = 2592
-height = 1944
-fps = 60
+width = 1920
+height = 1080
+fps = 30
 pixel_format = "mjpeg"
 native_pixel_format = "MJPG"
 
@@ -75,12 +75,9 @@ staging_dir = "/dev/shm/rollio"
 staging_slots = 4
 
 [storage]
-backend = "dataloop"
+backend = "local"
 output_path = "./output"
-endpoint = "http://192.168.31.120"
 queue_size = 32
-dataloop_token = "sk-123"
-dataloop_project_id = "19"
 
 [monitor]
 metrics_frequency_hz = 1.0

@@ -144,6 +144,8 @@ assert_built() {
         || die "missing ui/terminal/dist/package.json (ESM marker) -- run \`make ui-build\` (or \`make build\`) first"
     [[ -f ui/terminal/native/rollio-native-ascii.node ]] \
         || die "missing ui/terminal/native/rollio-native-ascii.node -- run \`make ui-build\` (or \`make build\`) first"
+    compgen -G "bfbs/*.bfbs" >/dev/null \
+        || die "missing bfbs/*.bfbs -- vendored FlatBuffer schema files not found"
     # bundle-terminal.mjs vendors sharp + its runtime deps (incl. the per-arch
     # @img/sharp-* native binding npm picked locally) into .deb-vendor/.
     [[ -f ui/terminal/.deb-vendor/node_modules/sharp/package.json ]] \
@@ -370,6 +372,10 @@ build_core() {
         "$CORE_STAGING/usr/share/rollio/ui/terminal/native/"
     cp -a ui/terminal/.deb-vendor/node_modules \
         "$CORE_STAGING/usr/share/rollio/ui/terminal/node_modules"
+
+    # Stage bfbs schema files for the MCAP episode assembler
+    install -d "$CORE_STAGING/usr/share/rollio/bfbs"
+    install -m644 bfbs/*.bfbs "$CORE_STAGING/usr/share/rollio/bfbs/"
 
     local subst="$STAGING/substvars-rollio"
     log "Computing rollio Depends via dpkg-shlibdeps"

@@ -98,6 +98,7 @@ The venv is required because Ubuntu 24.04's system Python is PEP 668 externally-
 | `/usr/share/rollio/ui/terminal/dist/` | Built terminal UI (esbuild bundle; run with `node /usr/share/rollio/ui/terminal/dist/index.js`). Includes a `package.json` `{"type":"module"}` ESM marker. |
 | `/usr/share/rollio/ui/terminal/node_modules/` | Vendored `sharp` runtime closure (kept external from the bundle because it ships per-arch native bindings) |
 | `/usr/share/rollio/ui/terminal/native/rollio-native-ascii.node` | Rust N-API addon for the native ASCII renderer worker |
+| `/usr/share/rollio/bfbs/` | Binary FlatBuffer reflection schemas (`.bfbs`) for the MCAP episode assembler |
 | `/bin/can_add.sh`, `/bin/slcan_add.sh`, `/bin/bind_airbot_device` | AIRBOT Play CAN helper scripts vendored under [`debian/bin/`](../debian/bin/). On Ubuntu (usrmerge) `/bin` is the same directory as `/usr/bin`. |
 | `/lib/udev/rules.d/90-usb-can.rules`, `/lib/udev/rules.d/90-usb-slcan.rules` | udev rules that bring up `can*`/`ttyCAN*` devices via the helpers above |
 | `/lib/systemd/system/slcan@.service` | Templated unit started by the `90-usb-slcan` rule for each `ttyCAN%n` |
@@ -111,6 +112,7 @@ The Nero wheel installs into the operator's venv (`<venv>/lib/python3.12/site-pa
 | Variable | Meaning |
 |----------|---------|
 | `ROLLIO_SHARE_DIR` | Directory that **contains** `ui/web/dist/index.html` (same shape as the repo or `/usr/share/rollio`). Overrides auto-detection. |
+| `ROLLIO_BFBS_DIR` | Directory containing `.bfbs` schema files for the MCAP assembler. Overrides the installed `/usr/share/rollio/bfbs` path. Set automatically by `eval "$(make set-env)"` for in-tree development. |
 | `ROLLIO_STATE_DIR` | Writable directory for child process cwd, `rollio-setup-logs`, staging directories, and related state. |
 | `ROLLIO_LOG_DIR` | Directory where `rollio collect` writes per-child log files (`device-*.log`, `encoder-*.log`, …). Defaults to `<invocation cwd>/rollio-logs`. |
 
