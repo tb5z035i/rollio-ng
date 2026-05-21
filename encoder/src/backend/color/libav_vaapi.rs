@@ -120,7 +120,6 @@ struct Pipeline {
 struct OutputStage {
     filter: ScaleGraph,
     encoder: ffmpeg::encoder::Video,
-    extradata: Vec<u8>,
 }
 
 pub(crate) struct VaapiHwSession {
@@ -233,12 +232,8 @@ impl VaapiHwSession {
             time_base: self.encoder_time_base,
         })?;
 
-        let (encoder, extradata) = self.open_encoder(&filter)?;
-        let mut output = OutputStage {
-            filter,
-            encoder,
-            extradata,
-        };
+        let encoder = self.open_encoder(&filter)?;
+        let mut output = OutputStage { filter, encoder };
         decoded.set_pts(Some(0));
         output.filter.send_frame(&mut decoded)?;
         Ok(Pipeline {
@@ -265,18 +260,14 @@ impl VaapiHwSession {
             dst_sw_format: Pixel::NV12,
             time_base: self.encoder_time_base,
         })?;
-        let (encoder, extradata) = self.open_encoder(&filter)?;
+        let encoder = self.open_encoder(&filter)?;
         Ok(Pipeline {
             input: InputStage::Raw { source_pixel },
-            output: OutputStage {
-                filter,
-                encoder,
-                extradata,
-            },
+            output: OutputStage { filter, encoder },
         })
     }
 
-    fn open_encoder(&self, filter: &ScaleGraph) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
+    fn open_encoder(&self, filter: &ScaleGraph) -> Result<ffmpeg::encoder::Video> {
         let codec_name =
             select_encoder_name(self.codec, EncoderBackend::Vaapi).ok_or_else(|| {
                 EncoderError::message(format!(
@@ -326,16 +317,7 @@ impl VaapiHwSession {
                 self.width, self.height, self.fps,
             ))
         })?;
-        let extradata = unsafe {
-            let ptr = (*opened.as_ptr()).extradata;
-            let len = (*opened.as_ptr()).extradata_size as usize;
-            if ptr.is_null() || len == 0 {
-                Vec::new()
-            } else {
-                std::slice::from_raw_parts(ptr, len).to_vec()
-            }
-        };
-        Ok((opened, extradata))
+        Ok(opened)
     }
 
     fn push_input_and_collect(
@@ -402,7 +384,9 @@ impl VaapiHwSession {
                 Some(()) => {
                     if self.force_keyframe {
                         scaled.set_kind(ffmpeg::picture::Type::I);
-                        unsafe { (*scaled.as_mut_ptr()).key_frame = 1; }
+                        unsafe {
+                            (*scaled.as_mut_ptr()).key_frame = 1;
+                        }
                         self.force_keyframe = false;
                     }
                     pipeline.output.encoder.send_frame(&scaled)?;

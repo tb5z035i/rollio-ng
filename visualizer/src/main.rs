@@ -149,7 +149,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_shutdown = shutdown.clone();
     let ipc_broadcast_tx = broadcast_tx.clone();
     let ipc_stream_info = stream_info.clone();
-    let ipc_cached_configs = cached_configs.clone();
     let ipc_camera_sources = runtime_config.camera_sources.clone();
     let ipc_robot_sources = runtime_config.robot_sources.clone();
     let ipc_output_mode = runtime_config.preview_output_mode;
@@ -163,7 +162,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ipc_output_mode,
                 ipc_broadcast_tx,
                 ipc_stream_info,
-                ipc_cached_configs,
                 resize_rx,
                 &ipc_shutdown,
             ) {
@@ -201,18 +199,13 @@ fn ipc_poll_loop(
     output_mode: PreviewOutputMode,
     broadcast_tx: broadcast::Sender<BroadcastMessage>,
     stream_info: Arc<Mutex<StreamInfoRegistry>>,
-    cached_configs: Arc<Mutex<Vec<Vec<u8>>>>,
     resize_rx: std::sync::mpsc::Receiver<(u32, u32)>,
     shutdown: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut poller = IpcPoller::new(camera_sources, robot_sources, output_mode)?;
     let preview_publishers = poller.take_preview_publishers();
 
-    let mut annex_b_params: std::collections::HashMap<String, Vec<u8>> =
-        std::collections::HashMap::new();
-    let _ = &annex_b_params; // TODO: remove after AU-framing migration completes
-    let mut seen_keyframe: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut seen_keyframe: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     log::info!("IPC poll loop started ({})", output_mode.as_str());
     while !shutdown.load(Ordering::Relaxed) {
@@ -331,21 +324,4 @@ fn ipc_poll_loop(
 
     log::info!("IPC poll loop stopped");
     Ok(())
-}
-
-fn cache_config(cache: &Arc<Mutex<Vec<Vec<u8>>>>, name: &str, bytes: &[u8]) {
-    let mut guard = cache.lock().expect("cached configs mutex poisoned");
-    let name_bytes = name.as_bytes();
-    let entry_matches = |entry: &Vec<u8>| -> bool {
-        if entry.len() < 3 + name_bytes.len() {
-            return false;
-        }
-        let entry_name_len = u16::from_le_bytes([entry[1], entry[2]]) as usize;
-        if entry_name_len != name_bytes.len() {
-            return false;
-        }
-        &entry[3..3 + entry_name_len] == name_bytes
-    };
-    guard.retain(|entry| !entry_matches(entry));
-    guard.push(bytes.to_vec());
 }

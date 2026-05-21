@@ -157,7 +157,6 @@ struct Pipeline {
 struct OutputStage {
     filter: ScaleGraph,
     encoder: ffmpeg::encoder::Video,
-    extradata: Vec<u8>,
 }
 
 pub(crate) struct NvidiaCudaSession {
@@ -363,13 +362,9 @@ impl NvidiaCudaSession {
             time_base: self.encoder_time_base,
         })?;
 
-        let (encoder, extradata) = self.open_encoder(&filter)?;
+        let encoder = self.open_encoder(&filter)?;
 
-        let mut output = OutputStage {
-            filter,
-            encoder,
-            extradata,
-        };
+        let mut output = OutputStage { filter, encoder };
         // Seed the filter with the first decoded frame; PTS gets
         // (re)set inside drain_filter_and_encode based on the
         // recording-start anchor.
@@ -400,18 +395,14 @@ impl NvidiaCudaSession {
             time_base: self.encoder_time_base,
         })?;
 
-        let (encoder, extradata) = self.open_encoder(&filter)?;
+        let encoder = self.open_encoder(&filter)?;
         Ok(Pipeline {
             input: InputStage::Raw { source_pixel },
-            output: Some(OutputStage {
-                filter,
-                encoder,
-                extradata,
-            }),
+            output: Some(OutputStage { filter, encoder }),
         })
     }
 
-    fn open_encoder(&self, filter: &ScaleGraph) -> Result<(ffmpeg::encoder::Video, Vec<u8>)> {
+    fn open_encoder(&self, filter: &ScaleGraph) -> Result<ffmpeg::encoder::Video> {
         let codec_name =
             select_encoder_name(self.codec, EncoderBackend::Nvidia).ok_or_else(|| {
                 EncoderError::message(format!(
@@ -462,7 +453,7 @@ impl NvidiaCudaSession {
             ))
         })?;
 
-        Ok((opened, Vec::new()))
+        Ok(opened)
     }
 
     fn drain_filter_and_encode(
@@ -486,7 +477,9 @@ impl NvidiaCudaSession {
                 Some(()) => {
                     if self.force_keyframe {
                         scaled.set_kind(ffmpeg::picture::Type::I);
-                        unsafe { (*scaled.as_mut_ptr()).key_frame = 1; }
+                        unsafe {
+                            (*scaled.as_mut_ptr()).key_frame = 1;
+                        }
                         self.force_keyframe = false;
                     }
                     output.encoder.send_frame(&scaled)?;
@@ -535,12 +528,8 @@ impl NvidiaCudaSession {
             dst_sw_format: Pixel::NV12,
             time_base: self.encoder_time_base,
         })?;
-        let (encoder, extradata) = self.open_encoder(&filter)?;
-        Ok(OutputStage {
-            filter,
-            encoder,
-            extradata,
-        })
+        let encoder = self.open_encoder(&filter)?;
+        Ok(OutputStage { filter, encoder })
     }
 
     /// Push the camera packet/frame into the decoder (Cuvid /
