@@ -19,7 +19,7 @@ use iceoryx2::prelude::*;
 use rollio_bus::{
     BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE, EPISODE_READY_SERVICE,
     EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
-    STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
+    STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
@@ -54,7 +54,6 @@ type PacketSubscriber =
 
 struct CameraSubscriber {
     channel_id: String,
-    config_subscriber: PacketSubscriber,
     packet_subscriber: PacketSubscriber,
 }
 
@@ -102,10 +101,10 @@ pub struct Sample {
 /// Per-camera recording stream buffer for MCAP output.
 #[derive(Debug, Clone, Default)]
 struct CameraStreamBuffer {
-    /// Codec config packet (SPS/PPS for H.264).
-    config_data: Option<Vec<u8>>,
     /// Accumulated video packets for this episode.
     packets: Vec<CameraPacket>,
+    /// Whether we've received the first keyframe (wait-for-IDR gate).
+    seen_keyframe: bool,
     /// Whether EndOfStream has been received.
     eos_received: bool,
     /// Sequence validation.
@@ -121,14 +120,15 @@ struct CameraPacket {
 }
 
 impl CameraStreamBuffer {
-    fn observe_config(&mut self, header: &EncodedPacketHeader, payload: &[u8]) {
-        self.config_data = Some(payload.to_vec());
-        self.expected_seq = header.sequence_number.wrapping_add(1);
-    }
-
     fn observe_packet(&mut self, header: &EncodedPacketHeader, payload: &[u8]) {
         if self.failed.is_some() {
             return;
+        }
+        if !self.seen_keyframe {
+            if !header.is_keyframe() {
+                return;
+            }
+            self.seen_keyframe = true;
         }
         if header.sequence_number != self.expected_seq && self.expected_seq != 0 {
             self.failed = Some(format!(
@@ -345,7 +345,6 @@ impl EpisodeManager {
             return;
         };
         match header.kind {
-            EncodedPacketKind::Config => buffer.observe_config(header, payload),
             EncodedPacketKind::Packet => buffer.observe_packet(header, payload),
             EncodedPacketKind::EndOfStream => buffer.observe_eos(header),
         }
@@ -881,19 +880,6 @@ fn create_camera_subscribers(
 ) -> Result<Vec<CameraSubscriber>, Box<dyn Error>> {
     let mut subs = Vec::with_capacity(config.cameras.len());
     for camera in &config.cameras {
-        let config_service_name: ServiceName = camera.recording_config_topic.as_str().try_into()?;
-        let config_service = node
-            .service_builder(&config_service_name)
-            .publish_subscribe::<[u8]>()
-            .user_header::<EncodedPacketHeader>()
-            .history_size(STREAM_CONFIG_HISTORY_SIZE)
-            .subscriber_max_buffer_size(STREAM_CONFIG_HISTORY_SIZE.max(2))
-            .max_publishers(16)
-            .max_subscribers(16)
-            .max_nodes(16)
-            .open_or_create()?;
-        let config_subscriber = config_service.subscriber_builder().create()?;
-
         let packet_service_name: ServiceName = camera.recording_packet_topic.as_str().try_into()?;
         let packet_service = node
             .service_builder(&packet_service_name)
@@ -909,7 +895,6 @@ fn create_camera_subscribers(
 
         subs.push(CameraSubscriber {
             channel_id: camera.channel_id.clone(),
-            config_subscriber,
             packet_subscriber,
         });
     }
@@ -1080,13 +1065,6 @@ fn drain_camera_packets(
 ) -> Result<bool, Box<dyn Error>> {
     let mut changed = false;
     for cam in subscribers {
-        loop {
-            let Some(sample) = cam.config_subscriber.receive()? else {
-                break;
-            };
-            manager.on_packet(&cam.channel_id, sample.user_header(), sample.payload());
-            changed = true;
-        }
         loop {
             let Some(sample) = cam.packet_subscriber.receive()? else {
                 break;

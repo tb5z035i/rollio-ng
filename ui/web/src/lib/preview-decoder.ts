@@ -2,11 +2,14 @@
  * WebCodecs-based decoder registry for the encoded preview path.
  *
  * The visualizer broadcasts H.264 (codecId 0) / H.265 (1) / AV1 (2)
- * preview streams to the web UI as binary kind-0x02 (`encoded_config`)
- * and kind-0x03 (`encoded_packet`) messages. This module owns the
- * per-camera `VideoDecoder` lifetimes and converts decoded
- * `VideoFrame`s into a small `DecodedFrame` event consumed by
- * `usePreviewSocket`.
+ * preview streams to the web UI as self-contained kind-0x03
+ * (`encoded_packet`) messages. Keyframes carry inline SPS/PPS, so
+ * `usePreviewSocket` auto-configures the decoder from the first
+ * keyframe per camera (passing the AU payload as the `description`).
+ *
+ * This module owns the per-camera `VideoDecoder` lifetimes and
+ * converts decoded `VideoFrame`s into a small `DecodedFrame` event
+ * consumed by `usePreviewSocket`.
  *
  * The registry is injected via `UsePreviewSocketOptions.decoderRegistryFactory`
  * (mirroring the existing `objectUrlFactory` / `websocketFactory`
@@ -15,6 +18,7 @@
  */
 
 import { videoDecoderAvailability } from "./browser-codecs";
+import { incrementGauge, setGauge } from "./debug-metrics";
 
 export interface DecodedFrame {
   name: string;
@@ -120,8 +124,10 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       console.warn(
         `[preview-decoder] unsupported codecId ${codecId} for ${name}`,
       );
+      setGauge(`ui.preview_decoder_last_error.${name}`, `unsupported codecId ${codecId}`);
       return;
     }
+    setGauge(`ui.preview_decoder_description_bytes.${name}`, description.byteLength);
 
     // Stream restart: close any existing decoder for this name so
     // queued frames from the prior session don't surface here.
@@ -152,15 +158,18 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       },
       error: (error) => {
         console.warn(`[preview-decoder] ${name} decoder error: ${error}`);
+        incrementGauge(`ui.preview_decoder_errors_total.${name}`);
+        setGauge(`ui.preview_decoder_last_error.${name}`, String(error));
       },
     });
 
     try {
       // Annex B mode: omit `description` so WebCodecs expects
       // start-code-prefixed NAL units in each `EncodedVideoChunk` and
-      // reads SPS/PPS in-band. The visualizer prepends the cached SPS
-      // and PPS NALUs to every keyframe payload, so each IDR carries
-      // the parameter sets the decoder needs to (re)initialize.
+      // reads SPS/PPS in-band. Encoders run without GLOBAL_HEADER so
+      // every keyframe AU carries inline SPS/PPS — the parameter sets
+      // the decoder needs to (re)initialize travel with the bitstream
+      // itself, no out-of-band description required.
       decoder.configure({
         codec: codecString,
         codedWidth: width,
@@ -171,6 +180,8 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       console.warn(
         `[preview-decoder] ${name} configure failed: ${error}`,
       );
+      incrementGauge(`ui.preview_decoder_configure_failures_total.${name}`);
+      setGauge(`ui.preview_decoder_last_error.${name}`, `configure: ${error}`);
       try {
         decoder.close();
       } catch {
@@ -179,6 +190,8 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       return;
     }
 
+    setGauge(`ui.preview_decoder_codec_string.${name}`, codecString);
+    setGauge(`ui.preview_decoder_state.${name}`, "configured");
     this.entries.set(name, {
       decoder,
       codecString,
@@ -198,9 +211,12 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
   ): void {
     const entry = this.entries.get(name);
     if (!entry) {
+      incrementGauge(`ui.preview_decoder_drops_unconfigured.${name}`);
       return;
     }
     if (entry.decoder.state !== "configured") {
+      incrementGauge(`ui.preview_decoder_drops_not_configured.${name}`);
+      setGauge(`ui.preview_decoder_state.${name}`, entry.decoder.state);
       return;
     }
     entry.pendingSourceTs.set(ptsUs, sourceTimestampUs);
@@ -228,6 +244,8 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
       entry.decoder.decode(chunk);
     } catch (error) {
       console.warn(`[preview-decoder] ${name} decode failed: ${error}`);
+      incrementGauge(`ui.preview_decoder_decode_failures_total.${name}`);
+      setGauge(`ui.preview_decoder_last_error.${name}`, `decode: ${error}`);
     }
   }
 
@@ -236,6 +254,7 @@ export class PreviewDecoderRegistry implements DecoderRegistry {
     if (!entry) {
       return;
     }
+    setGauge(`ui.preview_decoder_state.${name}`, "closed");
     this.entries.delete(name);
     try {
       entry.decoder.close();

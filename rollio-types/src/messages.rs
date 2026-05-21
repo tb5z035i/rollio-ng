@@ -437,22 +437,20 @@ impl Default for ParallelMitCommand2 {
 // the codec's elementary access unit.
 // ---------------------------------------------------------------------------
 
-/// Discriminates the three message shapes carried over a packet topic:
-/// codec stream configuration (carries extradata/SPS/PPS), encoded access
-/// unit, and end-of-stream sentinel.
+/// Discriminates the two message shapes carried over a packet topic:
+/// encoded access unit and end-of-stream sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[type_name("EncodedPacketKind")]
 #[repr(C)]
 pub enum EncodedPacketKind {
-    /// Codec configuration / extradata. Sent once at session-open and
-    /// retained on the per-camera `…/recording-config` /
-    /// `…/preview-config` topic with `history_size = 1` so late
-    /// subscribers can replay it.
-    Config = 0,
     /// One encoded access unit (NALU sequence in Annex B for H.264/H.265,
     /// temporal unit / OBU for AV1, single JPEG for MJPG, single RVL
-    /// frame for RVL).
+    /// frame for RVL). For H.264/H.265, MUST be Annex B framing.
+    /// Keyframes (`ENCODED_PACKET_FLAG_KEYFRAME`) MUST carry SPS+PPS
+    /// (H.264) / VPS+SPS+PPS (H.265) / sequence-header OBU (AV1) inline
+    /// ahead of the VCL payload. Delta packets MUST NOT carry parameter
+    /// sets.
     Packet = 1,
     /// Marks the end of a recording session for the assembler. The
     /// payload is empty.
@@ -479,21 +477,13 @@ pub enum EncodedCodecId {
 /// best-effort drop on the preview path.
 pub const ENCODED_PACKET_FLAG_KEYFRAME: u32 = 1 << 0;
 
-/// Bit set in `EncodedPacketHeader.flags` when the packet has codec
-/// configuration / extradata inlined ahead of the access unit (in
-/// addition to the once-per-session `Config` message). H.264/H.265 NVENC
-/// and some VAAPI builds repeat SPS/PPS at every keyframe; the flag lets
-/// the assembler/visualizer know it can skip caching the duplicate.
-pub const ENCODED_PACKET_FLAG_CONFIG_INLINE: u32 = 1 << 1;
-
 /// Bit set in `EncodedPacketHeader.flags` when the encoder cannot
 /// rescale the stream — output dims are pinned to source dims. The
 /// passthrough backend always sets this because its very contract is
 /// "rewrite headers and relay NAL bytes verbatim". The visualizer
 /// surfaces this flag on `stream_info` so the UI knows not to send
 /// `set_preview_size` requests (which the passthrough session would
-/// reject anyway). Set on the `Config` packet and inherited by every
-/// `Packet` from the same session.
+/// reject anyway).
 pub const ENCODED_PACKET_FLAG_SCALING_LOCKED: u32 = 1 << 2;
 
 /// Metadata for one encoded packet. Used as a user header on an iceoryx2
@@ -557,23 +547,11 @@ impl EncodedPacketHeader {
         self.flags & ENCODED_PACKET_FLAG_KEYFRAME != 0
     }
 
-    pub fn has_inline_config(&self) -> bool {
-        self.flags & ENCODED_PACKET_FLAG_CONFIG_INLINE != 0
-    }
-
     pub fn set_keyframe(&mut self, value: bool) {
         if value {
             self.flags |= ENCODED_PACKET_FLAG_KEYFRAME;
         } else {
             self.flags &= !ENCODED_PACKET_FLAG_KEYFRAME;
-        }
-    }
-
-    pub fn set_inline_config(&mut self, value: bool) {
-        if value {
-            self.flags |= ENCODED_PACKET_FLAG_CONFIG_INLINE;
-        } else {
-            self.flags &= !ENCODED_PACKET_FLAG_CONFIG_INLINE;
         }
     }
 
@@ -594,16 +572,48 @@ impl EncodedPacketHeader {
 // PreviewControl — UI -> preview encoder runtime control
 // ---------------------------------------------------------------------------
 
-/// Control message published by the visualizer to a preview encoder when
-/// the operator changes the preview raster size. The encoder finalizes
-/// the current session, rebuilds the codec session at the new dims, and
-/// emits a fresh `Config` + keyframe so subscribers can re-init their
-/// decoders without losing more than a few frames.
+/// Control message published by the visualizer to a preview encoder.
+///
+/// - `SetSize` finalizes the current session, rebuilds the codec session
+///   at the new dims, and emits a fresh keyframe so subscribers can
+///   re-init their decoders without losing more than a few frames.
+/// - `RequestKeyframe` asks the preview encoder to force its next
+///   output AU to be an IDR. The visualizer publishes this on new WS
+///   client connect (and on connection-loss recovery) so a freshly
+///   attached browser sees a decodable picture within one camera period
+///   instead of waiting for the next natural keyframe in long-GOP IPPP
+///   streams. Encoders that share a session with an upstream camera
+///   (passthrough path) forward the request to the camera publisher
+///   over the per-channel `control/camera` topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
 #[type_name("PreviewControl")]
 #[repr(C)]
 pub enum PreviewControl {
     SetSize { width: u32, height: u32 },
+    RequestKeyframe,
+}
+
+// ---------------------------------------------------------------------------
+// CameraControl — downstream consumer -> camera publisher control
+// ---------------------------------------------------------------------------
+
+/// Per-camera back-channel from any consumer (recording runtime,
+/// passthrough encoder, visualizer) to the camera publisher. Used to
+/// request an IDR / keyframe with minimum latency on IPPP streams so
+/// recording or live preview can start within one frame time rather
+/// than waiting for the next natural GOP boundary.
+///
+/// Latched best-effort (`history_size = 0`): a request that arrives
+/// before the camera subscribes is lost, which is acceptable because
+/// recording-start naturally pairs with a fresh encoder session that
+/// already begins with an IDR; the request matters only for
+/// long-running sessions (passthrough on an already-streaming camera,
+/// or a visualizer mid-stream join).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend)]
+#[type_name("CameraControl")]
+#[repr(C)]
+pub enum CameraControl {
+    RequestKeyframe = 0,
 }
 
 // ---------------------------------------------------------------------------

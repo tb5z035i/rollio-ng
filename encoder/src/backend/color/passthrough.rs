@@ -106,74 +106,23 @@ impl ColorEncoderBackend for PassthroughBackend {
             height: params.output_height,
             episode_index: params.episode_index,
             recording_start_us: params.recording_start_us,
-            config_sent: false,
             next_sequence: 0,
             metrics: EncodeMetrics::default(),
         }))
     }
 }
 
-/// Bytes-verbatim H.264 codec session. Splits the first keyframe's
-/// SPS/PPS NAL units out for a one-shot `write_config`; forwards every
-/// AU (including any subsequent in-band SPS/PPS) as a `Packet`.
+/// Bytes-verbatim H.264 codec session. Forwards every AU as a `Packet`.
 struct PassthroughCodecSession {
     width: u32,
     height: u32,
     episode_index: u32,
     recording_start_us: u64,
-    config_sent: bool,
     next_sequence: u64,
     metrics: EncodeMetrics,
 }
 
 impl PassthroughCodecSession {
-    /// Locate SPS (NAL type 7) + PPS (NAL type 8) NAL units in an
-    /// Annex B byte slice and rebuild them into a single
-    /// start-code-prefixed buffer suitable for the `Config` packet.
-    /// Returns `None` if either is missing — the caller postpones the
-    /// `Config` write until a frame with both arrives.
-    fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
-        let nalus = split_annex_b_nalus(data);
-        let mut sps: Option<&[u8]> = None;
-        let mut pps: Option<&[u8]> = None;
-        for nalu in nalus {
-            if nalu.is_empty() {
-                continue;
-            }
-            match nalu[0] & 0x1F {
-                7 => sps.get_or_insert(nalu),
-                8 => pps.get_or_insert(nalu),
-                _ => continue,
-            };
-        }
-        let sps = sps?;
-        let pps = pps?;
-        let mut out = Vec::with_capacity(4 + sps.len() + 4 + pps.len());
-        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        out.extend_from_slice(sps);
-        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        out.extend_from_slice(pps);
-        Some(out)
-    }
-
-    /// Detect whether an Annex B AU contains an IDR slice (NAL type
-    /// 5). Falls back to checking for SPS/PPS as a weaker signal —
-    /// some camera encoders emit SPS+PPS only at keyframes, so seeing
-    /// either is a strong hint we're at an IDR boundary.
-    fn is_keyframe(data: &[u8]) -> bool {
-        let nalus = split_annex_b_nalus(data);
-        for nalu in nalus {
-            if nalu.is_empty() {
-                continue;
-            }
-            let nal_type = nalu[0] & 0x1F;
-            if matches!(nal_type, 5 | 7 | 8) {
-                return true;
-            }
-        }
-        false
-    }
-
     fn build_header(
         &self,
         kind: EncodedPacketKind,
@@ -227,40 +176,16 @@ impl CodecSession for PassthroughCodecSession {
             )));
         }
 
-        // Send the codec-config (SPS+PPS) packet once, on the first
-        // frame that carries both NAL units. A camera that emits SPS/
-        // PPS only on keyframes will block here until its first IDR;
-        // delta-only frames before the first IDR are dropped.
-        if !self.config_sent {
-            if let Some(extradata) = Self::extract_sps_pps(&frame.payload) {
-                let header = self.build_header(
-                    EncodedPacketKind::Config,
-                    frame,
-                    0,
-                    self.next_sequence,
-                    extradata.len() as u32,
-                    false,
-                );
-                self.next_sequence += 1;
-                sink.write_config(header, &extradata)?;
-                self.config_sent = true;
-            } else {
-                // No SPS/PPS yet — drop the frame; the next keyframe
-                // will populate the config and stream resumes.
-                self.metrics.dropped_frames = self.metrics.dropped_frames.saturating_add(1);
-                return Ok(());
-            }
-        }
-
         // Pass-through packet. Reuse the camera-side wall-clock
         // timestamp (now relative to `recording_start_us`, so PTS
         // monotonically increases from session start) for the codec
         // PTS; sequence numbers come from this session.
+        let keyframe = crate::annexb::is_h264_keyframe(&frame.payload);
+
         let pts_us = frame
             .header
             .timestamp_us
             .saturating_sub(self.recording_start_us) as i64;
-        let keyframe = Self::is_keyframe(&frame.payload);
         let header = self.build_header(
             EncodedPacketKind::Packet,
             frame,
@@ -306,47 +231,6 @@ impl CodecSession for PassthroughCodecSession {
     fn record_dropped(&mut self) {
         self.metrics.dropped_frames = self.metrics.dropped_frames.saturating_add(1);
     }
-}
-
-/// Split an Annex B byte slice into its constituent NALU bodies
-/// (start codes stripped). Handles both 3-byte (`0x000001`) and
-/// 4-byte (`0x00000001`) start codes.
-///
-/// Local to the passthrough backend so its NAL surgery is self-
-/// contained. The visualizer had a similar helper for the
-/// (now-deleted) AVCC conversion; if a third caller needs it we can
-/// promote to a shared `nal_b` module under `backend/`.
-fn split_annex_b_nalus(bytes: &[u8]) -> Vec<&[u8]> {
-    let mut starts: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0;
-    while i + 2 < bytes.len() {
-        if bytes[i] == 0x00 && bytes[i + 1] == 0x00 {
-            if bytes[i + 2] == 0x01 {
-                starts.push((i, 3));
-                i += 3;
-                continue;
-            }
-            if i + 3 < bytes.len() && bytes[i + 2] == 0x00 && bytes[i + 3] == 0x01 {
-                starts.push((i, 4));
-                i += 4;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    let mut out = Vec::with_capacity(starts.len());
-    for (idx, &(offset, prefix)) in starts.iter().enumerate() {
-        let body_start = offset + prefix;
-        let body_end = if idx + 1 < starts.len() {
-            starts[idx + 1].0
-        } else {
-            bytes.len()
-        };
-        if body_start <= body_end {
-            out.push(&bytes[body_start..body_end]);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -397,10 +281,6 @@ mod tests {
 
     #[derive(Debug)]
     enum SinkCall {
-        Config {
-            header: EncodedPacketHeader,
-            extradata: Vec<u8>,
-        },
         Packet {
             header: EncodedPacketHeader,
             payload: Vec<u8>,
@@ -411,13 +291,6 @@ mod tests {
     }
 
     impl EncodedPacketSink for CaptureSink {
-        fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()> {
-            self.calls.push(SinkCall::Config {
-                header,
-                extradata: extradata.to_vec(),
-            });
-            Ok(())
-        }
         fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
             self.calls.push(SinkCall::Packet {
                 header,
@@ -491,45 +364,30 @@ mod tests {
         session.encode(&delta, &mut sink).expect("encode delta");
         session.finish(&mut sink).expect("finish");
 
-        // Order: Config, Packet (keyframe), Packet (delta), EOS.
-        assert!(matches!(sink.calls[0], SinkCall::Config { .. }));
+        // Order: Packet (keyframe), Packet (delta), EOS.
+        assert_eq!(sink.calls.len(), 3);
         match &sink.calls[0] {
-            SinkCall::Config { header, extradata } => {
+            SinkCall::Packet { header, payload } => {
+                assert!(header.is_keyframe(), "first packet must be keyframe");
                 assert_eq!(header.codec, EncodedCodecId::H264);
                 assert_eq!(header.width, 1920);
                 assert_eq!(header.height, 1080);
-                assert_eq!(extradata.len() as u32, header.payload_len);
-                // Should contain SPS and PPS, each prefixed with the
-                // 4-byte Annex B start code.
-                assert!(extradata.starts_with(&[0x00, 0x00, 0x00, 0x01]));
-                assert!(extradata
-                    .windows(5)
-                    .any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x67]));
-                assert!(extradata
-                    .windows(5)
-                    .any(|w| w == [0x00, 0x00, 0x00, 0x01, 0x68]));
-            }
-            _ => unreachable!(),
-        }
-        match &sink.calls[1] {
-            SinkCall::Packet { header, payload } => {
-                assert!(header.is_keyframe(), "first packet must be keyframe");
                 assert_eq!(
                     payload,
                     &synthetic_keyframe_au(),
                     "passthrough must forward the AU bytes verbatim"
                 );
             }
-            other => panic!("expected packet, got {other:?}"),
+            other => panic!("expected keyframe packet, got {other:?}"),
         }
-        match &sink.calls[2] {
+        match &sink.calls[1] {
             SinkCall::Packet { header, payload } => {
                 assert!(!header.is_keyframe(), "second packet must not be keyframe");
                 assert_eq!(payload, &synthetic_delta_au());
             }
             other => panic!("expected delta packet, got {other:?}"),
         }
-        assert!(matches!(sink.calls[3], SinkCall::Eos { .. }));
+        assert!(matches!(sink.calls[2], SinkCall::Eos { .. }));
     }
 
     #[test]
@@ -547,7 +405,6 @@ mod tests {
 
         for call in &sink.calls {
             let header = match call {
-                SinkCall::Config { header, .. } => header,
                 SinkCall::Packet { header, .. } => header,
                 SinkCall::Eos { header } => header,
             };
@@ -559,32 +416,32 @@ mod tests {
     }
 
     #[test]
-    fn delta_before_first_keyframe_is_dropped_until_sps_arrives() {
+    fn delta_before_first_keyframe_is_forwarded_as_non_keyframe() {
         let backend = PassthroughBackend;
         let p = params("test", 1920, 1080);
         let first_delta = frame(1920, 1080, synthetic_delta_au(), 1_000_000);
         let mut session = backend.open_session(&p, &first_delta).expect("open");
         let mut sink = CaptureSink::default();
 
-        // A delta-only AU before SPS arrives must not surface a
-        // Packet (the visualizer would have nothing to decode it
-        // against). Session silently drops and waits for the next
-        // keyframe.
+        // Passthrough forwards all packets; the consumer's wait-for-IDR
+        // filter is responsible for dropping leading deltas.
         session.encode(&first_delta, &mut sink).expect("encode");
-        assert!(
-            sink.calls.is_empty(),
-            "delta before SPS/PPS must not emit Config or Packet"
-        );
+        assert_eq!(sink.calls.len(), 1);
+        match &sink.calls[0] {
+            SinkCall::Packet { header, .. } => {
+                assert!(!header.is_keyframe());
+            }
+            other => panic!("expected packet, got {other:?}"),
+        }
 
         let key = frame(1920, 1080, synthetic_keyframe_au(), 1_033_000);
         session.encode(&key, &mut sink).expect("encode keyframe");
         assert_eq!(sink.calls.len(), 2);
-        assert!(matches!(sink.calls[0], SinkCall::Config { .. }));
         match &sink.calls[1] {
             SinkCall::Packet { header, .. } => {
                 assert!(header.is_keyframe());
             }
-            _ => unreachable!(),
+            other => panic!("expected keyframe packet, got {other:?}"),
         }
     }
 

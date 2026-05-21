@@ -64,8 +64,7 @@ pub struct RecordingStreamBuffer {
     pub packets: Vec<EncodedPacketRecord>,
     pub eos_received: bool,
     pub failed: Option<String>,
-    /// Last sequence number observed (Config or Packet) for this
-    /// (camera, episode). `None` until the first packet arrives.
+    pub seen_keyframe: bool,
     last_sequence: Option<u64>,
 }
 
@@ -95,6 +94,12 @@ impl RecordingStreamBuffer {
         if self.failed.is_some() {
             return;
         }
+        if !self.seen_keyframe {
+            if !header.is_keyframe() {
+                return;
+            }
+            self.seen_keyframe = true;
+        }
         if let Err(error) = self.update_sequence(header.sequence_number) {
             self.failed = Some(error.to_string());
             return;
@@ -117,7 +122,7 @@ impl RecordingStreamBuffer {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.failed.is_none() && self.eos_received && self.config.is_some()
+        self.failed.is_none() && self.eos_received && self.seen_keyframe
     }
 
     fn update_sequence(&mut self, sequence: u64) -> Result<(), SequenceError> {
@@ -196,10 +201,9 @@ mod tests {
     #[test]
     fn in_order_sequences_accepted() {
         let mut buf = RecordingStreamBuffer::default();
-        buf.observe_config(&header(EncodedPacketKind::Config, 0), b"sps_pps");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"frame_a");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 2), b"frame_b");
-        buf.observe_eos(&header(EncodedPacketKind::EndOfStream, 3));
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 0), b"frame_a");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"frame_b");
+        buf.observe_eos(&header(EncodedPacketKind::EndOfStream, 2));
         assert!(buf.failed.is_none());
         assert!(buf.is_complete());
         assert_eq!(buf.packets.len(), 2);
@@ -208,28 +212,25 @@ mod tests {
     #[test]
     fn sequence_gap_marks_buffer_failed() {
         let mut buf = RecordingStreamBuffer::default();
-        buf.observe_config(&header(EncodedPacketKind::Config, 0), b"sps_pps");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"frame_a");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 3), b"frame_skip");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 0), b"frame_a");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 2), b"frame_skip");
         assert!(buf.failed.is_some(), "gap must mark the buffer as failed");
     }
 
     #[test]
     fn out_of_order_marks_buffer_failed() {
         let mut buf = RecordingStreamBuffer::default();
-        buf.observe_config(&header(EncodedPacketKind::Config, 0), b"sps_pps");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"frame_a");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"duplicate");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 0), b"frame_a");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 0), b"duplicate");
         assert!(buf.failed.is_some());
     }
 
     #[test]
     fn buffer_incomplete_until_eos_arrives() {
         let mut buf = RecordingStreamBuffer::default();
-        buf.observe_config(&header(EncodedPacketKind::Config, 0), b"sps_pps");
-        buf.observe_packet(&header(EncodedPacketKind::Packet, 1), b"frame_a");
+        buf.observe_packet(&header(EncodedPacketKind::Packet, 0), b"frame_a");
         assert!(!buf.is_complete());
-        buf.observe_eos(&header(EncodedPacketKind::EndOfStream, 2));
+        buf.observe_eos(&header(EncodedPacketKind::EndOfStream, 1));
         assert!(buf.is_complete());
     }
 }

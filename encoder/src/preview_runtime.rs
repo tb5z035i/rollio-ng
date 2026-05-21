@@ -133,7 +133,17 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
             .receive()
             .map_err(map_iceoryx_error)?
         {
-            let PreviewControl::SetSize { width, height } = *sample.payload();
+            let (width, height) = match *sample.payload() {
+                PreviewControl::SetSize { width, height } => (width, height),
+                PreviewControl::RequestKeyframe => {
+                    if let PreviewState::Encoded { session, .. } = &mut state {
+                        if let Some(s) = session.as_mut() {
+                            let _ = s.request_keyframe();
+                        }
+                    }
+                    continue;
+                }
+            };
             if preview.resize_policy == PreviewResizePolicy::FixedSource {
                 continue;
             }
@@ -252,18 +262,25 @@ impl PreviewState {
 
     fn open_encoded(
         node: &Node<ipc::Service>,
-        _config: &EncoderRuntimeConfigV2,
+        config: &EncoderRuntimeConfigV2,
         preview: &PreviewEncoderConfig,
     ) -> Result<Self> {
-        let config_topic = preview
-            .config_topic
-            .as_deref()
-            .ok_or_else(|| EncoderError::message("preview encoded mode requires config_topic"))?;
         let packet_topic = preview
             .packet_topic
             .as_deref()
             .ok_or_else(|| EncoderError::message("preview encoded mode requires packet_topic"))?;
-        let sink = IpcPreviewPacketSink::open(node, config_topic, packet_topic, 8 * 1024 * 1024)?;
+        let camera_control_topic = config
+            .channel_id
+            .split_once('/')
+            .map(|(bus_root, channel_type)| {
+                rollio_bus::channel_camera_control_service_name(bus_root, channel_type)
+            });
+        let sink = IpcPreviewPacketSink::open(
+            node,
+            packet_topic,
+            camera_control_topic.as_deref(),
+            8 * 1024 * 1024,
+        )?;
         Ok(Self::Encoded {
             sink,
             session: None,

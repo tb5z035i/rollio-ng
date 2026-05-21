@@ -41,19 +41,21 @@ pub struct OwnedFrame {
 // Sink trait
 // ---------------------------------------------------------------------------
 
-/// Receives the codec session's output: one `Config` write at
-/// session-open, one `Packet` write per encoded access unit, one
-/// `EndOfStream` at session-finish. Sinks are responsible for
-/// publishing on iceoryx2 (or, in tests, recording the calls).
+/// Receives the codec session's output: one `Packet` write per encoded
+/// access unit, one `EndOfStream` at session-finish. Sinks are
+/// responsible for publishing on iceoryx2 (or, in tests, recording the
+/// calls).
 ///
 /// Sinks are not `Send`: the iceoryx2 publishers they wrap use a
 /// single-threaded arc-sync policy and must stay on the thread they
 /// were created on. The encoder runtimes accommodate this by
 /// constructing the sink inside the worker thread.
 pub trait EncodedPacketSink {
-    fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()>;
     fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()>;
     fn write_eos(&mut self, header: EncodedPacketHeader) -> Result<()>;
+    fn request_upstream_keyframe(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,9 @@ pub trait CodecSession {
     fn finish(self: Box<Self>, sink: &mut dyn EncodedPacketSink) -> Result<()>;
     fn metrics(&self) -> &EncodeMetrics;
     fn record_dropped(&mut self);
+    fn request_keyframe(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Owns the per-stream codec context for any currently-active session.
@@ -205,10 +210,9 @@ pub struct LibavCodecSession {
     _hw_device: Option<AvBufferRef>,
     hw_frames: Option<AvBufferRef>,
     /// Codec extradata captured immediately after the encoder is
-    /// opened. Sent on `Config` packets so the assembler / visualizer
-    /// can configure their decoder/muxer.
-    extradata: Vec<u8>,
-    config_sent: bool,
+    /// opened. Retained for consumers that need it (e.g. lerobot muxer
+    /// extracts SPS/PPS from the first keyframe AU instead).
+    force_keyframe: bool,
     /// Strictly increasing per-stream sequence number (0-based).
     next_sequence: u64,
     /// Last PTS we sent to the sink (microseconds, encoder time base).
@@ -278,11 +282,6 @@ impl LibavCodecSession {
         // `max_b_frames = 0` keeps encoded order == display order so
         // the assembler-side muxer's PTS/DTS handling stays trivial.
         encoder.set_max_b_frames(0);
-        // Always request global header so the codec extradata appears
-        // in `extradata` immediately after `open_as`. Without this
-        // some codecs (libx264 in baseline mode) leave the SPS/PPS
-        // inline at every keyframe instead.
-        encoder.set_flags(ffmpeg::codec::Flags::GLOBAL_HEADER);
 
         let hw_device = match actual_backend {
             EncoderBackend::Vaapi => Some(create_hw_device(actual_backend)?),
@@ -342,18 +341,6 @@ impl LibavCodecSession {
                 ))
             })?;
 
-        // Capture extradata before any frame is sent. Codecs without
-        // extradata (e.g. MJPG) leave the slice empty.
-        let extradata = unsafe {
-            let ptr = (*opened_encoder.as_ptr()).extradata;
-            let len = (*opened_encoder.as_ptr()).extradata_size as usize;
-            if ptr.is_null() || len == 0 {
-                Vec::new()
-            } else {
-                std::slice::from_raw_parts(ptr, len).to_vec()
-            }
-        };
-
         Ok(Self {
             codec: params.codec,
             actual_backend,
@@ -373,42 +360,12 @@ impl LibavCodecSession {
             encoder_pixel,
             _hw_device: hw_device,
             hw_frames,
-            extradata,
-            config_sent: false,
+            force_keyframe: false,
             next_sequence: 0,
             last_pts_us: None,
             nonmonotonic_warning_logged: false,
             metrics: EncodeMetrics::default(),
         })
-    }
-
-    fn ensure_config_sent(&mut self, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        if self.config_sent {
-            return Ok(());
-        }
-        let header = EncodedPacketHeader {
-            kind: EncodedPacketKind::Config,
-            codec: encoded_codec_id(self.codec),
-            flags: 0,
-            width: self.width,
-            height: self.height,
-            pixel_format: PixelFormat::Rgb24,
-            _reserved0: 0,
-            time_base_num: self.encoder_time_base.numerator() as u32,
-            time_base_den: self.encoder_time_base.denominator() as u32,
-            pts_us: 0,
-            dts_us: 0,
-            duration_us: 0,
-            sequence_number: self.next_sequence,
-            source_timestamp_us: self.recording_start_us,
-            source_frame_index: 0,
-            episode_index: self.episode_index,
-            payload_len: self.extradata.len() as u32,
-        };
-        self.next_sequence += 1;
-        sink.write_config(header, &self.extradata)?;
-        self.config_sent = true;
-        Ok(())
     }
 
     fn ensure_scaler(
@@ -500,7 +457,6 @@ impl LibavCodecSession {
 impl CodecSession for LibavCodecSession {
     fn encode(&mut self, frame: &OwnedFrame, sink: &mut dyn EncodedPacketSink) -> Result<()> {
         ensure_frame_compatibility(&frame.header, self.width, self.height, self.allow_rescale)?;
-        self.ensure_config_sent(sink)?;
 
         let pts_us = match crate::media::compute_pts_us(
             frame.header.timestamp_us,
@@ -527,6 +483,7 @@ impl CodecSession for LibavCodecSession {
             )));
         }
         source.set_pts(Some(pts_us));
+        let force_idr = std::mem::take(&mut self.force_keyframe);
 
         self.ensure_scaler(source_pixel, source_width, source_height)?;
 
@@ -539,6 +496,10 @@ impl CodecSession for LibavCodecSession {
             && source_width == self.width
             && source_height == self.height;
         if no_scale_needed {
+            if force_idr {
+                source.set_kind(ffmpeg::picture::Type::I);
+                unsafe { (*source.as_mut_ptr()).key_frame = 1; }
+            }
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
                     self.hw_frames
@@ -558,6 +519,10 @@ impl CodecSession for LibavCodecSession {
                 .expect("scaler should be initialized after ensure_scaler")
                 .run(&source, &mut frame_to_scale)?;
             frame_to_scale.set_pts(Some(pts_us));
+            if force_idr {
+                frame_to_scale.set_kind(ffmpeg::picture::Type::I);
+                unsafe { (*frame_to_scale.as_mut_ptr()).key_frame = 1; }
+            }
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
                     self.hw_frames
@@ -622,11 +587,12 @@ impl CodecSession for LibavCodecSession {
     fn record_dropped(&mut self) {
         self.metrics.dropped_frames = self.metrics.dropped_frames.saturating_add(1);
     }
-}
 
-// ---------------------------------------------------------------------------
-// RvlCodecSession
-// ---------------------------------------------------------------------------
+    fn request_keyframe(&mut self) -> Result<()> {
+        self.force_keyframe = true;
+        Ok(())
+    }
+}
 
 const RVL_MAGIC: &[u8; 4] = b"RVL1";
 
@@ -637,7 +603,6 @@ pub struct RvlCodecSession {
     episode_index: u32,
     recording_start_us: u64,
     encoder: DepthEncoder,
-    config_sent: bool,
     next_sequence: u64,
     metrics: EncodeMetrics,
 }
@@ -658,54 +623,14 @@ impl RvlCodecSession {
             episode_index: params.episode_index,
             recording_start_us: params.recording_start_us,
             encoder: DepthEncoder::rvl(frame_len),
-            config_sent: false,
             next_sequence: 0,
             metrics: EncodeMetrics::default(),
         })
     }
 
-    /// Build the RVL container preamble (magic + width + height + fps)
-    /// used as `Config` extradata. The assembler-side muxer
-    /// concatenates this with the per-frame packet payloads to
-    /// reproduce the legacy `.rvl` byte layout.
-    fn config_extradata(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(RVL_MAGIC.len() + 12);
-        buf.extend_from_slice(RVL_MAGIC);
-        buf.extend_from_slice(&self.width.to_le_bytes());
-        buf.extend_from_slice(&self.height.to_le_bytes());
-        buf.extend_from_slice(&self.fps.to_le_bytes());
-        buf
-    }
-
-    fn ensure_config_sent(&mut self, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        if self.config_sent {
-            return Ok(());
-        }
-        let extradata = self.config_extradata();
-        let header = EncodedPacketHeader {
-            kind: EncodedPacketKind::Config,
-            codec: EncodedCodecId::Rvl,
-            flags: 0,
-            width: self.width,
-            height: self.height,
-            pixel_format: PixelFormat::Depth16,
-            _reserved0: 0,
-            time_base_num: 1,
-            time_base_den: 1_000_000,
-            pts_us: 0,
-            dts_us: 0,
-            duration_us: 0,
-            sequence_number: self.next_sequence,
-            source_timestamp_us: self.recording_start_us,
-            source_frame_index: 0,
-            episode_index: self.episode_index,
-            payload_len: extradata.len() as u32,
-        };
-        self.next_sequence += 1;
-        sink.write_config(header, &extradata)?;
-        self.config_sent = true;
-        Ok(())
-    }
+    /// The RVL container preamble magic constant, exported for consumers
+    /// that need to synthesize the preamble from packet header fields.
+    pub const MAGIC: &'static [u8; 4] = RVL_MAGIC;
 }
 
 impl CodecSession for RvlCodecSession {
@@ -716,7 +641,6 @@ impl CodecSession for RvlCodecSession {
                 "rvl session received non-depth16 frame",
             ));
         }
-        self.ensure_config_sent(sink)?;
 
         let started = Instant::now();
         let depth_pixels = depth16_payload_to_vec(&frame.payload)?;
@@ -747,7 +671,7 @@ impl CodecSession for RvlCodecSession {
             time_base_den: 1_000_000,
             pts_us,
             dts_us: pts_us,
-            duration_us: 0,
+            duration_us: (1_000_000 / self.fps as i64),
             sequence_number: self.next_sequence,
             source_timestamp_us: frame.header.timestamp_us,
             source_frame_index: frame.header.frame_index,
@@ -855,10 +779,6 @@ mod tests {
 
     #[derive(Debug, Clone)]
     pub enum MockSinkCall {
-        Config {
-            header: EncodedPacketHeader,
-            extradata: Vec<u8>,
-        },
         Packet {
             header: EncodedPacketHeader,
             payload: Vec<u8>,
@@ -875,14 +795,6 @@ mod tests {
     }
 
     impl EncodedPacketSink for MockSink {
-        fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()> {
-            self.calls.push(MockSinkCall::Config {
-                header,
-                extradata: extradata.to_vec(),
-            });
-            Ok(())
-        }
-
         fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
             self.calls.push(MockSinkCall::Packet {
                 header,
@@ -975,15 +887,15 @@ mod tests {
         }
         session.finish(&mut sink).expect("finish session");
 
-        // The first call must be `Config` carrying non-empty extradata
-        // (SPS/PPS for libx264 with global header), the last must be
-        // `EndOfStream`, and every `Packet` in between must have a
+        // The first Packet must be a keyframe (libx264 emits IDR first),
+        // the last call must be `EndOfStream`, and every call must have a
         // strictly increasing sequence number.
-        assert!(matches!(sink.calls[0], MockSinkCall::Config { .. }));
-        if let MockSinkCall::Config { extradata, .. } = &sink.calls[0] {
+        assert!(matches!(sink.calls[0], MockSinkCall::Packet { .. }));
+        if let MockSinkCall::Packet { header, payload } = &sink.calls[0] {
+            assert!(header.is_keyframe(), "first packet must be a keyframe");
             assert!(
-                !extradata.is_empty(),
-                "h264 SPS/PPS extradata must be present"
+                !payload.is_empty(),
+                "first keyframe packet must have non-empty payload"
             );
         }
         let mut last_seq = sink.calls[0].sequence();
@@ -1010,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn rvl_session_emits_config_then_packets_then_eos_with_keyframe_flag() {
+    fn rvl_session_emits_packets_then_eos_with_keyframe_flag() {
         let width = 32;
         let height = 24;
         let frames: Vec<_> = (0..4).map(|i| make_depth_frame(width, height, i)).collect();
@@ -1039,16 +951,13 @@ mod tests {
         }
         session.finish(&mut sink).expect("finish rvl session");
 
-        assert!(matches!(sink.calls[0], MockSinkCall::Config { .. }));
-        if let MockSinkCall::Config { extradata, header } = &sink.calls[0] {
-            assert_eq!(&extradata[0..4], b"RVL1");
-            assert_eq!(header.episode_index, 5);
-        }
         let mut packet_count = 0usize;
-        for call in sink.calls.iter().skip(1) {
+        for call in &sink.calls {
             if let MockSinkCall::Packet { header, payload } = call {
                 assert!(header.is_keyframe(), "every RVL packet is a keyframe");
                 assert!(!payload.is_empty());
+                assert_eq!(header.episode_index, 5);
+                assert!(header.duration_us > 0, "RVL packets carry duration_us");
                 packet_count += 1;
             }
         }
@@ -1107,15 +1016,16 @@ mod tests {
         }
         session.finish(&mut sink).expect("finish session");
 
-        // Config must carry SPS/PPS sized for the output (32x24), and at
-        // least one Packet must reach the sink.
+        // First Packet must be a keyframe sized for the output (32x24),
+        // and at least one Packet must reach the sink.
         match &sink.calls[0] {
-            MockSinkCall::Config { header, extradata } => {
+            MockSinkCall::Packet { header, payload } => {
                 assert_eq!(header.width, 32);
                 assert_eq!(header.height, 24);
-                assert!(!extradata.is_empty(), "h264 extradata must be present");
+                assert!(header.is_keyframe(), "first packet must be a keyframe");
+                assert!(!payload.is_empty(), "first keyframe must have payload");
             }
-            other => panic!("first call should be Config, got {other:?}"),
+            other => panic!("first call should be Packet, got {other:?}"),
         }
         let packets: Vec<_> = sink
             .calls
@@ -1247,8 +1157,7 @@ mod tests {
     impl MockSinkCall {
         pub fn sequence(&self) -> u64 {
             match self {
-                MockSinkCall::Config { header, .. }
-                | MockSinkCall::Packet { header, .. }
+                MockSinkCall::Packet { header, .. }
                 | MockSinkCall::Eos { header } => header.sequence_number,
             }
         }

@@ -1,5 +1,4 @@
 const FRAME_TYPE_JPEG = 0x01;
-const FRAME_TYPE_ENCODED_CONFIG = 0x02;
 const FRAME_TYPE_ENCODED_PACKET = 0x03;
 const textDecoder = new TextDecoder("utf-8");
 
@@ -46,22 +45,11 @@ export interface CameraFrameMessage {
   jpegData: Uint8Array;
 }
 
-/** Codec config message (encoded preview mode, kind 0x02). The
- *  `description` is the AVCC bytes the visualizer already converted
- *  from Annex B SPS/PPS so the web UI can hand it to WebCodecs
- *  verbatim. */
-export interface EncodedConfigMessage {
-  type: "encoded_config";
-  name: string;
-  codecId: number; // matches EncodedCodecId discriminant
-  width: number;
-  height: number;
-  description: Uint8Array;
-}
-
 /** One encoded preview packet (kind 0x03). Payload is the
  *  codec-specific access unit (Annex B AU for H.264, RVL frame for
- *  RVL, etc.). */
+ *  RVL, etc.). Keyframes carry inline SPS/PPS so the frontend's
+ *  WebCodecs decoder auto-configures from the first key packet
+ *  alone — there is no separate config message. */
 export interface EncodedPacketMessage {
   type: "encoded_packet";
   name: string;
@@ -75,13 +63,14 @@ export interface EncodedPacketMessage {
    *  encoder unchanged. Use this (not `ptsUs`) for end-to-end latency
    *  metrics that compare against `Date.now()`. */
   sourceTimestampUs: number;
+  /** Coded width — needed to configure the WebCodecs decoder on the
+   *  first keyframe per camera. */
+  width: number;
+  height: number;
   payload: Uint8Array;
 }
 
-export type BinaryWsMessage =
-  | CameraFrameMessage
-  | EncodedConfigMessage
-  | EncodedPacketMessage;
+export type BinaryWsMessage = CameraFrameMessage | EncodedPacketMessage;
 
 /**
  * Single-state-kind sample emitted by the visualizer. The UI aggregates
@@ -193,33 +182,17 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
         jpegData,
       };
     }
-    case FRAME_TYPE_ENCODED_CONFIG: {
-      const headerEnd = bodyStart + 1 + 4 + 4 + 4;
-      if (data.byteLength < headerEnd) return null;
-      const codecId = view.getUint8(bodyStart);
-      const width = view.getUint32(bodyStart + 1, true);
-      const height = view.getUint32(bodyStart + 5, true);
-      const descLen = view.getUint32(bodyStart + 9, true);
-      if (data.byteLength < headerEnd + descLen) return null;
-      const description = new Uint8Array(data.slice(headerEnd, headerEnd + descLen));
-      return {
-        type: "encoded_config",
-        name,
-        codecId,
-        width,
-        height,
-        description,
-      };
-    }
     case FRAME_TYPE_ENCODED_PACKET: {
-      const headerEnd = bodyStart + 1 + 1 + 8 + 8 + 8 + 4;
+      const headerEnd = bodyStart + 1 + 1 + 8 + 8 + 8 + 4 + 4 + 4;
       if (data.byteLength < headerEnd) return null;
       const codecId = view.getUint8(bodyStart);
       const flags = view.getUint8(bodyStart + 1);
       const ptsUs = Number(view.getBigUint64(bodyStart + 2, true));
       const sequence = Number(view.getBigUint64(bodyStart + 10, true));
       const sourceTimestampUs = Number(view.getBigUint64(bodyStart + 18, true));
-      const payloadLen = view.getUint32(bodyStart + 26, true);
+      const width = view.getUint32(bodyStart + 26, true);
+      const height = view.getUint32(bodyStart + 30, true);
+      const payloadLen = view.getUint32(bodyStart + 34, true);
       if (data.byteLength < headerEnd + payloadLen) return null;
       const payload = new Uint8Array(data.slice(headerEnd, headerEnd + payloadLen));
       return {
@@ -230,6 +203,8 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
         ptsUs,
         sequence,
         sourceTimestampUs,
+        width,
+        height,
         payload,
       };
     }

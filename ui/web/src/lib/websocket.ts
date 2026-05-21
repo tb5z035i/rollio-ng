@@ -379,9 +379,17 @@ export function usePreviewSocket(
   const frameSequenceRef = useRef(0);
   const wsRef = useRef<WebSocketLike | null>(null);
   // Per-camera codec id for the currently-configured encoded preview
-  // session. Used in the meta line and in tests; populated on
-  // `encoded_config`, cleared on socket flap.
+  // session. Used in the meta line and in tests; populated on the
+  // first keyframe per camera, cleared on socket flap.
   const encodedCodecRef = useRef<Map<string, number>>(new Map());
+
+  // Per-camera "configuration key" `codecId@WxH`. The frontend's
+  // WebCodecs decoder is auto-configured from the first keyframe (the
+  // payload's inline SPS/PPS supplies the codec string); we re-call
+  // `configure()` only when the key changes (e.g. `set_preview_size`
+  // restarts the session at new dims). Tracked here, not in the
+  // decoder registry, so the registry's interface stays narrow.
+  const decoderConfigKeyRef = useRef<Map<string, string>>(new Map());
 
   // The decoder registry is re-created on each mount (the factory
   // closure also lets tests substitute a fake). Stored in a ref so
@@ -452,12 +460,13 @@ export function usePreviewSocket(
         // Drop any cached preview-plane state when the socket flaps so the
         // UI doesn't show stale frames or robot positions. Also tear
         // down every decoder so a reconnect rebuilds them from the
-        // freshly-replayed encoded_config.
+        // first keyframe of the new session.
         revokeFrameUrls(framesRef.current, revokeObjectUrl);
         framesRef.current.clear();
         robotChannelsRef.current.clear();
         streamInfoRef.current = null;
         encodedCodecRef.current.clear();
+        decoderConfigKeyRef.current.clear();
         decoderRegistryRef.current?.closeAll();
         frameSequenceRef.current = 0;
         dirtyRef.current = true;
@@ -491,20 +500,6 @@ export function usePreviewSocket(
       recordTiming("ws.parse.binary", nowMs() - parseStartMs);
       if (!msg) return;
 
-      if (msg.type === "encoded_config") {
-        incrementGauge(`ws.encoded_config_total.${msg.name}`);
-        setGauge(`ws.encoded_codec.${msg.name}`, msg.codecId);
-        encodedCodecRef.current.set(msg.name, msg.codecId);
-        decoderRegistryRef.current?.configure(
-          msg.name,
-          msg.codecId,
-          msg.description,
-          msg.width,
-          msg.height,
-          onDecodedFrame,
-        );
-        return;
-      }
       if (msg.type === "encoded_packet") {
         incrementGauge(`ws.encoded_packets_total.${msg.name}`);
         // Mirror the JPEG-path bump so InfoPanel's `Frames: rx=` shows
@@ -530,6 +525,34 @@ export function usePreviewSocket(
           dirtyRef.current = true;
         }
         setGauge(`ws.encoded_payload_bytes.${msg.name}`, msg.payload.byteLength);
+
+        // Auto-configure the decoder on the first keyframe per camera
+        // (or whenever the (codec, width, height) key changes — e.g.
+        // a `set_preview_size` restarts the session at new dims).
+        // Keyframes carry inline SPS/PPS in their Annex B payload, so
+        // we hand the payload itself as the "description" to
+        // `configure`; `codecStringFor` parses SPS bytes to derive
+        // `avc1.PPCCLL`.
+        if (msg.isKeyframe) {
+          const configKey = `${msg.codecId}@${msg.width}x${msg.height}`;
+          const previousKey = decoderConfigKeyRef.current.get(msg.name);
+          if (previousKey !== configKey) {
+            decoderConfigKeyRef.current.set(msg.name, configKey);
+            encodedCodecRef.current.set(msg.name, msg.codecId);
+            setGauge(`ws.encoded_codec.${msg.name}`, msg.codecId);
+            setGauge(`ws.encoded_codec_dims.${msg.name}`, `${msg.width}x${msg.height}`);
+            incrementGauge(`ws.encoded_config_total.${msg.name}`);
+            decoderRegistryRef.current?.configure(
+              msg.name,
+              msg.codecId,
+              msg.payload,
+              msg.width,
+              msg.height,
+              onDecodedFrame,
+            );
+          }
+        }
+
         decoderRegistryRef.current?.decode(
           msg.name,
           msg.payload,
@@ -616,6 +639,7 @@ export function usePreviewSocket(
       robotChannelsRef.current.clear();
       streamInfoRef.current = null;
       encodedCodecRef.current.clear();
+      decoderConfigKeyRef.current.clear();
       decoderRegistryRef.current?.closeAll();
     };
   }, [revokeObjectUrl]);

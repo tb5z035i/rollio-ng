@@ -2703,12 +2703,6 @@ pub struct RecordingEncoderConfig {
     #[serde(default = "default_queue_size")]
     pub queue_size: u32,
     pub fps: u32,
-    /// iceoryx2 service name for the per-camera codec config topic.
-    /// Carries one `EncodedPacketHeader` with `kind = Config` at
-    /// session-open and is opened with `history_size = 1` so late
-    /// subscribers (e.g. an assembler restarted mid-recording) can
-    /// recover the codec extradata.
-    pub config_topic: String,
     /// iceoryx2 service name for the per-camera recording packet
     /// stream. Strict delivery (no overflow, publisher blocks on slow
     /// subscriber).
@@ -2746,10 +2740,6 @@ pub struct PreviewEncoderConfig {
     #[serde(default)]
     pub crf: Option<u8>,
     pub jpeg_quality: i32,
-    /// Service name for the per-camera codec config topic (encoded mode
-    /// only). Carries `kind = Config` with `history_size = 1`.
-    #[serde(default)]
-    pub config_topic: Option<String>,
     /// Service name for the per-camera encoded preview packet topic
     /// (encoded mode only). Best-effort delivery; safe overflow on.
     #[serde(default)]
@@ -2833,9 +2823,9 @@ impl EncoderRuntimeConfigV2 {
 
 impl RecordingEncoderConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.config_topic.trim().is_empty() || self.packet_topic.trim().is_empty() {
+        if self.packet_topic.trim().is_empty() {
             return Err(ConfigError::Validation(
-                "encoder runtime v2: recording.config_topic and recording.packet_topic must not be empty"
+                "encoder runtime v2: recording.packet_topic must not be empty"
                     .into(),
             ));
         }
@@ -2907,16 +2897,12 @@ impl PreviewEncoderConfig {
                     )));
                 }
                 if self
-                    .config_topic
+                    .packet_topic
                     .as_deref()
                     .is_none_or(|t| t.trim().is_empty())
-                    || self
-                        .packet_topic
-                        .as_deref()
-                        .is_none_or(|t| t.trim().is_empty())
                 {
                     return Err(ConfigError::Validation(
-                        "encoder runtime v2: preview.output_mode=encoded requires config_topic and packet_topic"
+                        "encoder runtime v2: preview.output_mode=encoded requires packet_topic"
                             .into(),
                     ));
                 }
@@ -2961,10 +2947,6 @@ pub struct AssemblerCameraRuntimeConfigV2 {
     pub fps: u32,
     pub pixel_format: PixelFormat,
     pub codec: EncoderCodec,
-    /// Per-camera codec config topic the assembler subscribes to.
-    /// Carries `kind = Config` packets with `history_size = 1` so
-    /// late subscribers can replay codec extradata.
-    pub recording_config_topic: String,
     /// Per-camera recording packet topic. Carries `kind = Packet` and
     /// terminating `kind = EndOfStream` per episode.
     pub recording_packet_topic: String,
@@ -3050,11 +3032,9 @@ impl AssemblerRuntimeConfigV2 {
             ));
         }
         for camera in &self.cameras {
-            if camera.recording_config_topic.trim().is_empty()
-                || camera.recording_packet_topic.trim().is_empty()
-            {
+            if camera.recording_packet_topic.trim().is_empty() {
                 return Err(ConfigError::Validation(format!(
-                    "assembler runtime v2: camera \"{}\" requires non-empty recording_config_topic and recording_packet_topic",
+                    "assembler runtime v2: camera \"{}\" requires non-empty recording_packet_topic",
                     camera.channel_id,
                 )));
             }
@@ -3515,10 +3495,6 @@ impl ProjectConfig {
                         backend,
                         queue_size: record_cfg.queue_size,
                         fps: camera.fps,
-                        config_topic: rollio_bus::recording_config_service_name(
-                            &camera.bus_root,
-                            &camera.channel_type,
-                        ),
                         packet_topic: rollio_bus::recording_packet_service_name(
                             &camera.bus_root,
                             &camera.channel_type,
@@ -3558,12 +3534,8 @@ impl ProjectConfig {
                     preview_codec_color
                 };
 
-                let (config_topic, packet_topic, jpeg_topic) = match preview_cfg.output_mode {
+                let (packet_topic, jpeg_topic) = match preview_cfg.output_mode {
                     PreviewOutputMode::Encoded => (
-                        Some(rollio_bus::preview_config_service_name(
-                            &camera.bus_root,
-                            &camera.channel_type,
-                        )),
                         Some(rollio_bus::preview_packet_service_name(
                             &camera.bus_root,
                             &camera.channel_type,
@@ -3571,7 +3543,6 @@ impl ProjectConfig {
                         None,
                     ),
                     PreviewOutputMode::Jpeg => (
-                        None,
                         None,
                         Some(rollio_bus::preview_jpeg_service_name(
                             &camera.bus_root,
@@ -3598,7 +3569,6 @@ impl ProjectConfig {
                         gop_seconds: preview_cfg.gop_seconds,
                         crf: preview_cfg.crf,
                         jpeg_quality: preview_cfg.jpeg_quality,
-                        config_topic,
                         packet_topic,
                         jpeg_topic,
                         control_topic: rollio_bus::preview_control_service_name(
@@ -3649,10 +3619,6 @@ impl ProjectConfig {
                     fps: camera.fps,
                     pixel_format: camera.pixel_format,
                     codec,
-                    recording_config_topic: rollio_bus::recording_config_service_name(
-                        &camera.bus_root,
-                        &camera.channel_type,
-                    ),
                     recording_packet_topic: rollio_bus::recording_packet_service_name(
                         &camera.bus_root,
                         &camera.channel_type,

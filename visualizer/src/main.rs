@@ -208,15 +208,11 @@ fn ipc_poll_loop(
     let mut poller = IpcPoller::new(camera_sources, robot_sources, output_mode)?;
     let preview_publishers = poller.take_preview_publishers();
 
-    // Per-camera Annex B SPS/PPS bytes, as captured from the encoder's
-    // most-recent `EncodedConfig`. Prepended to every keyframe packet
-    // we broadcast so WebCodecs (configured in Annex B mode — no
-    // `description`) sees in-band parameter sets on every IDR. The
-    // encoder still ships GLOBAL_HEADER (recording needs it for mp4
-    // muxing), so without this prepend the bitstream would lack
-    // SPS/PPS and the browser decoder would never produce output.
     let mut annex_b_params: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
+    let _ = &annex_b_params; // TODO: remove after AU-framing migration completes
+    let mut seen_keyframe: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     log::info!("IPC poll loop started ({})", output_mode.as_str());
     while !shutdown.load(Ordering::Relaxed) {
@@ -270,67 +266,26 @@ fn ipc_poll_loop(
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
                 }
-                IpcMessage::EncodedConfig {
-                    name,
-                    header,
-                    extradata,
-                } => {
-                    // Annex B passthrough: ship the encoder's
-                    // start-code-prefixed SPS/PPS bytes verbatim, and
-                    // cache them so we can re-insert them ahead of
-                    // every keyframe's slice NALUs below. The
-                    // encoder still uses GLOBAL_HEADER (the
-                    // recording role needs it for mp4 muxing), so
-                    // these bytes are the only place SPS/PPS live
-                    // until we splice them back in.
-                    annex_b_params.insert(name.clone(), extradata.clone());
-                    let codec_id = header.codec as u8;
-                    let bytes = protocol::encode_stream_config(
-                        &name,
-                        codec_id,
-                        header.width,
-                        header.height,
-                        &extradata,
-                    );
-                    cache_config(&cached_configs, &name, &bytes);
-                    let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
-                }
                 IpcMessage::EncodedPacket {
                     name,
                     header,
                     payload,
                 } => {
                     if matches!(header.kind, EncodedPacketKind::EndOfStream) {
-                        // Don't broadcast EOS to UI clients; encoded
-                        // mode just ignores it for now.
+                        seen_keyframe.remove(&name);
                         continue;
+                    }
+                    if !seen_keyframe.contains(&name) {
+                        if !header.is_keyframe() {
+                            continue;
+                        }
+                        seen_keyframe.insert(name.clone());
                     }
                     if let Ok(mut info) = stream_info.lock() {
                         info.observe_encoded_packet(&name, &header, payload.len());
                     }
                     let codec_id = header.codec as u8;
                     let flags = (header.is_keyframe() as u8) & 0x01;
-                    // Annex B passthrough: ship the encoder's AU
-                    // bytes to the browser verbatim. For keyframes,
-                    // prepend the cached Annex B SPS/PPS so the
-                    // WebCodecs decoder (configured without an AVCC
-                    // `description`) finds in-band parameter sets on
-                    // every IDR. The encoder still uses GLOBAL_HEADER
-                    // for the recording role, so without this prepend
-                    // the live bitstream would lack SPS/PPS entirely.
-                    let payload_bytes: std::borrow::Cow<'_, [u8]> = if header.is_keyframe() {
-                        match annex_b_params.get(&name) {
-                            Some(extra) if !extra.is_empty() => {
-                                let mut combined = Vec::with_capacity(extra.len() + payload.len());
-                                combined.extend_from_slice(extra);
-                                combined.extend_from_slice(&payload);
-                                std::borrow::Cow::Owned(combined)
-                            }
-                            _ => std::borrow::Cow::Borrowed(&payload[..]),
-                        }
-                    } else {
-                        std::borrow::Cow::Borrowed(&payload[..])
-                    };
                     let bytes = protocol::encode_packet(
                         &name,
                         codec_id,
@@ -338,7 +293,9 @@ fn ipc_poll_loop(
                         header.pts_us,
                         header.sequence_number,
                         header.source_timestamp_us,
-                        &payload_bytes,
+                        header.width,
+                        header.height,
+                        &payload,
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
                 }

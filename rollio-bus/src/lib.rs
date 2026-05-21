@@ -54,12 +54,8 @@ pub const RECORDING_PACKET_BUFFER: usize = STATE_BUFFER;
 pub const PREVIEW_PACKET_BUFFER: usize = 8;
 
 /// History size for the per-camera recording-config and preview-config
-/// topics. iceoryx2 retains the most recent `N` samples per publisher
-/// and replays them to subscribers that connect afterwards, which is
-/// exactly the late-join semantics codec stream config needs (a
-/// subscriber that misses the one-shot config message can't decode any
-/// packet until the encoder is restarted). Keeping the value at 1
-/// keeps the cost minimal while still surviving a visualizer restart.
+/// topics. Retained for backward-compat with any subscriber that still
+/// opens the old config service name; new code does not use config topics.
 pub const STREAM_CONFIG_HISTORY_SIZE: usize = 1;
 
 /// Camera-frame topic max_subscribers. Bumped from the iceoryx2 default
@@ -129,26 +125,11 @@ pub fn channel_command_service_name(
 // Encoded packet topics
 // ---------------------------------------------------------------------------
 
-/// Per-channel codec-config topic for the recording role. Carries
-/// `EncodedPacketHeader` user header with `kind = Config`. iceoryx2
-/// `history_size = STREAM_CONFIG_HISTORY_SIZE` so the latest config is
-/// replayed to subscribers that connect after the encoder.
-pub fn recording_config_service_name(bus_root: &str, channel_type: &str) -> String {
-    format!("{bus_root}/{channel_type}/recording-config")
-}
-
 /// Per-channel encoded recording packets. Strict delivery (no overflow,
 /// publisher blocks). One `Packet` per encoded access unit; one
 /// `EndOfStream` at session finish.
 pub fn recording_packet_service_name(bus_root: &str, channel_type: &str) -> String {
     format!("{bus_root}/{channel_type}/recording-packets")
-}
-
-/// Per-channel codec-config topic for the preview role. Same shape as
-/// recording-config but on a separate name so subscribers can apply
-/// loss-tolerant delivery semantics.
-pub fn preview_config_service_name(bus_root: &str, channel_type: &str) -> String {
-    format!("{bus_root}/{channel_type}/preview-config")
 }
 
 /// Per-channel encoded preview packets. Best-effort delivery; the UI
@@ -167,11 +148,19 @@ pub fn preview_jpeg_service_name(bus_root: &str, channel_type: &str) -> String {
 }
 
 /// Per-channel preview control topic. The visualizer publishes
-/// `PreviewControl::SetSize` here when an operator changes the preview
-/// raster dims; the preview encoder restarts its session at the new
-/// dims and emits a fresh `Config` + first keyframe.
+/// `PreviewControl::SetSize` or `PreviewControl::RequestKeyframe` here;
+/// the preview encoder restarts its session at the new dims or forces
+/// an IDR on the next encode.
 pub fn preview_control_service_name(bus_root: &str, channel_type: &str) -> String {
     format!("{bus_root}/{channel_type}/preview-control")
+}
+
+/// Per-channel camera control topic. Downstream consumers (recording
+/// runtime, preview runtime) publish `CameraControl::RequestKeyframe`
+/// here to ask the upstream camera to flush an IDR. Best-effort
+/// delivery (`history_size = 0`).
+pub fn channel_camera_control_service_name(bus_root: &str, channel_type: &str) -> String {
+    format!("{bus_root}/{channel_type}/control/camera")
 }
 
 #[cfg(test)]
@@ -181,10 +170,6 @@ mod tests {
     #[test]
     fn recording_topic_names_use_purpose_suffix() {
         assert_eq!(
-            recording_config_service_name("cam1", "color"),
-            "cam1/color/recording-config"
-        );
-        assert_eq!(
             recording_packet_service_name("cam1", "color"),
             "cam1/color/recording-packets"
         );
@@ -192,10 +177,6 @@ mod tests {
 
     #[test]
     fn preview_topic_names_use_purpose_suffix() {
-        assert_eq!(
-            preview_config_service_name("cam1", "color"),
-            "cam1/color/preview-config"
-        );
         assert_eq!(
             preview_packet_service_name("cam1", "color"),
             "cam1/color/preview-packets"
@@ -207,6 +188,14 @@ mod tests {
         assert_eq!(
             preview_control_service_name("cam1", "color"),
             "cam1/color/preview-control"
+        );
+    }
+
+    #[test]
+    fn camera_control_topic_name() {
+        assert_eq!(
+            channel_camera_control_service_name("cam1", "color"),
+            "cam1/color/control/camera"
         );
     }
 }

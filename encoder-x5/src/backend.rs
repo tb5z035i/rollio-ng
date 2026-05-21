@@ -520,20 +520,6 @@ impl CodecSession for HorizonX5Session {
         // SPS+PPS+IDR_slice) would cause the visualizer to prepend
         // the IDR_slice to every subsequent keyframe — duplicating an
         // IDR and breaking the browser decoder.
-        if !self.config_sent && self.codec == ColorCodec::H264 && is_key != 0 {
-            if let Some(extradata) = extract_h264_parameter_sets(&self.out_buf[..encoded_bytes]) {
-                let config_header = self.make_header(
-                    EncodedPacketKind::Config,
-                    pts as i64,
-                    true,
-                    extradata.len() as u32,
-                );
-                sink.write_config(config_header, extradata)?;
-                self.sequence += 1;
-                self.config_sent = true;
-            }
-        }
-
         // Emit the encoded packet
         let header = self.make_header(
             EncodedPacketKind::Packet,

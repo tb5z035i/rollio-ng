@@ -1,11 +1,14 @@
 //! WebSocket protocol encoding/decoding for the visualizer bridge.
 //!
-//! Three binary message kinds are sent to the UI:
+//! Two binary message kinds are sent to the UI:
 //!
 //! ```text
 //! 0x01 JPEG_FRAME        — legacy JPEG path (jpeg output mode)
-//! 0x02 ENCODED_CONFIG    — codec config (encoded output mode)
-//! 0x03 ENCODED_PACKET    — encoded access unit (encoded output mode)
+//! 0x03 ENCODED_PACKET    — encoded access unit (encoded output mode).
+//!                          Self-contained Annex B AU; keyframes carry
+//!                          inline SPS/PPS so the frontend's WebCodecs
+//!                          decoder auto-configures from the first key
+//!                          packet alone — no separate config message.
 //! ```
 //!
 //! Common header layout for all three kinds:
@@ -26,7 +29,6 @@ use serde::{Deserialize, Serialize};
 use crate::stream_info::StreamInfoSnapshot;
 
 pub const KIND_JPEG_FRAME: u8 = 0x01;
-pub const KIND_ENCODED_CONFIG: u8 = 0x02;
 pub const KIND_ENCODED_PACKET: u8 = 0x03;
 
 /// Encode a JPEG frame (preview output mode = jpeg).
@@ -53,40 +55,6 @@ pub fn encode_jpeg_frame(
     buf
 }
 
-/// Encode a codec stream-config message (preview output mode =
-/// encoded). The body carries the codec id, dims, and the AVCC bytes
-/// that the web UI hands to `VideoDecoder.configure({description})`.
-///
-/// Body layout (after the common name header):
-///
-/// ```text
-/// [0]      codec id (matches EncodedCodecId discriminant value)
-/// [1..5]   width (u32 LE)
-/// [5..9]   height (u32 LE)
-/// [9..13]  avcc len (u32 LE)
-/// [13..]   avcc bytes
-/// ```
-pub fn encode_stream_config(
-    name: &str,
-    codec_id: u8,
-    width: u32,
-    height: u32,
-    avcc: &[u8],
-) -> Vec<u8> {
-    let name_bytes = name.as_bytes();
-    let total = 1 + 2 + name_bytes.len() + 1 + 4 + 4 + 4 + avcc.len();
-    let mut buf = Vec::with_capacity(total);
-    buf.push(KIND_ENCODED_CONFIG);
-    buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-    buf.extend_from_slice(name_bytes);
-    buf.push(codec_id);
-    buf.extend_from_slice(&width.to_le_bytes());
-    buf.extend_from_slice(&height.to_le_bytes());
-    buf.extend_from_slice(&(avcc.len() as u32).to_le_bytes());
-    buf.extend_from_slice(avcc);
-    buf
-}
-
 /// Encode an encoded preview packet (preview output mode = encoded).
 ///
 /// Body layout (after the common name header):
@@ -98,8 +66,11 @@ pub fn encode_stream_config(
 /// [10..18] sequence (u64 LE)
 /// [18..26] source_timestamp_us (u64 LE, camera capture wall-clock µs
 ///          since UNIX epoch) — for capture-to-display latency metrics
-/// [26..30] payload len (u32 LE)
-/// [30..]   payload bytes (Annex B AU for h264, etc.)
+/// [26..30] width (u32 LE) — coded width, lets the frontend configure
+///          its WebCodecs decoder from the first keyframe alone
+/// [30..34] height (u32 LE)
+/// [34..38] payload len (u32 LE)
+/// [38..]   payload bytes (Annex B AU for h264, etc.)
 /// ```
 #[allow(clippy::too_many_arguments)]
 pub fn encode_packet(
@@ -109,10 +80,12 @@ pub fn encode_packet(
     pts_us: i64,
     sequence: u64,
     source_timestamp_us: u64,
+    width: u32,
+    height: u32,
     payload: &[u8],
 ) -> Vec<u8> {
     let name_bytes = name.as_bytes();
-    let total = 1 + 2 + name_bytes.len() + 1 + 1 + 8 + 8 + 8 + 4 + payload.len();
+    let total = 1 + 2 + name_bytes.len() + 1 + 1 + 8 + 8 + 8 + 4 + 4 + 4 + payload.len();
     let mut buf = Vec::with_capacity(total);
     buf.push(KIND_ENCODED_PACKET);
     buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
@@ -122,6 +95,8 @@ pub fn encode_packet(
     buf.extend_from_slice(&(pts_us as u64).to_le_bytes());
     buf.extend_from_slice(&sequence.to_le_bytes());
     buf.extend_from_slice(&source_timestamp_us.to_le_bytes());
+    buf.extend_from_slice(&width.to_le_bytes());
+    buf.extend_from_slice(&height.to_le_bytes());
     buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     buf.extend_from_slice(payload);
     buf
@@ -213,22 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn encoded_config_carries_codec_id_and_avcc() {
-        let bytes = encode_stream_config("cam1", 0, 320, 240, &[0x01, 0x02]);
-        assert_eq!(bytes[0], KIND_ENCODED_CONFIG);
-        let name_len = u16::from_le_bytes([bytes[1], bytes[2]]) as usize;
-        let body = &bytes[3 + name_len..];
-        assert_eq!(body[0], 0); // codec id (H.264 = 0)
-        let width = u32::from_le_bytes([body[1], body[2], body[3], body[4]]);
-        assert_eq!(width, 320);
-        let avcc_len = u32::from_le_bytes([body[9], body[10], body[11], body[12]]) as usize;
-        assert_eq!(avcc_len, 2);
-        assert_eq!(&body[13..13 + avcc_len], &[0x01, 0x02]);
-    }
-
-    #[test]
     fn encoded_packet_carries_flags_and_seq() {
-        let bytes = encode_packet("cam1", 0, 1, 1234, 7, 1_700_000_000_000_000, b"AU");
+        let bytes = encode_packet("cam1", 0, 1, 1234, 7, 1_700_000_000_000_000, 1920, 1080, b"AU");
         assert_eq!(bytes[0], KIND_ENCODED_PACKET);
         let name_len = u16::from_le_bytes([bytes[1], bytes[2]]) as usize;
         let body = &bytes[3 + name_len..];
@@ -242,5 +203,12 @@ mod tests {
             body[18], body[19], body[20], body[21], body[22], body[23], body[24], body[25],
         ]);
         assert_eq!(source_ts, 1_700_000_000_000_000);
+        let width = u32::from_le_bytes([body[26], body[27], body[28], body[29]]);
+        assert_eq!(width, 1920);
+        let height = u32::from_le_bytes([body[30], body[31], body[32], body[33]]);
+        assert_eq!(height, 1080);
+        let payload_len = u32::from_le_bytes([body[34], body[35], body[36], body[37]]) as usize;
+        assert_eq!(payload_len, 2);
+        assert_eq!(&body[38..38 + payload_len], b"AU");
     }
 }

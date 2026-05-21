@@ -15,7 +15,10 @@ use crate::codec::{open_session, CodecSessionParams, EncoderSession, OwnedFrame}
 use crate::error::{map_iceoryx_error, EncoderError, Result};
 use crate::sink::IpcRecordingSink;
 use iceoryx2::prelude::*;
-use rollio_bus::{BACKPRESSURE_SERVICE, CAMERA_FRAMES_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE};
+use rollio_bus::{
+    channel_camera_control_service_name, BACKPRESSURE_SERVICE, CAMERA_FRAMES_MAX_SUBSCRIBERS,
+    CONTROL_EVENTS_SERVICE,
+};
 use rollio_types::config::EncoderRuntimeConfigV2;
 use rollio_types::messages::{BackpressureEvent, CameraFrameHeader, ControlEvent, FixedString64};
 use std::sync::mpsc;
@@ -223,10 +226,16 @@ fn worker_main(
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()
         .map_err(map_iceoryx_error)?;
+    let camera_control_topic = config
+        .channel_id
+        .split_once('/')
+        .map(|(bus_root, channel_type)| {
+            channel_camera_control_service_name(bus_root, channel_type)
+        });
     let mut sink = IpcRecordingSink::open(
         &node,
-        &recording.config_topic,
         &recording.packet_topic,
+        camera_control_topic.as_deref(),
         16 * 1024 * 1024,
     )?;
 
@@ -342,6 +351,9 @@ fn handle_frame(
             frame.header.height,
         );
         *active_session = Some(open_session(params, frame)?);
+        if let Some(session) = active_session.as_mut() {
+            session.request_keyframe()?;
+        }
     }
     if let Some(session) = active_session.as_mut() {
         session.encode(frame, sink)?;

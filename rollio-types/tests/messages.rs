@@ -336,7 +336,6 @@ fn encoded_packet_header_round_trip_carries_codec_metadata() {
         payload_len: 4096,
     };
     h.set_keyframe(true);
-    h.set_inline_config(true);
 
     let h2 = unsafe { roundtrip(&h) };
     assert_eq!(h2.kind, EncodedPacketKind::Packet);
@@ -347,7 +346,6 @@ fn encoded_packet_header_round_trip_carries_codec_metadata() {
     assert_eq!(h2.episode_index, 3);
     assert_eq!(h2.payload_len, 4096);
     assert!(h2.is_keyframe());
-    assert!(h2.has_inline_config());
 }
 
 #[test]
@@ -356,7 +354,6 @@ fn encoded_packet_header_default_is_packet_kind() {
     assert_eq!(h.kind, EncodedPacketKind::Packet);
     assert_eq!(h.sequence_number, 0);
     assert!(!h.is_keyframe());
-    assert!(!h.has_inline_config());
 }
 
 #[test]
@@ -371,6 +368,7 @@ fn preview_control_set_size_round_trip() {
             assert_eq!(width, 640);
             assert_eq!(height, 360);
         }
+        _ => panic!("expected SetSize"),
     }
 }
 

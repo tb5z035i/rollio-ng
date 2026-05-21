@@ -40,3 +40,5 @@ dist/*.deb
 dist/*.whl
 robots/nero/build
 rollio-logs/
+
+**/node_modules

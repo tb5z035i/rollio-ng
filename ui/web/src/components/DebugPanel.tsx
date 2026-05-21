@@ -8,6 +8,9 @@ interface DebugPanelProps {
 
 export function DebugPanel({ snapshot, streamInfo }: DebugPanelProps) {
   const cameraNames = getCameraNames(snapshot, streamInfo);
+  const previewMode = streamInfo?.preview_output_mode ?? null;
+  const bytesGaugePrefix =
+    previewMode === "encoded" ? "ws.encoded_payload_bytes" : "ws.jpeg_bytes";
   const lines = [
     `Layout: ${gaugeValue(snapshot, "ui.layout")} | Cameras: ${gaugeValue(snapshot, "ui.camera_count")} | Robots: ${gaugeValue(snapshot, "ui.robot_count")}`,
     `WS: ${gaugeValue(snapshot, "ws.connected")} | Stream info: ${gaugeValue(snapshot, "ws.stream_info_status")} | Episode: ${gaugeValue(snapshot, "ws.episode_status")}`,
@@ -19,11 +22,42 @@ export function DebugPanel({ snapshot, streamInfo }: DebugPanelProps) {
       streamInfo?.cameras?.find((camera) => camera.name === cameraName)?.received_fps_estimate,
     ),
     formatPerCameraLine("Bytes", cameraNames, (cameraName) =>
-      numericGaugeValue(snapshot, `ws.jpeg_bytes.${cameraName}`, Number.NaN),
+      numericGaugeValue(snapshot, `${bytesGaugePrefix}.${cameraName}`, Number.NaN),
     ),
     formatPerCameraLine("Display ms", cameraNames, (cameraName) =>
       numericGaugeValue(snapshot, `ui.display_latency_ms.${cameraName}`, Number.NaN),
     ),
+    ...(previewMode === "encoded"
+      ? [
+          formatPerCameraStringLine("Packets rx", cameraNames, (cameraName) =>
+            gaugeStr(snapshot, `ws.encoded_packets_total.${cameraName}`),
+          ),
+          formatPerCameraStringLine(
+            "Keyframes rx",
+            cameraNames,
+            (cameraName) =>
+              gaugeStr(snapshot, `ws.encoded_keyframes_total.${cameraName}`),
+          ),
+          formatPerCameraStringLine(
+            "Decoder",
+            cameraNames,
+            (cameraName) =>
+              `${gaugeStr(snapshot, `ui.preview_decoder_state.${cameraName}`)}/${gaugeStr(snapshot, `ui.preview_decoder_codec_string.${cameraName}`)}@${gaugeStr(snapshot, `ws.encoded_codec_dims.${cameraName}`)}`,
+          ),
+          formatPerCameraStringLine(
+            "Decoder errors",
+            cameraNames,
+            (cameraName) =>
+              `cfg=${gaugeStr(snapshot, `ui.preview_decoder_configure_failures_total.${cameraName}`)} dec=${gaugeStr(snapshot, `ui.preview_decoder_decode_failures_total.${cameraName}`)} rt=${gaugeStr(snapshot, `ui.preview_decoder_errors_total.${cameraName}`)}`,
+          ),
+          formatPerCameraStringLine(
+            "Frames presented",
+            cameraNames,
+            (cameraName) =>
+              gaugeStr(snapshot, `ui.frames_presented_total.${cameraName}`),
+          ),
+        ]
+      : []),
   ];
 
   return (
@@ -87,6 +121,25 @@ function formatPerCameraLine(
   return `${label}: ${cameraNames
     .map((cameraName) => `${cameraName}=${formatNumber(getter(cameraName))}`)
     .join(", ")}`;
+}
+
+function formatPerCameraStringLine(
+  label: string,
+  cameraNames: string[],
+  getter: (cameraName: string) => string,
+): string {
+  if (cameraNames.length === 0) {
+    return `${label}: n/a`;
+  }
+  return `${label}: ${cameraNames
+    .map((cameraName) => `${cameraName}=${getter(cameraName)}`)
+    .join(", ")}`;
+}
+
+function gaugeStr(snapshot: DebugSnapshot, name: string): string {
+  const gauge = snapshot.gauges[name];
+  if (!gauge) return "n/a";
+  return String(gauge.value);
 }
 
 function formatNumber(value: number | null | undefined): string {

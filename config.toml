@@ -3,7 +3,7 @@ mode = "teleop"
 pairings = []
 
 [episode]
-format = "mcap"
+format = "lerobot-v2.1"
 fps = 30
 chunk_size = 1000
 

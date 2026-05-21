@@ -17,9 +17,9 @@ use crate::codec::EncodedPacketSink;
 use crate::error::{map_iceoryx_error, EncoderError, Result};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
-use rollio_bus::{PREVIEW_PACKET_BUFFER, RECORDING_PACKET_BUFFER, STREAM_CONFIG_HISTORY_SIZE};
+use rollio_bus::{PREVIEW_PACKET_BUFFER, RECORDING_PACKET_BUFFER};
 use rollio_types::messages::{
-    CameraFrameHeader, EncodedPacketHeader, EncodedPacketKind, PixelFormat,
+    CameraControl, CameraFrameHeader, EncodedPacketHeader, EncodedPacketKind, PixelFormat,
 };
 
 const MAX_PUBLISHERS: usize = 16;
@@ -28,43 +28,24 @@ const MAX_NODES: usize = 16;
 
 type PacketPublisher = Publisher<ipc::Service, [u8], EncodedPacketHeader>;
 type CameraPublisher = Publisher<ipc::Service, [u8], CameraFrameHeader>;
+type CameraControlPublisher = Publisher<ipc::Service, CameraControl, ()>;
 
 // ---------------------------------------------------------------------------
-// IpcRecordingSink — strict delivery, two topics (config + packets)
+// IpcRecordingSink — strict delivery, recording packets
 // ---------------------------------------------------------------------------
 
 pub struct IpcRecordingSink {
-    config_publisher: PacketPublisher,
     packet_publisher: PacketPublisher,
+    camera_control_publisher: Option<CameraControlPublisher>,
 }
 
 impl IpcRecordingSink {
     pub fn open(
         node: &Node<ipc::Service>,
-        config_topic: &str,
         packet_topic: &str,
+        camera_control_topic: Option<&str>,
         max_payload_bytes: usize,
     ) -> Result<Self> {
-        let config_service_name: ServiceName =
-            config_topic.try_into().map_err(map_iceoryx_error)?;
-        let config_service = node
-            .service_builder(&config_service_name)
-            .publish_subscribe::<[u8]>()
-            .user_header::<EncodedPacketHeader>()
-            .history_size(STREAM_CONFIG_HISTORY_SIZE)
-            .subscriber_max_buffer_size(STREAM_CONFIG_HISTORY_SIZE.max(2))
-            .max_publishers(MAX_PUBLISHERS)
-            .max_subscribers(MAX_SUBSCRIBERS)
-            .max_nodes(MAX_NODES)
-            .open_or_create()
-            .map_err(map_iceoryx_error)?;
-        let config_publisher = config_service
-            .publisher_builder()
-            .initial_max_slice_len(max_payload_bytes.max(8 * 1024))
-            .allocation_strategy(AllocationStrategy::PowerOfTwo)
-            .create()
-            .map_err(map_iceoryx_error)?;
-
         let packet_service_name: ServiceName =
             packet_topic.try_into().map_err(map_iceoryx_error)?;
         let packet_service = node
@@ -85,18 +66,28 @@ impl IpcRecordingSink {
             .unable_to_deliver_strategy(UnableToDeliverStrategy::Block)
             .create()
             .map_err(map_iceoryx_error)?;
+        let camera_control_publisher = if let Some(topic) = camera_control_topic {
+            let sn: ServiceName = topic.try_into().map_err(map_iceoryx_error)?;
+            let svc = node
+                .service_builder(&sn)
+                .publish_subscribe::<CameraControl>()
+                .max_publishers(MAX_PUBLISHERS)
+                .max_subscribers(MAX_SUBSCRIBERS)
+                .max_nodes(MAX_NODES)
+                .open_or_create()
+                .map_err(map_iceoryx_error)?;
+            Some(svc.publisher_builder().create().map_err(map_iceoryx_error)?)
+        } else {
+            None
+        };
         Ok(Self {
-            config_publisher,
             packet_publisher,
+            camera_control_publisher,
         })
     }
 }
 
 impl EncodedPacketSink for IpcRecordingSink {
-    fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()> {
-        publish_packet(&self.config_publisher, header, extradata)
-    }
-
     fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
         publish_packet(&self.packet_publisher, header, payload)
     }
@@ -104,44 +95,32 @@ impl EncodedPacketSink for IpcRecordingSink {
     fn write_eos(&mut self, header: EncodedPacketHeader) -> Result<()> {
         publish_packet(&self.packet_publisher, header, &[])
     }
+
+    fn request_upstream_keyframe(&mut self) -> Result<()> {
+        if let Some(pub_) = &self.camera_control_publisher {
+            pub_.send_copy(CameraControl::RequestKeyframe)
+                .map_err(map_iceoryx_error)?;
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
-// IpcPreviewPacketSink — best-effort delivery, two topics (config + packets)
+// IpcPreviewPacketSink — best-effort delivery, preview packets
 // ---------------------------------------------------------------------------
 
 pub struct IpcPreviewPacketSink {
-    config_publisher: PacketPublisher,
     packet_publisher: PacketPublisher,
+    camera_control_publisher: Option<CameraControlPublisher>,
 }
 
 impl IpcPreviewPacketSink {
     pub fn open(
         node: &Node<ipc::Service>,
-        config_topic: &str,
         packet_topic: &str,
+        camera_control_topic: Option<&str>,
         max_payload_bytes: usize,
     ) -> Result<Self> {
-        let config_service_name: ServiceName =
-            config_topic.try_into().map_err(map_iceoryx_error)?;
-        let config_service = node
-            .service_builder(&config_service_name)
-            .publish_subscribe::<[u8]>()
-            .user_header::<EncodedPacketHeader>()
-            .history_size(STREAM_CONFIG_HISTORY_SIZE)
-            .subscriber_max_buffer_size(STREAM_CONFIG_HISTORY_SIZE.max(2))
-            .max_publishers(MAX_PUBLISHERS)
-            .max_subscribers(MAX_SUBSCRIBERS)
-            .max_nodes(MAX_NODES)
-            .open_or_create()
-            .map_err(map_iceoryx_error)?;
-        let config_publisher = config_service
-            .publisher_builder()
-            .initial_max_slice_len(max_payload_bytes.max(8 * 1024))
-            .allocation_strategy(AllocationStrategy::PowerOfTwo)
-            .create()
-            .map_err(map_iceoryx_error)?;
-
         let packet_service_name: ServiceName =
             packet_topic.try_into().map_err(map_iceoryx_error)?;
         let packet_service = node
@@ -160,24 +139,42 @@ impl IpcPreviewPacketSink {
             .allocation_strategy(AllocationStrategy::PowerOfTwo)
             .create()
             .map_err(map_iceoryx_error)?;
+        let camera_control_publisher = if let Some(topic) = camera_control_topic {
+            let sn: ServiceName = topic.try_into().map_err(map_iceoryx_error)?;
+            let svc = node
+                .service_builder(&sn)
+                .publish_subscribe::<CameraControl>()
+                .max_publishers(MAX_PUBLISHERS)
+                .max_subscribers(MAX_SUBSCRIBERS)
+                .max_nodes(MAX_NODES)
+                .open_or_create()
+                .map_err(map_iceoryx_error)?;
+            Some(svc.publisher_builder().create().map_err(map_iceoryx_error)?)
+        } else {
+            None
+        };
         Ok(Self {
-            config_publisher,
             packet_publisher,
+            camera_control_publisher,
         })
     }
 }
 
 impl EncodedPacketSink for IpcPreviewPacketSink {
-    fn write_config(&mut self, header: EncodedPacketHeader, extradata: &[u8]) -> Result<()> {
-        publish_packet(&self.config_publisher, header, extradata)
-    }
-
     fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
         publish_packet(&self.packet_publisher, header, payload)
     }
 
     fn write_eos(&mut self, header: EncodedPacketHeader) -> Result<()> {
         publish_packet(&self.packet_publisher, header, &[])
+    }
+
+    fn request_upstream_keyframe(&mut self) -> Result<()> {
+        if let Some(pub_) = &self.camera_control_publisher {
+            pub_.send_copy(CameraControl::RequestKeyframe)
+                .map_err(map_iceoryx_error)?;
+        }
+        Ok(())
     }
 }
 
@@ -213,16 +210,6 @@ impl IpcPreviewJpegSink {
 }
 
 impl EncodedPacketSink for IpcPreviewJpegSink {
-    /// The JPEG sink has no codec extradata to publish — JPEG is
-    /// self-contained per frame.
-    fn write_config(&mut self, _header: EncodedPacketHeader, _extradata: &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    /// Adapt the encoded packet header to a `CameraFrameHeader` and
-    /// publish the JPEG bytes verbatim. The visualizer's JPEG
-    /// pipeline already expects this header shape, so no other code
-    /// has to change for jpeg-mode preview to work end-to-end.
     fn write_packet(&mut self, header: EncodedPacketHeader, payload: &[u8]) -> Result<()> {
         // `Config` packets from the JPEG path arrive only because of
         // the trait shape; the actual codec session that drives this

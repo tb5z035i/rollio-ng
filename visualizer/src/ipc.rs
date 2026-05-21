@@ -17,9 +17,9 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    preview_config_service_name, preview_control_service_name, preview_jpeg_service_name,
+    preview_control_service_name, preview_jpeg_service_name,
     preview_packet_service_name, CONTROL_EVENTS_SERVICE, PREVIEW_PACKET_BUFFER, STATE_BUFFER,
-    STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
+    STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     PreviewOutputMode, RobotStateKind, VisualizerCameraSourceConfig, VisualizerRobotSourceConfig,
@@ -34,11 +34,6 @@ pub enum IpcMessage {
         name: String,
         header: CameraFrameHeader,
         payload: Vec<u8>,
-    },
-    EncodedConfig {
-        name: String,
-        header: EncodedPacketHeader,
-        extradata: Vec<u8>,
     },
     EncodedPacket {
         name: String,
@@ -79,7 +74,6 @@ struct CameraSubscribers {
 enum CameraKind {
     Jpeg(iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], CameraFrameHeader>),
     Encoded {
-        config: iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], EncodedPacketHeader>,
         packets: iceoryx2::port::subscriber::Subscriber<ipc::Service, [u8], EncodedPacketHeader>,
     },
 }
@@ -127,21 +121,8 @@ impl IpcPoller {
                     CameraKind::Jpeg(service.subscriber_builder().create()?)
                 }
                 PreviewOutputMode::Encoded => {
-                    let cfg_topic =
-                        preview_config_service_name(&source.bus_root, &source.channel_type);
                     let pkt_topic =
                         preview_packet_service_name(&source.bus_root, &source.channel_type);
-                    let cfg_service: ServiceName = cfg_topic.as_str().try_into()?;
-                    let cfg = node
-                        .service_builder(&cfg_service)
-                        .publish_subscribe::<[u8]>()
-                        .user_header::<EncodedPacketHeader>()
-                        .history_size(STREAM_CONFIG_HISTORY_SIZE)
-                        .subscriber_max_buffer_size(STREAM_CONFIG_HISTORY_SIZE.max(2))
-                        .max_publishers(16)
-                        .max_subscribers(16)
-                        .max_nodes(16)
-                        .open_or_create()?;
                     let pkt_service: ServiceName = pkt_topic.as_str().try_into()?;
                     let pkt = node
                         .service_builder(&pkt_service)
@@ -153,7 +134,6 @@ impl IpcPoller {
                         .max_nodes(16)
                         .open_or_create()?;
                     CameraKind::Encoded {
-                        config: cfg.subscriber_builder().create()?,
                         packets: pkt.subscriber_builder().create()?,
                     }
                 }
@@ -267,14 +247,7 @@ impl IpcPoller {
                         messages.push(msg);
                     }
                 }
-                CameraKind::Encoded { config, packets } => {
-                    while let Ok(Some(sample)) = config.receive() {
-                        messages.push(IpcMessage::EncodedConfig {
-                            name: cam.name.clone(),
-                            header: *sample.user_header(),
-                            extradata: sample.payload().to_vec(),
-                        });
-                    }
+                CameraKind::Encoded { packets } => {
                     while let Ok(Some(sample)) = packets.receive() {
                         messages.push(IpcMessage::EncodedPacket {
                             name: cam.name.clone(),

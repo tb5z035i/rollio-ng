@@ -138,7 +138,7 @@ pub(crate) struct VaapiHwSession {
     vaapi_device: AvBufferRef,
     encoder_time_base: ffmpeg::Rational,
     pipeline: Option<Pipeline>,
-    config_sent: bool,
+    force_keyframe: bool,
     next_sequence: u64,
     last_pts_us: Option<i64>,
     nonmonotonic_warning_logged: bool,
@@ -163,7 +163,7 @@ impl VaapiHwSession {
             vaapi_device,
             encoder_time_base: ffmpeg::Rational(1, 1_000_000),
             pipeline: None,
-            config_sent: false,
+            force_keyframe: false,
             next_sequence: 0,
             last_pts_us: None,
             nonmonotonic_warning_logged: false,
@@ -314,7 +314,6 @@ impl VaapiHwSession {
             }
         }
         encoder.set_max_b_frames(0);
-        encoder.set_flags(ffmpeg::codec::Flags::GLOBAL_HEADER);
         unsafe {
             (*encoder.as_mut_ptr()).hw_device_ctx = f::av_buffer_ref(self.vaapi_device.as_ptr());
             (*encoder.as_mut_ptr()).hw_frames_ctx = filter.clone_output_hw_frames_ctx()?;
@@ -337,39 +336,6 @@ impl VaapiHwSession {
             }
         };
         Ok((opened, extradata))
-    }
-
-    fn ensure_config_sent(&mut self, sink: &mut dyn EncodedPacketSink) -> Result<()> {
-        if self.config_sent {
-            return Ok(());
-        }
-        let extradata: &[u8] = match self.pipeline.as_ref() {
-            Some(p) => &p.output.extradata,
-            None => return Ok(()),
-        };
-        let header = EncodedPacketHeader {
-            kind: EncodedPacketKind::Config,
-            codec: encoded_codec_id(self.codec),
-            flags: 0,
-            width: self.width,
-            height: self.height,
-            pixel_format: PixelFormat::Rgb24,
-            _reserved0: 0,
-            time_base_num: self.encoder_time_base.numerator() as u32,
-            time_base_den: self.encoder_time_base.denominator() as u32,
-            pts_us: 0,
-            dts_us: 0,
-            duration_us: 0,
-            sequence_number: self.next_sequence,
-            source_timestamp_us: self.recording_start_us,
-            source_frame_index: 0,
-            episode_index: self.episode_index,
-            payload_len: extradata.len() as u32,
-        };
-        self.next_sequence += 1;
-        sink.write_config(header, extradata)?;
-        self.config_sent = true;
-        Ok(())
     }
 
     fn push_input_and_collect(
@@ -434,6 +400,11 @@ impl VaapiHwSession {
             let mut scaled = ffmpeg::frame::Video::empty();
             match pipeline.output.filter.receive_frame(&mut scaled)? {
                 Some(()) => {
+                    if self.force_keyframe {
+                        scaled.set_kind(ffmpeg::picture::Type::I);
+                        unsafe { (*scaled.as_mut_ptr()).key_frame = 1; }
+                        self.force_keyframe = false;
+                    }
                     pipeline.output.encoder.send_frame(&scaled)?;
                     drop(scaled);
                 }
@@ -476,9 +447,13 @@ impl CodecSession for VaapiHwSession {
                 .ok_or_else(|| EncoderError::message("pipeline not initialised"))?;
             pipeline.output.filter.send_frame(&mut d)?;
         }
-        self.ensure_config_sent(sink)?;
         self.drain_filter_and_encode(frame, sink)?;
         self.metrics.encode_time = self.metrics.encode_time.saturating_add(started.elapsed());
+        Ok(())
+    }
+
+    fn request_keyframe(&mut self) -> Result<()> {
+        self.force_keyframe = true;
         Ok(())
     }
 

@@ -7,8 +7,8 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    camera_frames_service_name, preview_config_service_name, preview_control_service_name,
-    preview_jpeg_service_name, preview_packet_service_name, recording_config_service_name,
+    camera_frames_service_name, preview_control_service_name,
+    preview_jpeg_service_name, preview_packet_service_name,
     recording_packet_service_name, BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE,
 };
 use rollio_encoder::media::{decode_artifact, probe_capabilities};
@@ -131,8 +131,7 @@ fn rvl_recording_role_emits_config_packets_eos() {
         },
     );
 
-    let (configs, packets, eos) = collect_packets(
-        &ports.recording_config_subscriber,
+    let (packets, eos) = collect_packets(
         &ports.recording_packet_subscriber,
         Duration::from_secs(8),
         frame_count,
@@ -141,11 +140,6 @@ fn rvl_recording_role_emits_config_packets_eos() {
     send_control(&ports.control_publisher, ControlEvent::Shutdown);
     wait_for_exit(&mut child, Duration::from_secs(5));
 
-    assert!(!configs.is_empty(), "at least one Config must be sent");
-    assert!(
-        configs[0].extradata.starts_with(b"RVL1"),
-        "RVL Config extradata starts with magic"
-    );
     assert!(
         packets.len() >= frame_count,
         "expected at least {frame_count} Packet writes, got {}",
@@ -159,7 +153,7 @@ fn rvl_recording_role_emits_config_packets_eos() {
         eos.is_some(),
         "EndOfStream must be emitted after RecordingStop"
     );
-    let mut last_seq = configs[0].header.sequence_number;
+    let mut last_seq = packets[0].0.sequence_number;
     for (header, _) in &packets {
         assert_eq!(header.sequence_number, last_seq + 1);
         last_seq = header.sequence_number;
@@ -250,7 +244,6 @@ fn preview_role_encoded_mode_replays_config_to_late_subscriber() {
     let process_id = format!("preview-encoder.{}", unique_name("h264"));
     let ports = make_ports(&bus_root, &channel_type).expect("ports");
 
-    let preview_config_topic = preview_config_service_name(&bus_root, &channel_type);
     let preview_packet_topic = preview_packet_service_name(&bus_root, &channel_type);
 
     let config = preview_config_inline_encoded(&process_id, &bus_root, &channel_type, 96, 64, 15);
@@ -273,26 +266,17 @@ fn preview_role_encoded_mode_replays_config_to_late_subscriber() {
     }
 
     // Late subscriber: opens AFTER the encoder has started publishing.
-    // Must still receive the cached Config via iceoryx2 history.
-    let late_config_subscriber =
-        open_packet_subscriber_with_history(&ports.node, &preview_config_topic, 2);
     let late_packet_subscriber = open_packet_subscriber(&ports.node, &preview_packet_topic);
 
-    let mut received_config = None;
     let mut received_packets = 0usize;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        while let Some(sample) = late_config_subscriber.receive().expect("config recv") {
-            if matches!(sample.user_header().kind, EncodedPacketKind::Config) {
-                received_config = Some((*sample.user_header(), sample.payload().to_vec()));
-            }
-        }
         while let Some(sample) = late_packet_subscriber.receive().expect("packet recv") {
             if matches!(sample.user_header().kind, EncodedPacketKind::Packet) {
                 received_packets += 1;
             }
         }
-        if received_config.is_some() && received_packets > 0 {
+        if received_packets > 0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -301,16 +285,6 @@ fn preview_role_encoded_mode_replays_config_to_late_subscriber() {
     send_control(&ports.control_publisher, ControlEvent::Shutdown);
     wait_for_exit(&mut child, Duration::from_secs(5));
 
-    let (config_header, extradata) =
-        received_config.expect("late subscriber should replay cached Config");
-    assert_eq!(
-        config_header.codec,
-        rollio_types::messages::EncodedCodecId::H264
-    );
-    assert!(
-        !extradata.is_empty(),
-        "H.264 SPS/PPS extradata must be present"
-    );
     assert!(
         received_packets >= 1,
         "at least one packet should be received"
@@ -345,10 +319,7 @@ fn preview_role_encoded_mode_publishes_h264_packets_when_downscaling() {
     let process_id = format!("preview-encoder.{}", unique_name("h264_dn"));
     let ports = make_ports(&bus_root, &channel_type).expect("ports");
 
-    let preview_config_topic = preview_config_service_name(&bus_root, &channel_type);
     let preview_packet_topic = preview_packet_service_name(&bus_root, &channel_type);
-    let config_subscriber =
-        open_packet_subscriber_with_history(&ports.node, &preview_config_topic, 2);
     let packet_subscriber = open_packet_subscriber(&ports.node, &preview_packet_topic);
 
     let config = preview_config_inline_encoded(
@@ -377,21 +348,15 @@ fn preview_role_encoded_mode_publishes_h264_packets_when_downscaling() {
         std::thread::sleep(Duration::from_millis(35));
     }
 
-    let mut received_config: Option<(EncodedPacketHeader, Vec<u8>)> = None;
     let mut received_packets: Vec<EncodedPacketHeader> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        while let Some(sample) = config_subscriber.receive().expect("config recv") {
-            if matches!(sample.user_header().kind, EncodedPacketKind::Config) {
-                received_config = Some((*sample.user_header(), sample.payload().to_vec()));
-            }
-        }
         while let Some(sample) = packet_subscriber.receive().expect("packet recv") {
             if matches!(sample.user_header().kind, EncodedPacketKind::Packet) {
                 received_packets.push(*sample.user_header());
             }
         }
-        if received_config.is_some() && !received_packets.is_empty() {
+        if !received_packets.is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -400,18 +365,6 @@ fn preview_role_encoded_mode_publishes_h264_packets_when_downscaling() {
     send_control(&ports.control_publisher, ControlEvent::Shutdown);
     wait_for_exit(&mut child, Duration::from_secs(5));
 
-    let (config_header, extradata) =
-        received_config.expect("downscale path should still publish a Config");
-    assert_eq!(
-        config_header.codec,
-        rollio_types::messages::EncodedCodecId::H264
-    );
-    assert_eq!(config_header.width, preview_width);
-    assert_eq!(config_header.height, preview_height);
-    assert!(
-        !extradata.is_empty(),
-        "H.264 SPS/PPS extradata must be present"
-    );
     assert!(
         !received_packets.is_empty(),
         "downscale path must produce at least one Packet (was producing zero before the fix)"
@@ -441,10 +394,9 @@ fn preview_role_set_preview_size_restarts_at_new_dims() {
     let process_id = format!("preview-encoder.{}", unique_name("size"));
     let ports = make_ports(&bus_root, &channel_type).expect("ports");
 
-    let preview_config_topic = preview_config_service_name(&bus_root, &channel_type);
+    let preview_packet_topic = preview_packet_service_name(&bus_root, &channel_type);
     let preview_control_topic = preview_control_service_name(&bus_root, &channel_type);
-    let config_subscriber =
-        open_packet_subscriber_with_history(&ports.node, &preview_config_topic, 4);
+    let packet_subscriber = open_packet_subscriber(&ports.node, &preview_packet_topic);
     let control_publisher = open_preview_control_publisher(&ports.node, &preview_control_topic);
 
     let config = preview_config_inline_encoded(&process_id, &bus_root, &channel_type, 96, 64, 15);
@@ -492,13 +444,13 @@ fn preview_role_set_preview_size_restarts_at_new_dims() {
         std::thread::sleep(Duration::from_millis(40));
     }
 
-    let mut configs = Vec::new();
+    let mut packets = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        while let Some(sample) = config_subscriber.receive().expect("config recv") {
-            configs.push(*sample.user_header());
+        while let Some(sample) = packet_subscriber.receive().expect("packet recv") {
+            packets.push(*sample.user_header());
         }
-        if configs.iter().any(|h| h.width == 64 && h.height == 48) {
+        if packets.iter().any(|h| h.width == 64 && h.height == 48) {
             break;
         }
         std::thread::sleep(Duration::from_millis(40));
@@ -508,8 +460,8 @@ fn preview_role_set_preview_size_restarts_at_new_dims() {
     wait_for_exit(&mut child, Duration::from_secs(5));
 
     assert!(
-        configs.iter().any(|h| h.width == 64 && h.height == 48),
-        "post-resize Config must report the new dims"
+        packets.iter().any(|h| h.width == 64 && h.height == 48),
+        "post-resize packets must report the new dims"
     );
 }
 
@@ -521,7 +473,6 @@ struct TestPorts {
     node: Node<ipc::Service>,
     frame_publisher: FramePublisher,
     control_publisher: ControlPublisher,
-    recording_config_subscriber: PacketSubscriber,
     recording_packet_subscriber: PacketSubscriber,
 }
 
@@ -554,10 +505,7 @@ fn make_ports(bus_root: &str, channel_type: &str) -> Result<TestPorts, Box<dyn s
 
     // Pre-create the recording topics with the production caps so the
     // encoder's open_or_create matches.
-    let rec_config_topic = recording_config_service_name(bus_root, channel_type);
     let rec_packet_topic = recording_packet_service_name(bus_root, channel_type);
-    let recording_config_subscriber =
-        open_packet_subscriber_with_history(&node, &rec_config_topic, 2);
     let recording_packet_subscriber = open_packet_subscriber(&node, &rec_packet_topic);
 
     let backpressure_service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
@@ -573,7 +521,6 @@ fn make_ports(bus_root: &str, channel_type: &str) -> Result<TestPorts, Box<dyn s
         node,
         frame_publisher,
         control_publisher,
-        recording_config_subscriber,
         recording_packet_subscriber,
     })
 }
@@ -645,43 +592,31 @@ struct ConfigPacket {
 }
 
 fn collect_packets(
-    config_sub: &PacketSubscriber,
     packet_sub: &PacketSubscriber,
     timeout: Duration,
     expected_packets: usize,
 ) -> (
-    Vec<ConfigPacket>,
     Vec<(EncodedPacketHeader, Vec<u8>)>,
     Option<EncodedPacketHeader>,
 ) {
-    let mut configs = Vec::new();
     let mut packets = Vec::new();
     let mut eos = None;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        while let Some(sample) = config_sub.receive().expect("config recv") {
-            if matches!(sample.user_header().kind, EncodedPacketKind::Config) {
-                configs.push(ConfigPacket {
-                    header: *sample.user_header(),
-                    extradata: sample.payload().to_vec(),
-                });
-            }
-        }
         while let Some(sample) = packet_sub.receive().expect("packet recv") {
             match sample.user_header().kind {
                 EncodedPacketKind::Packet => {
                     packets.push((*sample.user_header(), sample.payload().to_vec()));
                 }
                 EncodedPacketKind::EndOfStream => eos = Some(*sample.user_header()),
-                _ => {}
             }
         }
-        if !configs.is_empty() && packets.len() >= expected_packets && eos.is_some() {
+        if packets.len() >= expected_packets && eos.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    (configs, packets, eos)
+    (packets, eos)
 }
 
 fn recording_config_inline(
@@ -694,7 +629,6 @@ fn recording_config_inline(
     fps: u32,
 ) -> String {
     let frame_topic = format!("{bus_root}/{channel_type}/frames");
-    let config_topic = recording_config_service_name(bus_root, channel_type);
     let packet_topic = recording_packet_service_name(bus_root, channel_type);
     let codec_str = codec.as_str();
     let backend_str = match backend {
@@ -703,6 +637,7 @@ fn recording_config_inline(
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
         EncoderBackend::Passthrough => "passthrough",
+        EncoderBackend::HorizonX5 => "horizon-x5",
     };
     format!(
         "process_id = \"{process_id}\"\n\
@@ -714,7 +649,6 @@ fn recording_config_inline(
          backend = \"{backend_str}\"\n\
          fps = {fps}\n\
          queue_size = 32\n\
-         config_topic = \"{config_topic}\"\n\
          packet_topic = \"{packet_topic}\"\n"
     )
 }
@@ -760,7 +694,6 @@ fn preview_config_inline_encoded(
     fps: u32,
 ) -> String {
     let frame_topic = format!("{bus_root}/{channel_type}/frames");
-    let config_topic = preview_config_service_name(bus_root, channel_type);
     let packet_topic = preview_packet_service_name(bus_root, channel_type);
     let control_topic = preview_control_service_name(bus_root, channel_type);
     format!(
@@ -779,7 +712,6 @@ fn preview_config_inline_encoded(
          gop_seconds = 1\n\
          crf = 32\n\
          jpeg_quality = 30\n\
-         config_topic = \"{config_topic}\"\n\
          packet_topic = \"{packet_topic}\"\n\
          control_topic = \"{control_topic}\"\n"
     )

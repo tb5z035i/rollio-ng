@@ -1,7 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    channel_command_service_name, channel_frames_service_name, channel_mode_control_service_name,
+    channel_camera_control_service_name, channel_command_service_name,
+    channel_frames_service_name, channel_mode_control_service_name,
     channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
     STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
@@ -12,8 +13,8 @@ use rollio_types::config::{
     StateValueLimitsEntry,
 };
 use rollio_types::messages::{
-    CameraFrameHeader, ControlEvent, DeviceChannelMode, JointMitCommand15, JointVector15,
-    PixelFormat, Pose7,
+    CameraControl, CameraFrameHeader, ControlEvent, DeviceChannelMode, JointMitCommand15,
+    JointVector15, PixelFormat, Pose7,
 };
 use serde_json::json;
 use std::error::Error;
@@ -166,6 +167,7 @@ struct H264Encoder {
     yuv: ffmpeg::util::frame::Video,
     pkt: ffmpeg::packet::Packet,
     frame_pts: i64,
+    force_idr: bool,
 }
 
 impl H264Encoder {
@@ -212,6 +214,7 @@ impl H264Encoder {
             yuv,
             pkt: ffmpeg::packet::Packet::empty(),
             frame_pts: 0,
+            force_idr: false,
         })
     }
 
@@ -227,6 +230,12 @@ impl H264Encoder {
         self.scaler.run(&rgb_frame, &mut self.yuv)?;
         self.yuv.set_pts(Some(self.frame_pts));
         self.frame_pts += 1;
+
+        if self.force_idr {
+            self.yuv.set_kind(ffmpeg::picture::Type::I);
+            unsafe { (*self.yuv.as_mut_ptr()).key_frame = 1; }
+            self.force_idr = false;
+        }
 
         self.encoder.send_frame(&self.yuv)?;
         self.encoder.receive_packet(&mut self.pkt)?;
@@ -594,6 +603,15 @@ fn run_camera_channel(
         .create()?;
     let shutdown_subscriber = open_shutdown_subscriber(&node)?;
     let mode_info_publisher = open_channel_mode_publisher(&node, &bus_root, &channel_type)?;
+    let camera_control_subscriber = {
+        let topic = channel_camera_control_service_name(&bus_root, &channel_type);
+        let sn: ServiceName = topic.as_str().try_into()?;
+        let svc = node
+            .service_builder(&sn)
+            .publish_subscribe::<CameraControl>()
+            .open_or_create()?;
+        svc.subscriber_builder().create()?
+    };
 
     let rgb_size = rgb_frame_len(profile.width, profile.height);
     let frame_capacity = slot_len.max(rgb_size);
@@ -627,6 +645,13 @@ fn run_camera_channel(
     loop {
         if stop.load(Ordering::Relaxed) || drain_shutdown_events(&shutdown_subscriber)? {
             return Ok(());
+        }
+        while let Some(sample) = camera_control_subscriber.receive()? {
+            if *sample.payload() == CameraControl::RequestKeyframe {
+                if let Some(h264) = camera.h264.as_mut() {
+                    h264.force_idr = true;
+                }
+            }
         }
 
         let now = Instant::now();
