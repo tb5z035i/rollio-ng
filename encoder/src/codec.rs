@@ -498,7 +498,9 @@ impl CodecSession for LibavCodecSession {
         if no_scale_needed {
             if force_idr {
                 source.set_kind(ffmpeg::picture::Type::I);
-                unsafe { (*source.as_mut_ptr()).key_frame = 1; }
+                unsafe {
+                    (*source.as_mut_ptr()).key_frame = 1;
+                }
             }
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
@@ -521,7 +523,9 @@ impl CodecSession for LibavCodecSession {
             frame_to_scale.set_pts(Some(pts_us));
             if force_idr {
                 frame_to_scale.set_kind(ffmpeg::picture::Type::I);
-                unsafe { (*frame_to_scale.as_mut_ptr()).key_frame = 1; }
+                unsafe {
+                    (*frame_to_scale.as_mut_ptr()).key_frame = 1;
+                }
             }
             if self.uses_hw_frames() {
                 let hw_frame = upload_hw_frame(
@@ -1157,8 +1161,9 @@ mod tests {
     impl MockSinkCall {
         pub fn sequence(&self) -> u64 {
             match self {
-                MockSinkCall::Packet { header, .. }
-                | MockSinkCall::Eos { header } => header.sequence_number,
+                MockSinkCall::Packet { header, .. } | MockSinkCall::Eos { header } => {
+                    header.sequence_number
+                }
             }
         }
     }

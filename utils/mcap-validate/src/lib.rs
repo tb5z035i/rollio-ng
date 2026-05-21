@@ -8,8 +8,8 @@
 //! glob imports which collide on the shared `pub mod <namespace>` block when
 //! the files are loaded as separate top-level modules.
 
-mod fbs_foxglove;
 mod fbs_discover;
+mod fbs_foxglove;
 
 pub mod batch;
 pub mod fbs;

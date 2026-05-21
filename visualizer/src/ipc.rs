@@ -17,9 +17,9 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    preview_control_service_name, preview_jpeg_service_name,
-    preview_packet_service_name, CONTROL_EVENTS_SERVICE, PREVIEW_PACKET_BUFFER, STATE_BUFFER,
-    STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
+    preview_control_service_name, preview_jpeg_service_name, preview_packet_service_name,
+    CONTROL_EVENTS_SERVICE, PREVIEW_PACKET_BUFFER, STATE_BUFFER, STATE_MAX_NODES,
+    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     PreviewOutputMode, RobotStateKind, VisualizerCameraSourceConfig, VisualizerRobotSourceConfig,

@@ -2825,8 +2825,7 @@ impl RecordingEncoderConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         if self.packet_topic.trim().is_empty() {
             return Err(ConfigError::Validation(
-                "encoder runtime v2: recording.packet_topic must not be empty"
-                    .into(),
+                "encoder runtime v2: recording.packet_topic must not be empty".into(),
             ));
         }
         if self.fps == 0 || self.fps > 1000 {

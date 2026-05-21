@@ -76,7 +76,11 @@ impl IpcRecordingSink {
                 .max_nodes(MAX_NODES)
                 .open_or_create()
                 .map_err(map_iceoryx_error)?;
-            Some(svc.publisher_builder().create().map_err(map_iceoryx_error)?)
+            Some(
+                svc.publisher_builder()
+                    .create()
+                    .map_err(map_iceoryx_error)?,
+            )
         } else {
             None
         };
@@ -149,7 +153,11 @@ impl IpcPreviewPacketSink {
                 .max_nodes(MAX_NODES)
                 .open_or_create()
                 .map_err(map_iceoryx_error)?;
-            Some(svc.publisher_builder().create().map_err(map_iceoryx_error)?)
+            Some(
+                svc.publisher_builder()
+                    .create()
+                    .map_err(map_iceoryx_error)?,
+            )
         } else {
             None
         };

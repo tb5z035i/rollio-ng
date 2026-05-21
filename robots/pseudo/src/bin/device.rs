@@ -1,10 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    channel_camera_control_service_name, channel_command_service_name,
-    channel_frames_service_name, channel_mode_control_service_name,
-    channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
-    STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
+    channel_camera_control_service_name, channel_command_service_name, channel_frames_service_name,
+    channel_mode_control_service_name, channel_mode_info_service_name, channel_state_service_name,
+    CONTROL_EVENTS_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
+    STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
     BinaryDeviceConfig, CameraChannelProfile, ChannelCommandDefaults, DeviceQueryChannel,
@@ -233,7 +233,9 @@ impl H264Encoder {
 
         if self.force_idr {
             self.yuv.set_kind(ffmpeg::picture::Type::I);
-            unsafe { (*self.yuv.as_mut_ptr()).key_frame = 1; }
+            unsafe {
+                (*self.yuv.as_mut_ptr()).key_frame = 1;
+            }
             self.force_idr = false;
         }
 

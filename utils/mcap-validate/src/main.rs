@@ -66,9 +66,11 @@ fn real_main() -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
 
-    let jobs = cli
-        .jobs
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let jobs = cli.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
 
     let reports = run_batch(
         files,

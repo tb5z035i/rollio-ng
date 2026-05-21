@@ -7,9 +7,9 @@
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    camera_frames_service_name, preview_control_service_name,
-    preview_jpeg_service_name, preview_packet_service_name,
-    recording_packet_service_name, BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE,
+    camera_frames_service_name, preview_control_service_name, preview_jpeg_service_name,
+    preview_packet_service_name, recording_packet_service_name, BACKPRESSURE_SERVICE,
+    CONTROL_EVENTS_SERVICE,
 };
 use rollio_encoder::media::{decode_artifact, probe_capabilities};
 use rollio_types::config::{EncoderBackend, EncoderCapabilityDirection, EncoderCodec};

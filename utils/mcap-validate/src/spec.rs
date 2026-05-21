@@ -64,12 +64,11 @@ pub struct TfPair {
 
 impl Spec {
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("reading spec file {}", path.display()))?;
+        let bytes =
+            std::fs::read(path).with_context(|| format!("reading spec file {}", path.display()))?;
         let text = std::str::from_utf8(&bytes)
             .with_context(|| format!("spec file {} is not valid UTF-8", path.display()))?;
-        toml::from_str(text)
-            .with_context(|| format!("parsing spec TOML {}", path.display()))
+        toml::from_str(text).with_context(|| format!("parsing spec TOML {}", path.display()))
     }
 
     pub fn name_or_default(&self) -> &str {

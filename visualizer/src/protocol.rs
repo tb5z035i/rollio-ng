@@ -189,7 +189,17 @@ mod tests {
 
     #[test]
     fn encoded_packet_carries_flags_and_seq() {
-        let bytes = encode_packet("cam1", 0, 1, 1234, 7, 1_700_000_000_000_000, 1920, 1080, b"AU");
+        let bytes = encode_packet(
+            "cam1",
+            0,
+            1,
+            1234,
+            7,
+            1_700_000_000_000_000,
+            1920,
+            1080,
+            b"AU",
+        );
         assert_eq!(bytes[0], KIND_ENCODED_PACKET);
         let name_len = u16::from_le_bytes([bytes[1], bytes[2]]) as usize;
         let body = &bytes[3 + name_len..];

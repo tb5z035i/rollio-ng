@@ -22,15 +22,25 @@ fn fixture_mcap() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let p = repo_root().join("recording_converted.mcap");
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 fn fixture_spec() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("MCAP_VALIDATE_FIXTURE_SPEC") {
         return Some(PathBuf::from(p));
     }
-    let p = repo_root().join("collect_verify").join("data_spec_door.toml");
-    if p.exists() { Some(p) } else { None }
+    let p = repo_root()
+        .join("collect_verify")
+        .join("data_spec_door.toml");
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 #[test]
@@ -40,7 +50,10 @@ fn smoke_loads_spec() {
         return;
     };
     let spec = Spec::load(&spec_path).expect("spec loads");
-    assert!(!spec.metadata.is_empty(), "spec should declare metadata rules");
+    assert!(
+        !spec.metadata.is_empty(),
+        "spec should declare metadata rules"
+    );
     assert!(!spec.channels.is_empty(), "spec should declare channels");
 }
 

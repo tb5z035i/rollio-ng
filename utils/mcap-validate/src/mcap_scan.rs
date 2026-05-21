@@ -32,14 +32,18 @@ pub struct ScanResult {
 /// Open + scan an MCAP file. `skip_constraints=true` short-circuits the
 /// (expensive) message stream pass and returns only summary-derived data.
 pub fn scan(path: &Path, spec: &Spec, skip_constraints: bool) -> Result<ScanResult> {
-    let file = File::open(path)
-        .with_context(|| format!("opening mcap file {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("opening mcap file {}", path.display()))?;
     let mmap = unsafe { Mmap::map(&file) }
         .with_context(|| format!("mmap-ing mcap file {}", path.display()))?;
 
     let summary = mcap::Summary::read(&mmap)
         .with_context(|| format!("reading mcap summary of {}", path.display()))?
-        .ok_or_else(|| anyhow!("MCAP file {} has no summary; cannot validate", path.display()))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "MCAP file {} has no summary; cannot validate",
+                path.display()
+            )
+        })?;
 
     let mut result = ScanResult::default();
 

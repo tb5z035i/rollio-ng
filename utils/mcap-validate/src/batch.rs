@@ -40,7 +40,11 @@ pub struct BatchOptions {
     pub fail_fast: bool,
 }
 
-pub fn run_batch(files: Vec<PathBuf>, spec: Arc<Spec>, opts: BatchOptions) -> Result<Vec<FileReport>> {
+pub fn run_batch(
+    files: Vec<PathBuf>,
+    spec: Arc<Spec>,
+    opts: BatchOptions,
+) -> Result<Vec<FileReport>> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.jobs)
         .build()?;

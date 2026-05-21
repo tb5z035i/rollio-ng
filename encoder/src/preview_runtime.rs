@@ -269,12 +269,13 @@ impl PreviewState {
             .packet_topic
             .as_deref()
             .ok_or_else(|| EncoderError::message("preview encoded mode requires packet_topic"))?;
-        let camera_control_topic = config
-            .channel_id
-            .split_once('/')
-            .map(|(bus_root, channel_type)| {
-                rollio_bus::channel_camera_control_service_name(bus_root, channel_type)
-            });
+        let camera_control_topic =
+            config
+                .channel_id
+                .split_once('/')
+                .map(|(bus_root, channel_type)| {
+                    rollio_bus::channel_camera_control_service_name(bus_root, channel_type)
+                });
         let sink = IpcPreviewPacketSink::open(
             node,
             packet_topic,

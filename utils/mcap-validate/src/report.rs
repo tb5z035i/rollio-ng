@@ -16,11 +16,7 @@ pub enum Format {
     Summary,
 }
 
-pub fn render<W: Write>(
-    out: &mut W,
-    reports: &[FileReport],
-    formats: &[Format],
-) -> Result<()> {
+pub fn render<W: Write>(out: &mut W, reports: &[FileReport], formats: &[Format]) -> Result<()> {
     for (i, fmt) in formats.iter().enumerate() {
         if i > 0 {
             writeln!(out)?;
