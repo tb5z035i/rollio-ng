@@ -1,5 +1,5 @@
 use super::runtime::{
-    spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT,
+    spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_PROCESS_GRACE,
 };
 use super::state::{AvailableDevice, CameraProfile, SetupSession, SetupStep};
 use crate::process::{terminate_children, ChildSpec};
@@ -12,8 +12,6 @@ use rollio_types::messages::DeviceChannelMode;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Instant;
 
 pub(super) fn should_run_preview_runtime(session: &SetupSession) -> bool {
     session.exit_kind.is_none()
@@ -146,27 +144,12 @@ pub(super) fn stop_setup_runtime(
 
     ipc.send_shutdown()?;
 
-    let deadline = Instant::now() + SETUP_SHUTDOWN_TIMEOUT;
-    loop {
-        let mut remaining_children = 0usize;
-        for child in runtime.children.iter_mut() {
-            if child.child.try_wait()?.is_none() {
-                remaining_children += 1;
-            }
-        }
-        if remaining_children == 0 {
-            break;
-        }
-        if Instant::now() >= deadline {
-            terminate_children(
-                &mut runtime.children,
-                SETUP_SHUTDOWN_TIMEOUT,
-                SETUP_POLL_INTERVAL,
-            )?;
-            break;
-        }
-        thread::sleep(SETUP_POLL_INTERVAL);
-    }
+    terminate_children(
+        &mut runtime.children,
+        SETUP_PROCESS_GRACE,
+        SETUP_POLL_INTERVAL,
+    )?;
+
     if let Some(temp_config_path) = runtime.temp_config_path.as_deref() {
         cleanup_preview_temp_config(temp_config_path);
     }

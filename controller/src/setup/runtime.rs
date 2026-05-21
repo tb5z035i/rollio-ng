@@ -44,6 +44,11 @@ use std::time::{Duration, Instant};
 
 pub(super) const SETUP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) const SETUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Grace window for setup-runtime children to react to the broadcast
+/// `ControlEvent::Shutdown` before `terminate_children` escalates to SIGTERM.
+/// With the unified `CONTROL_EVENTS_SERVICE` config every child receives the
+/// event in ms, so a short window keeps the UI responsive on save.
+pub(super) const SETUP_PROCESS_GRACE: Duration = Duration::from_secs(5);
 pub(super) const SETUP_STATE_MAX_AGE: Duration = Duration::from_millis(500);
 pub(super) const SETUP_UI_SUCCESS_DELAY: Duration = Duration::from_millis(300);
 pub(super) const SETUP_DEV_RUNTIME_PACKAGES: &[&str] = &[
