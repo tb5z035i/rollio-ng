@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use iceoryx2::node::NodeWaitFailure;
@@ -23,6 +23,8 @@ use crate::ipc::{IpcMessage, IpcPoller};
 use crate::preview_config::RuntimePreviewConfig;
 use crate::stream_info::StreamInfoRegistry;
 use crate::websocket::BroadcastMessage;
+
+const VISUALIZER_STATS_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[command(name = "rollio-visualizer")]
@@ -194,6 +196,242 @@ async fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct MetricStats {
+    count: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+
+impl MetricStats {
+    fn observe(&mut self, value: f64) {
+        if self.count == 0 {
+            self.min = value;
+            self.max = value;
+        } else {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+        self.sum += value;
+        self.count += 1;
+    }
+
+    fn avg(self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum / self.count as f64
+        }
+    }
+
+    fn summary(self) -> String {
+        if self.count == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.1}/{:.1}/{:.1}", self.avg(), self.min, self.max)
+        }
+    }
+
+    fn avg_max_summary(self) -> String {
+        if self.count == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.1}/{:.1}", self.avg(), self.max)
+        }
+    }
+}
+
+#[derive(Default)]
+struct VisualizerCameraStats {
+    frames: u64,
+    configs: u64,
+    bytes: u64,
+    last_source_timestamp_us: Option<u64>,
+    source_age_ms: MetricStats,
+    source_gap_ms: MetricStats,
+    bridge_ms: MetricStats,
+    payload_bytes: MetricStats,
+}
+
+struct VisualizerIpcStats {
+    interval_started_at: Instant,
+    last_log_at: Instant,
+    cameras: std::collections::HashMap<String, VisualizerCameraStats>,
+    robot_messages: u64,
+    poll_batch: MetricStats,
+}
+
+impl VisualizerIpcStats {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            interval_started_at: now,
+            last_log_at: now,
+            cameras: std::collections::HashMap::new(),
+            robot_messages: 0,
+            poll_batch: MetricStats::default(),
+        }
+    }
+
+    fn record_poll_batch(&mut self, messages: usize) {
+        if messages > 0 {
+            self.poll_batch.observe(messages as f64);
+        }
+    }
+
+    fn record_config(&mut self, name: &str, payload_len: usize, bridge_elapsed: Duration) {
+        let stats = self.cameras.entry(name.to_string()).or_default();
+        stats.configs += 1;
+        stats.bytes = stats.bytes.saturating_add(payload_len as u64);
+        stats.payload_bytes.observe(payload_len as f64);
+        stats
+            .bridge_ms
+            .observe(bridge_elapsed.as_secs_f64() * 1000.0);
+    }
+
+    fn record_frame(
+        &mut self,
+        name: &str,
+        source_timestamp_us: u64,
+        payload_len: usize,
+        bridge_elapsed: Duration,
+    ) {
+        let stats = self.cameras.entry(name.to_string()).or_default();
+        stats.frames += 1;
+        stats.bytes = stats.bytes.saturating_add(payload_len as u64);
+        stats.payload_bytes.observe(payload_len as f64);
+        stats
+            .bridge_ms
+            .observe(bridge_elapsed.as_secs_f64() * 1000.0);
+        if source_timestamp_us != 0 {
+            stats
+                .source_age_ms
+                .observe(source_age_ms(source_timestamp_us));
+            if let Some(previous) = stats.last_source_timestamp_us.replace(source_timestamp_us) {
+                stats
+                    .source_gap_ms
+                    .observe(timestamp_delta_ms(source_timestamp_us, previous));
+            }
+        }
+    }
+
+    fn record_robot_message(&mut self) {
+        self.robot_messages += 1;
+    }
+
+    fn maybe_log(&mut self, output_mode: PreviewOutputMode, advanced: bool) {
+        if self.last_log_at.elapsed() < VISUALIZER_STATS_LOG_INTERVAL {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed_sec = now.duration_since(self.interval_started_at).as_secs_f64();
+        let mut total_frames = 0u64;
+        let mut total_bytes = 0u64;
+        for (name, stats) in &self.cameras {
+            total_frames = total_frames.saturating_add(stats.frames);
+            total_bytes = total_bytes.saturating_add(stats.bytes);
+            let fps = if elapsed_sec > 0.0 {
+                stats.frames as f64 / elapsed_sec
+            } else {
+                0.0
+            };
+            if advanced {
+                log::info!(
+                    "visualizer pipeline camera={} mode={} frames={} configs={} fps={:.1} \
+                     bytes={} source_age_ms={} source_gap_ms={} bridge_ms={} payload_bytes={}",
+                    name,
+                    output_mode.as_str(),
+                    stats.frames,
+                    stats.configs,
+                    fps,
+                    stats.bytes,
+                    stats.source_age_ms.summary(),
+                    stats.source_gap_ms.summary(),
+                    stats.bridge_ms.summary(),
+                    stats.payload_bytes.summary(),
+                );
+            } else {
+                log::info!(
+                    "visualizer summary camera={} mode={} frames={} configs={} fps={:.1} \
+                     bytes={} source_age_ms={} bridge_ms={}",
+                    name,
+                    output_mode.as_str(),
+                    stats.frames,
+                    stats.configs,
+                    fps,
+                    stats.bytes,
+                    stats.source_age_ms.avg_max_summary(),
+                    stats.bridge_ms.avg_max_summary(),
+                );
+            }
+        }
+        if self.robot_messages > 0 || self.poll_batch.count > 0 {
+            if advanced {
+                log::info!(
+                    "visualizer pipeline summary mode={} cameras={} robot_msgs={} poll_batch={}",
+                    output_mode.as_str(),
+                    self.cameras.len(),
+                    self.robot_messages,
+                    self.poll_batch.summary(),
+                );
+            } else {
+                let total_fps = if elapsed_sec > 0.0 {
+                    total_frames as f64 / elapsed_sec
+                } else {
+                    0.0
+                };
+                log::info!(
+                    "visualizer summary mode={} cameras={} frames={} fps={:.1} bytes={} robot_msgs={}",
+                    output_mode.as_str(),
+                    self.cameras.len(),
+                    total_frames,
+                    total_fps,
+                    total_bytes,
+                    self.robot_messages,
+                );
+            }
+        }
+        let last_source_timestamps = self
+            .cameras
+            .iter()
+            .map(|(name, stats)| (name.clone(), stats.last_source_timestamp_us))
+            .collect::<Vec<_>>();
+        *self = Self::new();
+        self.interval_started_at = now;
+        self.last_log_at = now;
+        for (name, last_source_timestamp_us) in last_source_timestamps {
+            self.cameras
+                .entry(name)
+                .or_default()
+                .last_source_timestamp_us = last_source_timestamp_us;
+        }
+    }
+}
+
+fn unix_now_us() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+}
+
+fn source_age_ms(source_timestamp_us: u64) -> f64 {
+    signed_delta_us(unix_now_us(), u128::from(source_timestamp_us)) as f64 / 1000.0
+}
+
+fn timestamp_delta_ms(current_us: u64, previous_us: u64) -> f64 {
+    signed_delta_us(u128::from(current_us), u128::from(previous_us)) as f64 / 1000.0
+}
+
+fn signed_delta_us(lhs: u128, rhs: u128) -> i128 {
+    if lhs >= rhs {
+        (lhs - rhs) as i128
+    } else {
+        -((rhs - lhs) as i128)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ipc_poll_loop(
     camera_sources: &[VisualizerCameraSourceConfig],
@@ -217,6 +455,8 @@ fn ipc_poll_loop(
     // SPS/PPS and the browser decoder would never produce output.
     let mut annex_b_params: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
+    let mut ipc_stats = VisualizerIpcStats::new();
+    let advanced_logs = advanced_pipeline_logs_enabled();
 
     log::info!("IPC poll loop started ({})", output_mode.as_str());
     while !shutdown.load(Ordering::Relaxed) {
@@ -243,13 +483,16 @@ fn ipc_poll_loop(
             }
         }
 
-        for msg in poller.poll() {
+        let messages = poller.poll();
+        ipc_stats.record_poll_batch(messages.len());
+        for msg in messages {
             match msg {
                 IpcMessage::JpegFrame {
                     name,
                     header,
                     payload,
                 } => {
+                    let bridge_started = Instant::now();
                     if let Ok(mut info) = stream_info.lock() {
                         info.observe_jpeg_frame(
                             &name,
@@ -269,12 +512,19 @@ fn ipc_poll_loop(
                         &payload,
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    ipc_stats.record_frame(
+                        &name,
+                        header.timestamp_us,
+                        payload.len(),
+                        bridge_started.elapsed(),
+                    );
                 }
                 IpcMessage::EncodedConfig {
                     name,
                     header,
                     extradata,
                 } => {
+                    let bridge_started = Instant::now();
                     // Annex B passthrough: ship the encoder's
                     // start-code-prefixed SPS/PPS bytes verbatim, and
                     // cache them so we can re-insert them ahead of
@@ -292,8 +542,10 @@ fn ipc_poll_loop(
                         header.height,
                         &extradata,
                     );
+                    let payload_len = bytes.len();
                     cache_config(&cached_configs, &name, &bytes);
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    ipc_stats.record_config(&name, payload_len, bridge_started.elapsed());
                 }
                 IpcMessage::EncodedPacket {
                     name,
@@ -305,6 +557,7 @@ fn ipc_poll_loop(
                         // mode just ignores it for now.
                         continue;
                     }
+                    let bridge_started = Instant::now();
                     if let Ok(mut info) = stream_info.lock() {
                         info.observe_encoded_packet(&name, &header, payload.len());
                     }
@@ -331,6 +584,8 @@ fn ipc_poll_loop(
                     } else {
                         std::borrow::Cow::Borrowed(&payload[..])
                     };
+                    let payload_len = payload_bytes.len();
+                    dump_visualizer_h264_packet(&name, &payload_bytes);
                     let bytes = protocol::encode_packet(
                         &name,
                         codec_id,
@@ -341,6 +596,12 @@ fn ipc_poll_loop(
                         &payload_bytes,
                     );
                     let _ = broadcast_tx.send(BroadcastMessage::Binary(Arc::new(bytes)));
+                    ipc_stats.record_frame(
+                        &name,
+                        header.source_timestamp_us,
+                        payload_len,
+                        bridge_started.elapsed(),
+                    );
                 }
                 IpcMessage::RobotStateMsg {
                     name,
@@ -350,6 +611,7 @@ fn ipc_poll_loop(
                     value_min,
                     value_max,
                 } => {
+                    ipc_stats.record_robot_message();
                     let json = protocol::encode_robot_state(
                         &name,
                         timestamp_us,
@@ -362,6 +624,7 @@ fn ipc_poll_loop(
                 }
             }
         }
+        ipc_stats.maybe_log(output_mode, advanced_logs);
 
         match poller.node().wait(Duration::from_millis(1)) {
             Ok(()) => {}
@@ -391,4 +654,61 @@ fn cache_config(cache: &Arc<Mutex<Vec<Vec<u8>>>>, name: &str, bytes: &[u8]) {
     };
     guard.retain(|entry| !entry_matches(entry));
     guard.push(bytes.to_vec());
+}
+
+fn dump_visualizer_h264_packet(name: &str, payload: &[u8]) {
+    let Some(dir) = visualizer_h264_dump_dir() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        log::warn!(
+            "failed to create visualizer H.264 dump dir {}: {error}",
+            dir.display()
+        );
+        return;
+    }
+    let path = dir.join(format!("{}.h264", name.replace('/', "_")));
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        log::warn!("failed to open visualizer H.264 dump {}", path.display());
+        return;
+    };
+    use std::io::Write;
+    if let Err(error) = file.write_all(payload) {
+        log::warn!(
+            "failed to write visualizer H.264 dump {}: {error}",
+            path.display()
+        );
+    }
+}
+
+fn visualizer_h264_dump_dir() -> Option<PathBuf> {
+    match std::env::var("ROLLIO_VISUALIZER_H264_DUMP_DIR") {
+        Ok(dir) if !dir.is_empty() => return Some(PathBuf::from(dir)),
+        _ => {}
+    }
+    if !env_is_enabled("ROLLIO_VISUALIZER_H264_DUMP") {
+        return None;
+    }
+    let log_dir = std::env::var("ROLLIO_LOG_DIR").ok()?;
+    if log_dir.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(log_dir).join("h264-visualizer"))
+}
+
+fn env_is_enabled(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok(value)
+            if !value.is_empty()
+                && !matches!(value, "0" | "false" | "FALSE" | "off" | "OFF")
+    )
+}
+
+fn advanced_pipeline_logs_enabled() -> bool {
+    rollio_types::config::RuntimeConfig::advanced_pipeline_logs_enabled()
 }
