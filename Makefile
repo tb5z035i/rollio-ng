@@ -132,10 +132,11 @@ fmt: rust-fmt cpp-fmt python-fmt
 # `make build && make package` (with the same BUILD_TYPE/TARGET_ARCH).
 # `./build.sh assert_built` errors with a helpful message if any expected
 # artifact is missing under TARGET_DIR / CAMERAS_BUILD_DIR.
-package:
+package: prepare-cora-sdk
 	DEB_ARCH=$(DEB_ARCH) \
 	  TARGET_DIR=$(TARGET_BUILD_DIR) \
 	  CAMERAS_BUILD_DIR=$(CAMERAS_BUILD_DIR) \
+	  CORA_SDK_ROOT=$(CURDIR)/$(CORA_SDK_ROOT) \
 	  ./build.sh all
 
 # Print shell `export` lines that put the freshly-built dev binaries on
@@ -256,7 +257,7 @@ distclean: clean
 # Composed into the aggregate verbs above; also runnable individually
 # (e.g. `make rust-lint`, `make ui-test`) for fast single-language loops.
 
-.PHONY: apply-vendored-patches apply-airbot-pinocchio-patch apply-ffmpeg-sys-cross-patch
+.PHONY: apply-vendored-patches apply-airbot-pinocchio-patch apply-ffmpeg-sys-cross-patch prepare-cora-sdk
 .PHONY: rust-build rust-test rust-lint rust-fmt
 .PHONY: cpp-build  cpp-test  cpp-lint  cpp-fmt
 .PHONY: ui-install ui-build  ui-test   ui-lint
@@ -350,11 +351,46 @@ rust-fmt:
 		exit 1; \
 	fi
 
+# Cora / Fast-DDS SDK ------------------------------------------------
+# Enable the Cora/Fast-DDS sensor + camera bridge by default. Set
+# ROLLIO_BUILD_CORACAM=OFF on platforms without a Cora runtime (macOS,
+# CI nodes that don't ship the SDK) to skip extraction and the C++
+# build of the cora bridge entirely.
+ROLLIO_BUILD_CORACAM ?= ON
+
+CORA_SDK_NAME    := cora-sdk_1.2.0_20260517124657_linux_aarch64
+CORA_SDK_ARCHIVE := prebuild/$(CORA_SDK_NAME).tar.gz
+CORA_SDK_DIR     := prebuild/$(CORA_SDK_NAME)
+CORA_SDK_ROOT    := $(CORA_SDK_DIR)/opt/cora
+CORA_SDK_CONFIG  := $(CORA_SDK_ROOT)/lib/cmake/cora/coraConfig.cmake
+
+# Idempotent: skips when ROLLIO_BUILD_CORACAM=OFF; skips when the SDK
+# is already extracted; otherwise unpacks the prebuilt tarball and
+# verifies the cmake config landed.
+prepare-cora-sdk:
+	@if [ "$(ROLLIO_BUILD_CORACAM)" = "OFF" ]; then \
+		echo "prepare-cora-sdk: ROLLIO_BUILD_CORACAM=$(ROLLIO_BUILD_CORACAM); skip"; \
+	elif [ -f "$(CORA_SDK_CONFIG)" ]; then \
+		echo "prepare-cora-sdk: found $(CORA_SDK_ROOT)"; \
+	elif [ -f "$(CORA_SDK_ARCHIVE)" ]; then \
+		echo "prepare-cora-sdk: extracting $(CORA_SDK_ARCHIVE)"; \
+		mkdir -p prebuild; \
+		tar -xzf "$(CORA_SDK_ARCHIVE)" -C prebuild; \
+		test -f "$(CORA_SDK_CONFIG)" \
+			|| (echo "prepare-cora-sdk: missing $(CORA_SDK_CONFIG) after extraction" >&2; exit 1); \
+	else \
+		echo "prepare-cora-sdk: missing $(CORA_SDK_CONFIG)" >&2; \
+		echo "prepare-cora-sdk: add $(CORA_SDK_ARCHIVE) or set ROLLIO_BUILD_CORACAM=OFF" >&2; \
+		exit 1; \
+	fi
+
 # C++ -----------------------------------------------------------------
 
-cpp-build:
+cpp-build: prepare-cora-sdk
 	cmake -B $(CAMERAS_BUILD_DIR) -S cameras $(CMAKE_TOOLCHAIN_ARGS) \
-	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
+	  -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
+	  -DROLLIO_BUILD_CORACAM=$(ROLLIO_BUILD_CORACAM) \
+	  -DCORA_SDK_ROOT=$(CURDIR)/$(CORA_SDK_ROOT)
 	cmake --build $(CAMERAS_BUILD_DIR) --parallel $(BUILD_JOBS)
 
 cpp-test: cpp-build
