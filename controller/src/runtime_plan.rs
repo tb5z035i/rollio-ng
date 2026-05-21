@@ -544,6 +544,8 @@ mod tests {
             output_path: Some("./output".into()),
             endpoint: None,
             queue_size: 4,
+            dataloop_token: None,
+            dataloop_project_id: None,
         };
         let invocation_cwd = Path::new("/home/operator/session-2026-04-21");
         let spec = build_storage_spec(
@@ -575,6 +577,8 @@ mod tests {
             output_path: Some("/data/rollio/output".into()),
             endpoint: None,
             queue_size: 4,
+            dataloop_token: None,
+            dataloop_project_id: None,
         };
         let spec = build_storage_spec(
             &storage_config,
@@ -601,6 +605,8 @@ mod tests {
             output_path: Some("/tmp/out".into()),
             endpoint: None,
             queue_size: 4,
+            dataloop_token: None,
+            dataloop_project_id: None,
         };
         let spec = build_storage_spec(
             &storage_config,
@@ -626,6 +632,8 @@ mod tests {
             output_path: Some("/tmp/out".into()),
             endpoint: None,
             queue_size: 4,
+            dataloop_token: None,
+            dataloop_project_id: None,
         };
         let spec = build_storage_spec(
             &storage_config,
@@ -655,6 +663,8 @@ mod tests {
             output_path: None,
             endpoint: Some("https://example.com/upload".into()),
             queue_size: 4,
+            dataloop_token: None,
+            dataloop_project_id: None,
         };
         let err = build_storage_spec(
             &storage_config,

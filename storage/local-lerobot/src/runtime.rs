@@ -641,6 +641,8 @@ mod tests {
             output_path: Some(output_path.to_string_lossy().into_owned()),
             endpoint: None,
             queue_size: 2,
+            dataloop_token: None,
+            dataloop_project_id: None,
         }
     }
 
