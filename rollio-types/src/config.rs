@@ -1416,6 +1416,34 @@ pub struct ProjectConfig {
     pub visualizer: VisualizerConfig,
     #[serde(default)]
     pub ui: UiRuntimeConfig,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
+}
+
+/// Process-wide runtime knobs that aren't tied to a single subsystem.
+///
+/// Currently just `advanced_pipeline_logs`, a switch the encoder /
+/// visualizer / assembler consult to decide whether to emit verbose
+/// per-frame telemetry. The controller forwards the value to child
+/// processes via the `ROLLIO_ADVANCED_PIPELINE_LOGS` env var so the
+/// subsystems don't need to re-parse the project TOML.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    #[serde(default)]
+    pub advanced_pipeline_logs: bool,
+}
+
+impl RuntimeConfig {
+    pub const ENV_ADVANCED_PIPELINE_LOGS: &'static str = "ROLLIO_ADVANCED_PIPELINE_LOGS";
+
+    /// True if the calling process inherited `ROLLIO_ADVANCED_PIPELINE_LOGS`
+    /// set to a truthy value (`1`, `true`, `yes`, case-insensitive).
+    pub fn advanced_pipeline_logs_enabled() -> bool {
+        std::env::var(Self::ENV_ADVANCED_PIPELINE_LOGS)
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1439,6 +1467,8 @@ struct ProjectConfigSerde {
     visualizer: VisualizerConfig,
     #[serde(default)]
     ui: UiRuntimeConfig,
+    #[serde(default)]
+    runtime: RuntimeConfig,
 }
 
 impl From<ProjectConfigSerde> for ProjectConfig {
@@ -1458,6 +1488,7 @@ impl From<ProjectConfigSerde> for ProjectConfig {
             controller: value.controller,
             visualizer: value.visualizer,
             ui: value.ui,
+            runtime: value.runtime,
         }
     }
 }
@@ -3195,6 +3226,7 @@ impl ProjectConfig {
             controller: ControllerConfig::default(),
             visualizer: VisualizerConfig { port: 19090 },
             ui: UiRuntimeConfig::default(),
+            runtime: RuntimeConfig::default(),
         }
     }
 

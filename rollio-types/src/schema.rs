@@ -369,6 +369,24 @@ pub fn config_schema() -> ConfigSchema {
                 allows_extra_fields: false,
             },
             SchemaSection {
+                name: "runtime",
+                kind: SchemaSectionKind::Table,
+                description: "Process-wide runtime flags forwarded to child processes via env vars.",
+                fields: vec![
+                    SchemaField {
+                        name: "advanced_pipeline_logs",
+                        type_name: "boolean",
+                        description: "Enable verbose per-frame pipeline telemetry in the encoder, visualizer, and assembler. Forwarded as ROLLIO_ADVANCED_PIPELINE_LOGS=1.",
+                        required: false,
+                        default: Some(Value::Boolean(false)),
+                        enum_values: None,
+                        applies_to: None,
+                    },
+                ],
+                notes: vec![],
+                allows_extra_fields: false,
+            },
+            SchemaSection {
                 name: "encoder",
                 kind: SchemaSectionKind::Table,
                 description: "Video encoder defaults applied to every camera stream.",

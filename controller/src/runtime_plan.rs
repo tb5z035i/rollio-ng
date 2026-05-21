@@ -80,12 +80,14 @@ pub(crate) fn build_collect_specs(
     // service negotiation.
     let embedded_config_toml = toml::to_string(config)?;
     let assembler_config = config.assembler_runtime_config_v2(embedded_config_toml);
-    specs.push(build_assembler_spec(
+    let mut assembler_spec = build_assembler_spec(
         &assembler_config,
         workspace_root,
         child_working_dir,
         current_exe_dir,
-    )?);
+    )?;
+    forward_runtime_env(&mut assembler_spec, config);
+    specs.push(assembler_spec);
 
     let storage_config = config.storage_runtime_config();
     specs.push(build_storage_spec(
@@ -140,6 +142,7 @@ pub(crate) fn build_collect_specs(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     });
 
     Ok(specs)
@@ -194,7 +197,23 @@ pub(crate) fn build_preview_specs(
         }
     }
 
+    for spec in &mut specs {
+        forward_runtime_env(spec, config);
+    }
+
     Ok(specs)
+}
+
+/// Forward `[runtime]` flags to a child as env vars so the pipeline
+/// processes don't need to re-parse the project TOML. Currently just
+/// `advanced_pipeline_logs`; expand as more global toggles land.
+fn forward_runtime_env(spec: &mut ChildSpec, config: &ProjectConfig) {
+    if config.runtime.advanced_pipeline_logs {
+        spec.env.push((
+            OsString::from(rollio_types::config::RuntimeConfig::ENV_ADVANCED_PIPELINE_LOGS),
+            OsString::from("1"),
+        ));
+    }
 }
 
 pub(crate) fn build_visualizer_spec(
@@ -218,6 +237,7 @@ pub(crate) fn build_visualizer_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -263,6 +283,7 @@ pub(crate) fn build_control_server_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -292,6 +313,7 @@ pub(crate) fn build_device_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -318,6 +340,7 @@ pub(crate) fn build_teleop_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -345,6 +368,7 @@ pub(crate) fn build_encoder_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -434,6 +458,7 @@ pub(crate) fn build_assembler_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 
@@ -482,6 +507,7 @@ pub(crate) fn build_storage_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
+        env: Vec::new(),
     })
 }
 

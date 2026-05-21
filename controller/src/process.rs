@@ -10,18 +10,21 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedCommand {
     pub program: OsString,
     pub args: Vec<OsString>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChildSpec {
     pub id: String,
     pub command: ResolvedCommand,
     pub working_directory: PathBuf,
     pub inherit_stdio: bool,
+    /// Extra environment variables to set on the child (added on top of
+    /// the parent's inherited environment).
+    pub env: Vec<(OsString, OsString)>,
 }
 
 #[derive(Debug)]
@@ -43,6 +46,9 @@ pub fn spawn_child(spec: &ChildSpec, log_dir: &Path) -> io::Result<ManagedChild>
     let mut command = Command::new(&spec.command.program);
     command.args(&spec.command.args);
     command.current_dir(&spec.working_directory);
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
 
     let log_path = if spec.inherit_stdio {
         None
@@ -205,6 +211,7 @@ mod tests {
             command: shell_command("exit 42"),
             working_directory: PathBuf::from("."),
             inherit_stdio: false,
+            env: Vec::new(),
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
         let shutdown_requested = AtomicBool::new(false);
@@ -233,6 +240,7 @@ mod tests {
             command: shell_command("sleep 30"),
             working_directory: PathBuf::from("."),
             inherit_stdio: false,
+            env: Vec::new(),
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
 
@@ -261,6 +269,7 @@ mod tests {
             command: shell_command("trap 'exit 0' TERM; while :; do sleep 1; done"),
             working_directory: PathBuf::from("."),
             inherit_stdio: false,
+            env: Vec::new(),
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
 
@@ -296,6 +305,7 @@ mod tests {
             command: shell_command("sleep 30"),
             working_directory: PathBuf::from("."),
             inherit_stdio: false,
+            env: Vec::new(),
         };
         let mut child = spawn_child(&spec, &log_dir).expect("child should spawn");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
