@@ -189,6 +189,9 @@ impl SetupSession {
             driver: "pseudo".to_owned(),
             id: id.clone(),
             bus_root: id.clone(),
+            dds_domain_id: None,
+            dds_shm_segment_size: None,
+            dds_callback_threads: None,
             channels: vec![channel.clone()],
             extra,
         };
@@ -268,6 +271,9 @@ impl SetupSession {
             driver: "pseudo".to_owned(),
             id: id.clone(),
             bus_root: id.clone(),
+            dds_domain_id: None,
+            dds_shm_segment_size: None,
+            dds_callback_threads: None,
             channels: vec![channel.clone()],
             extra,
         };
@@ -343,6 +349,9 @@ impl SetupSession {
             driver: "command".to_owned(),
             id: id.clone(),
             bus_root: id.clone(),
+            dds_domain_id: None,
+            dds_shm_segment_size: None,
+            dds_callback_threads: None,
             channels: vec![channel.clone()],
             extra: toml::Table::new(),
         };

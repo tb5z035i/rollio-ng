@@ -76,6 +76,9 @@ pub(super) fn binary_device_from_discovery(
         driver: discovery.driver.clone(),
         id: discovery.id.clone(),
         bus_root: name,
+        dds_domain_id: None,
+        dds_shm_segment_size: None,
+        dds_callback_threads: None,
         channels,
         extra,
     }

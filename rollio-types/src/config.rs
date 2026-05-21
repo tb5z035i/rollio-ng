@@ -1554,6 +1554,16 @@ pub struct BinaryDeviceConfig {
     pub driver: String,
     pub id: String,
     pub bus_root: String,
+    /// DDS domain id (Cora bridge only). When `None` the bridge consults
+    /// `ROLLIO_DDS_DOMAIN_ID` and finally the SDK default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_domain_id: Option<u32>,
+    /// DDS shared-memory transport segment size in bytes; 0 is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_shm_segment_size: Option<u32>,
+    /// Cora DDS callback thread pool size; 0 keeps the SDK default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dds_callback_threads: Option<u32>,
     #[serde(default)]
     pub channels: Vec<DeviceChannelConfigV2>,
     #[serde(flatten, default)]

@@ -42,6 +42,15 @@ struct BinaryDeviceConfig {
     std::string driver;
     std::string id;
     std::string bus_root;
+    /// Optional DDS domain id passed through ROLLIO_DDS_DOMAIN_ID / config;
+    /// the cora bridge needs an explicit value when the operator overrides
+    /// the SDK default.
+    std::optional<uint32_t> dds_domain_id;
+    /// Shared-memory transport segment size (bytes). 0 is rejected; unset
+    /// keeps the SDK default.
+    std::optional<uint32_t> dds_shm_segment_size;
+    /// Cora DDS callback thread pool size. 0 keeps the SDK default.
+    std::optional<uint32_t> dds_callback_threads;
     std::vector<DeviceChannelConfigV2> channels;
 };
 
@@ -323,6 +332,12 @@ inline auto parse_binary_device_config(std::string_view text) -> BinaryDeviceCon
                 device.id = strip_quotes(raw_value);
             } else if (key == "bus_root") {
                 device.bus_root = strip_quotes(raw_value);
+            } else if (key == "dds_domain_id") {
+                device.dds_domain_id = parse_u32_value(raw_value);
+            } else if (key == "dds_shm_segment_size") {
+                device.dds_shm_segment_size = parse_u32_value(raw_value);
+            } else if (key == "dds_callback_threads") {
+                device.dds_callback_threads = parse_u32_value(raw_value);
             } else {
                 // Forward-compatible: ignore unknown root keys (matches serde flatten/extra usage).
             }

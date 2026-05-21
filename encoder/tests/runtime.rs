@@ -703,6 +703,7 @@ fn recording_config_inline(
         EncoderBackend::Nvidia => "nvidia",
         EncoderBackend::Vaapi => "vaapi",
         EncoderBackend::Passthrough => "passthrough",
+        EncoderBackend::HorizonX5 => "horizon-x5",
     };
     format!(
         "process_id = \"{process_id}\"\n\

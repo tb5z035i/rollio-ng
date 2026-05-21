@@ -1,0 +1,41 @@
+// cora_raw_image.idl
+//
+// Reference IDL for the raw camera image topic published by Cora on
+//   /rt/robot/camera/<device>/left/image
+//   /rt/robot/camera/<device>/right/image
+//
+// This follows the ROS2 sensor_msgs/msg/Image layout; the actual wire format
+// should be confirmed through on-device testing (see 阶段0 of the
+// coracam-h264-annexb实施方案.zh.md).  The DDS type name that must match the
+// publisher is stored in ChannelWorkerConfig::dds_type_name; adjust it in
+// device_descriptor.hpp if the actual Cora type name differs from the default
+// "sensor_msgs::msg::dds_::Image_".
+//
+// CDR encoding: XCDR1 little-endian (CDR_LE, representation identifier 0x0001).
+
+module sensor_msgs {
+  module msg {
+    module dds_ {
+      struct Time_ {
+        long   sec;
+        unsigned long nanosec;
+      };
+      struct Header_ {
+        Time_  stamp;
+        string frame_id;
+      };
+      // Raw image frame.
+      // pixel data in 'data'; row stride = step bytes.
+      @appendable
+      struct Image_ {
+        Header_        header;
+        unsigned long  height;
+        unsigned long  width;
+        string         encoding;    // e.g. "bgr8", "rgb8"
+        octet          is_bigendian;
+        unsigned long  step;        // row stride in bytes
+        sequence<octet> data;
+      };
+    };
+  };
+};
