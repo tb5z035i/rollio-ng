@@ -32,7 +32,8 @@ use iceoryx2::prelude::*;
 use rollio_bus::CAMERA_FRAMES_MAX_SUBSCRIBERS;
 use rollio_bus::CONTROL_EVENTS_SERVICE;
 use rollio_types::config::{
-    EncoderRuntimeConfigV2, PreviewEncoderConfig, PreviewOutputMode, PreviewResizePolicy,
+    EncoderBackend, EncoderCodec, EncoderRuntimeConfigV2, PreviewEncoderConfig, PreviewOutputMode,
+    PreviewResizePolicy,
 };
 use rollio_types::messages::{CameraFrameHeader, ControlEvent, PixelFormat, PreviewControl};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -47,6 +48,21 @@ const MIN_PREVIEW_DIM: u32 = 160;
 /// Mirrors `visualizer::preview_config::PREVIEW_DIMENSION_ALIGNMENT`.
 const PREVIEW_DIM_ALIGNMENT: u32 = 16;
 const PREVIEW_STATS_LOG_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Default `node.wait` timeout for general preview modes (JPEG / raw
+/// transcode). Matches a 30 fps frame interval so an idle stream still
+/// drains control events once per frame without busy-polling. Overridable
+/// via `ROLLIO_PREVIEW_WAIT_MS`.
+const DEFAULT_PREVIEW_WAIT_MS: u64 = 33;
+/// Default `node.wait` timeout for the H.264 Annex-B passthrough preview
+/// path. Forwarding a packet is sub-millisecond, so the wait timeout
+/// directly bounds the per-frame transport delay; the smaller default
+/// trims ~15-18 ms of latency observed in 6-stream Coracam testing.
+/// Overridable via `ROLLIO_PREVIEW_PASSTHROUGH_WAIT_MS`.
+const DEFAULT_PREVIEW_PASSTHROUGH_WAIT_MS: u64 = 5;
+/// Floor used when parsing wait-timeout env vars; clamps obviously bad
+/// values (0 would spin) without rejecting outright.
+const MIN_PREVIEW_WAIT_MS: u64 = 1;
 
 fn is_valid_preview_dim(value: u32) -> bool {
     value >= MIN_PREVIEW_DIM && value.is_multiple_of(PREVIEW_DIM_ALIGNMENT)
@@ -197,6 +213,8 @@ impl PreviewRuntimeStats {
         preview: &PreviewEncoderConfig,
         dims: (u32, u32),
         advanced: bool,
+        wait_timeout_ms: u64,
+        passthrough: bool,
     ) {
         if self.last_log_at.elapsed() < PREVIEW_STATS_LOG_INTERVAL {
             return;
@@ -208,6 +226,7 @@ impl PreviewRuntimeStats {
         if advanced {
             eprintln!(
                 "rollio-encoder: preview pipeline process={} channel={} mode={} dims={}x{} \
+                 passthrough={} wait_timeout_ms={} \
                  recv={} processed={} collapsed={} ordered={} errors={} resizes={}/{} \
                  recv_fps={:.1} processed_fps={:.1} payload_bytes={} source_age_ms={} \
                  source_gap_ms={} receive_gap_ms={} handle_ms={} drain_batch={}",
@@ -216,6 +235,8 @@ impl PreviewRuntimeStats {
                 preview.output_mode.as_str(),
                 dims.0,
                 dims.1,
+                passthrough,
+                wait_timeout_ms,
                 self.frames_received,
                 self.frames_processed,
                 self.frames_collapsed,
@@ -301,6 +322,55 @@ fn advanced_pipeline_logs_enabled() -> bool {
     )
 }
 
+/// Returns `true` when the configured preview mode is the H.264 Annex-B
+/// passthrough relay (encoded mode, fixed-source dims, Passthrough
+/// backend, H.264 color codec). The frame-level `PixelFormat::H264AnnexB`
+/// check is enforced by the codec session itself; here we only need the
+/// startup-time config to choose the polling cadence.
+fn is_h264_passthrough_preview(preview: &PreviewEncoderConfig) -> bool {
+    preview.output_mode == PreviewOutputMode::Encoded
+        && preview.resize_policy == PreviewResizePolicy::FixedSource
+        && preview.backend == EncoderBackend::Passthrough
+        && preview.color_codec == EncoderCodec::H264
+}
+
+/// Parse a non-empty, non-zero u64 from an env var. Returns `None` for
+/// unset/empty/malformed/zero values so the caller can fall back to a
+/// default; values below `MIN_PREVIEW_WAIT_MS` are clamped up.
+fn parse_wait_ms_env(name: &str) -> Option<u64> {
+    let raw = std::env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.parse::<u64>() {
+        Ok(0) => None,
+        Ok(value) => Some(value.max(MIN_PREVIEW_WAIT_MS)),
+        Err(_) => {
+            eprintln!(
+                "rollio-encoder: ignoring invalid {}={:?} (expected positive integer ms)",
+                name, raw
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the `node.wait` timeout for this preview process. H.264
+/// passthrough prefers `ROLLIO_PREVIEW_PASSTHROUGH_WAIT_MS`, falling
+/// back to `ROLLIO_PREVIEW_WAIT_MS` then `DEFAULT_PREVIEW_PASSTHROUGH_WAIT_MS`;
+/// other modes only honour `ROLLIO_PREVIEW_WAIT_MS`.
+fn resolve_wait_timeout_ms(passthrough: bool) -> u64 {
+    let generic = parse_wait_ms_env("ROLLIO_PREVIEW_WAIT_MS");
+    if passthrough {
+        parse_wait_ms_env("ROLLIO_PREVIEW_PASSTHROUGH_WAIT_MS")
+            .or(generic)
+            .unwrap_or(DEFAULT_PREVIEW_PASSTHROUGH_WAIT_MS)
+    } else {
+        generic.unwrap_or(DEFAULT_PREVIEW_WAIT_MS)
+    }
+}
+
 pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     let preview = config
         .preview
@@ -363,6 +433,20 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     };
     let mut stats = PreviewRuntimeStats::new();
     let advanced_logs = advanced_pipeline_logs_enabled();
+    let passthrough_preview = is_h264_passthrough_preview(&preview);
+    let wait_timeout_ms = resolve_wait_timeout_ms(passthrough_preview);
+    let wait_timeout = Duration::from_millis(wait_timeout_ms);
+    eprintln!(
+        "rollio-encoder: preview started process={} channel={} mode={} dims={}x{} \
+         passthrough={} wait_timeout_ms={}",
+        config.process_id,
+        config.channel_id,
+        preview.output_mode.as_str(),
+        state.current_dims().0,
+        state.current_dims().1,
+        passthrough_preview,
+        wait_timeout_ms,
+    );
 
     let mut shutdown = false;
     let mut last_error_message: Option<String> = None;
@@ -460,7 +544,14 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
             );
         }
         stats.record_batch(drained_frames);
-        stats.maybe_log(&config, &preview, state.current_dims(), advanced_logs);
+        stats.maybe_log(
+            &config,
+            &preview,
+            state.current_dims(),
+            advanced_logs,
+            wait_timeout_ms,
+            passthrough_preview,
+        );
 
         // Event-driven wait: blocks until *any* of the subscribed
         // services (frames, control, preview-control) has a new sample,
@@ -468,9 +559,14 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
         // which woke up ~500x/s even though a 30 fps camera produces a
         // frame every ~33 ms — the wasted wakeups were eating ~10-15%
         // of one core in `recv()` syscalls and iceoryx2 polling. The
-        // 33 ms cap matches the camera's frame interval, so an idle
-        // stream still drains control events at least once per frame.
-        match node.wait(Duration::from_millis(33)) {
+        // default 33 ms cap matches the camera's frame interval, so an
+        // idle stream still drains control events at least once per
+        // frame. For H.264 Annex-B passthrough preview, the wait
+        // timeout dominates per-frame transport delay (forwarding is
+        // sub-ms), so it defaults to 5 ms and is overridable via
+        // `ROLLIO_PREVIEW_PASSTHROUGH_WAIT_MS`. Other modes accept
+        // `ROLLIO_PREVIEW_WAIT_MS` as a uniform override.
+        match node.wait(wait_timeout) {
             Ok(()) => {}
             Err(NodeWaitFailure::Interrupt | NodeWaitFailure::TerminationRequest) => {
                 break;
