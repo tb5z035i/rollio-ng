@@ -340,6 +340,7 @@ fn run_publisher(
 
     loop {
         if stop.load(Ordering::Relaxed) || drain_shutdown_events(&shutdown)? {
+            stop.store(true, Ordering::Relaxed);
             let _ = mode_info.send_copy(DeviceChannelMode::Disabled);
             return Ok(());
         }
@@ -369,6 +370,7 @@ fn run_publisher(
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                stop.store(true, Ordering::Relaxed);
                 let _ = mode_info.send_copy(DeviceChannelMode::Disabled);
                 return Ok(());
             }
