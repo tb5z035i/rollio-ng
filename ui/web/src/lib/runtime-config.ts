@@ -5,7 +5,10 @@ export type EpisodeKeyBindings = {
   discardKey: string;
 };
 
+export type UiMode = "collect" | "setup";
+
 export interface UiRuntimeConfig {
+  mode: UiMode;
   controlWebsocketUrl: string;
   previewWebsocketUrl: string;
   episodeKeyBindings: EpisodeKeyBindings;
@@ -14,10 +17,23 @@ export interface UiRuntimeConfig {
 type LocationLike = Pick<Location, "protocol" | "host">;
 
 type RawUiRuntimeConfig = {
+  mode?: unknown;
   controlWebsocketUrl?: unknown;
   previewWebsocketUrl?: unknown;
   episodeKeyBindings?: Partial<Record<keyof EpisodeKeyBindings, unknown>>;
 };
+
+function normalizeMode(value: unknown): UiMode {
+  // Default to `collect` when the field is absent so older gateways
+  // (pre-`--mode` flag) keep rendering the recording view as before.
+  if (value === undefined || value === null) {
+    return "collect";
+  }
+  if (value === "collect" || value === "setup") {
+    return value;
+  }
+  throw new Error(`runtime config "mode" must be "collect" or "setup"`);
+}
 
 function normalizeKey(
   label: keyof EpisodeKeyBindings,
@@ -103,6 +119,7 @@ export function normalizeRuntimeConfig(
   }
 
   return {
+    mode: normalizeMode(config.mode),
     controlWebsocketUrl: resolveWebSocketUrl(controlRaw, location),
     previewWebsocketUrl: resolveWebSocketUrl(previewRaw, location),
     episodeKeyBindings,

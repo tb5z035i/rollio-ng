@@ -135,19 +135,265 @@ export interface EpisodeStatusMessage {
   elapsed_ms: number;
 }
 
+// ---------------------------------------------------------------------------
+// Setup wizard types.
+//
+// Mirror the wire shape emitted by the Rust controller's `SetupSession`
+// (`controller/src/setup/state.rs`). The same JSON envelopes drive both the
+// Ink terminal UI and the web SPA — these definitions are lifted from
+// `ui/terminal/src/lib/protocol.ts` so the two backends stay byte-compatible.
+// ---------------------------------------------------------------------------
+
+export interface SetupCameraProfile {
+  width: number;
+  height: number;
+  fps: number;
+  pixel_format: string;
+  native_pixel_format?: string | null;
+  stream: string | null;
+  channel: number | null;
+}
+
+export interface SetupDeviceChannelV2 {
+  channel_type: string;
+  kind: "camera" | "robot";
+  enabled?: boolean;
+  name?: string | null;
+  channel_label?: string | null;
+  mode?: "free-drive" | "command-following" | "identifying" | null;
+  dof?: number | null;
+  publish_states?: string[];
+  recorded_states?: string[];
+  control_frequency_hz?: number | null;
+  preview_enabled?: boolean;
+  record_enabled?: boolean;
+  profile?: {
+    width: number;
+    height: number;
+    fps: number;
+    pixel_format: string;
+    native_pixel_format?: string | null;
+  } | null;
+  record?: {
+    video_codec?: string;
+    depth_codec?: string;
+    backend?: string;
+    video_backend?: string;
+    depth_backend?: string;
+    chroma_subsampling?: string;
+    crf?: number | null;
+    preset?: string | null;
+    tune?: string | null;
+    bit_depth?: number;
+    color_space?: string;
+    queue_size?: number;
+  } | null;
+  preview_config?: {
+    output_mode?: string;
+    color_codec?: string;
+    depth_codec?: string;
+    backend?: string;
+    width?: number;
+    height?: number;
+    fps?: number;
+    gop_seconds?: number;
+    crf?: number | null;
+    jpeg_quality?: number;
+  } | null;
+}
+
+export interface SetupBinaryDeviceConfig {
+  name: string;
+  executable?: string | null;
+  driver: string;
+  id: string;
+  bus_root: string;
+  channels: SetupDeviceChannelV2[];
+  extra?: Record<string, unknown>;
+}
+
+export type MappingPolicy = "direct-joint" | "cartesian" | "parallel";
+
+export interface SetupChannelPairing {
+  leader_device: string;
+  leader_channel_type: string;
+  follower_device: string;
+  follower_channel_type: string;
+  mapping: MappingPolicy;
+  leader_state: string;
+  follower_command: string;
+  joint_index_map: number[];
+  joint_scales: number[];
+}
+
+export interface SetupDirectJointPeer {
+  driver: string;
+  channel_type: string;
+}
+
+export interface SetupDirectJointCompatibility {
+  can_lead?: SetupDirectJointPeer[];
+  can_follow?: SetupDirectJointPeer[];
+}
+
+export interface SetupAvailableDevice {
+  name: string;
+  display_name: string;
+  device_type: "camera" | "robot";
+  driver: string;
+  id: string;
+  camera_profiles: SetupCameraProfile[];
+  supported_modes: Array<"free-drive" | "command-following" | "identifying">;
+  supported_states?: string[];
+  supported_commands?: string[];
+  direct_joint_compatibility?: SetupDirectJointCompatibility;
+  current: SetupBinaryDeviceConfig;
+}
+
+export interface SetupConfigSnapshot {
+  project_name: string;
+  mode: "teleop" | "intervention";
+  episode: {
+    format: "lerobot-v2.1" | "lerobot-v3.0" | "mcap";
+    fps: number;
+    chunk_size?: number;
+  };
+  devices: SetupBinaryDeviceConfig[];
+  pairings: SetupChannelPairing[];
+  controller?: {
+    shutdown_timeout_ms: number;
+    child_poll_interval_ms: number;
+  };
+  visualizer?: {
+    port: number;
+  };
+  assembler?: {
+    missing_eos_timeout_ms: number;
+    staging_dir: string;
+    staging_slots: number;
+  };
+  storage: {
+    backend: "local" | "http" | "dataloop";
+    output_path: string;
+    endpoint?: string | null;
+    queue_size?: number;
+    dataloop_project_id?: string | null;
+    dataloop_token?: string | null;
+  };
+  monitor?: {
+    metrics_frequency_hz: number;
+  };
+  ui?: {
+    http_host: string;
+    http_port: number;
+    start_key?: string;
+    stop_key?: string;
+    keep_key?: string;
+    discard_key?: string;
+  };
+}
+
+export type SetupStep = "devices" | "states" | "pairing" | "storage" | "preview";
+
+export interface SetupStateMessage {
+  type: "setup_state";
+  step: SetupStep;
+  step_index: number;
+  step_name: string;
+  total_steps: number;
+  output_path: string;
+  resume_mode: boolean;
+  status: "editing" | "saved" | "cancelled";
+  message?: string;
+  identify_device?: string | null;
+  warnings: string[];
+  config: SetupConfigSnapshot;
+  available_devices: SetupAvailableDevice[];
+  subpanel_target?: string | null;
+}
+
+export type SetupCommandAction =
+  | "setup_get_state"
+  | "setup_prev_step"
+  | "setup_next_step"
+  | "setup_jump_step"
+  | "setup_toggle_device"
+  | "setup_set_device_name"
+  | "setup_toggle_identify"
+  | "setup_open_subpanel"
+  | "setup_close_subpanel"
+  | "setup_subpanel_toggle_preview_enabled"
+  | "setup_subpanel_toggle_record_enabled"
+  | "setup_subpanel_cycle_primary"
+  | "setup_subpanel_cycle_record_field"
+  | "setup_subpanel_set_record_field"
+  | "setup_subpanel_cycle_preview_field"
+  | "setup_subpanel_set_preview_field"
+  | "setup_subpanel_set_control_frequency_hz"
+  | "setup_open_add_picker"
+  | "setup_add_pseudo_camera"
+  | "setup_add_pseudo_robot"
+  | "setup_add_command_device"
+  | "setup_cycle_camera_profile"
+  | "setup_cycle_robot_mode"
+  | "setup_cycle_pair_mapping"
+  | "setup_create_pairing"
+  | "setup_remove_pairing"
+  | "setup_set_pairing_leader"
+  | "setup_set_pairing_follower"
+  | "setup_set_pairing_ratio"
+  | "setup_toggle_publish_state"
+  | "setup_toggle_recorded_state"
+  | "setup_cycle_episode_format"
+  | "setup_cycle_storage_backend"
+  | "setup_cycle_collection_mode"
+  | "setup_set_project_name"
+  | "setup_set_storage_output_path"
+  | "setup_set_storage_endpoint"
+  | "setup_set_dataloop_project_id"
+  | "setup_set_dataloop_token"
+  | "setup_set_ui_http_host"
+  | "setup_set_ui_http_port"
+  | "setup_set_ui_start_key"
+  | "setup_set_ui_stop_key"
+  | "setup_set_ui_keep_key"
+  | "setup_set_ui_discard_key"
+  | "setup_set_episode_fps"
+  | "setup_set_episode_chunk_size"
+  | "setup_set_controller_shutdown_timeout_ms"
+  | "setup_set_controller_child_poll_interval_ms"
+  | "setup_set_visualizer_port"
+  | "setup_set_assembler_missing_eos_timeout_ms"
+  | "setup_set_assembler_staging_dir"
+  | "setup_set_assembler_staging_slots"
+  | "setup_set_storage_queue_size"
+  | "setup_set_monitor_metrics_frequency_hz"
+  | "setup_save"
+  | "setup_cancel";
+
 export type CommandAction =
   | "get_stream_info"
   | "set_preview_size"
   | "episode_start"
   | "episode_stop"
   | "episode_keep"
-  | "episode_discard";
+  | "episode_discard"
+  | SetupCommandAction;
 
 export interface CommandMessage {
   type: "command";
   action: CommandAction;
   width?: number;
   height?: number;
+  /** Subject of the command (channel/device/pairing name, etc.). Used by
+   *  every `setup_*` action that addresses a row. */
+  name?: string;
+  index?: number;
+  delta?: number;
+  value?: string;
+  /** Sub-field selector inside the subject — used by the generic
+   *  subpanel record/preview field setters. */
+  field?: string;
 }
 
 export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
@@ -215,7 +461,12 @@ export function parseBinaryMessage(data: ArrayBuffer): BinaryWsMessage | null {
 
 export function parseJsonMessage(
   text: string,
-): RobotStateMessage | StreamInfoMessage | EpisodeStatusMessage | null {
+):
+  | RobotStateMessage
+  | StreamInfoMessage
+  | EpisodeStatusMessage
+  | SetupStateMessage
+  | null {
   try {
     const obj = JSON.parse(text);
     if (obj && obj.type === "robot_state") {
@@ -227,6 +478,9 @@ export function parseJsonMessage(
     if (obj && obj.type === "episode_status") {
       return obj as EpisodeStatusMessage;
     }
+    if (obj && obj.type === "setup_state") {
+      return obj as SetupStateMessage;
+    }
     return null;
   } catch {
     return null;
@@ -235,7 +489,9 @@ export function parseJsonMessage(
 
 export function encodeCommand(
   action: CommandAction,
-  fields: Partial<Pick<CommandMessage, "width" | "height">> = {},
+  fields: Partial<
+    Pick<CommandMessage, "width" | "height" | "name" | "index" | "delta" | "value" | "field">
+  > = {},
 ): string {
   return JSON.stringify({ type: "command", action, ...fields });
 }
@@ -251,4 +507,14 @@ export function encodeEpisodeCommand(
   >,
 ): string {
   return encodeCommand(action);
+}
+
+/** Encode a `setup_*` command envelope. The Rust controller's
+ *  `apply_raw_command` dispatcher (`controller/src/setup/dispatch.rs`)
+ *  matches on `action` and extracts the optional fields per verb. */
+export function encodeSetupCommand(
+  action: SetupCommandAction,
+  fields: Partial<Pick<CommandMessage, "name" | "index" | "delta" | "value" | "field">> = {},
+): string {
+  return encodeCommand(action, fields);
 }

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import SetupApp from "./setup/SetupApp";
 import "./index.css";
 import { loadRuntimeConfig } from "./lib/runtime-config";
 
@@ -24,7 +25,11 @@ async function bootstrap() {
     const runtimeConfig = await loadRuntimeConfig();
     root.render(
       <StrictMode>
-        <App runtimeConfig={runtimeConfig} />
+        {runtimeConfig.mode === "setup" ? (
+          <SetupApp runtimeConfig={runtimeConfig} />
+        ) : (
+          <App runtimeConfig={runtimeConfig} />
+        )}
       </StrictMode>,
     );
   } catch (error) {

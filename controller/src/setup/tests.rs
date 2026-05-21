@@ -1314,9 +1314,13 @@ fn identify_preview_pipeline_produces_consistent_encoder_and_visualizer_topics()
         Some(camera_name.as_str())
     );
 
-    let preview =
-        super::overview::build_preview_project_config(&session, 4242, "ws://127.0.0.1:4242")
-            .expect("preview config builds for camera identify");
+    let preview = super::overview::build_preview_project_config(
+        &session,
+        4242,
+        "ws://127.0.0.1:4242",
+        crate::cli::SetupBackend::Tui,
+    )
+    .expect("preview config builds for camera identify");
 
     preview
         .validate()
@@ -1399,9 +1403,13 @@ fn build_preview_project_config_forces_jpeg_for_terminal_ui() {
         .clone();
     assert!(session.set_identify_device(Some(&camera_name)));
 
-    let preview =
-        super::overview::build_preview_project_config(&session, 4242, "ws://127.0.0.1:4242")
-            .expect("preview config builds for camera identify");
+    let preview = super::overview::build_preview_project_config(
+        &session,
+        4242,
+        "ws://127.0.0.1:4242",
+        crate::cli::SetupBackend::Tui,
+    )
+    .expect("preview config builds for camera identify");
 
     for device in &preview.devices {
         for channel in &device.channels {
@@ -1417,6 +1425,80 @@ fn build_preview_project_config_forces_jpeg_for_terminal_ui() {
                 output_mode,
                 PreviewOutputMode::Jpeg,
                 "setup wizard must force JPEG preview for the terminal UI",
+            );
+        }
+    }
+}
+
+/// Web-backend counterpart to the JPEG-forcing test. The browser SPA's
+/// WebCodecs decoder handles both Jpeg and Encoded preview output
+/// modes (see `ui/web/src/lib/preview-decoder.ts`), so the controller
+/// must NOT rewrite `preview_settings.output_mode` when the backend
+/// is Web — operators expect their configured choice (typically
+/// `Encoded` H.264) to flow through unchanged.
+#[test]
+fn build_preview_project_config_preserves_output_mode_for_web_backend() {
+    use rollio_types::config::PreviewOutputMode;
+
+    let mut session = setup_session(&[camera_discovery("cam0")]);
+    let camera_name = session
+        .available_devices
+        .iter()
+        .find(|device| device.device_type == DeviceType::Camera)
+        .expect("camera discovery should land in the available list")
+        .name
+        .clone();
+    assert!(session.set_identify_device(Some(&camera_name)));
+
+    // Force the preview settings to Encoded in BOTH the project
+    // config and the available_devices snapshot. The identify path in
+    // `build_preview_project_config` clones the device from
+    // `available_devices[…].current` (not `session.config.devices`),
+    // so editing only the latter would leave the assertion vacuous.
+    for device in session.config.devices.iter_mut() {
+        for channel in device.channels.iter_mut() {
+            if channel.kind != DeviceType::Camera || !channel.preview_enabled {
+                continue;
+            }
+            let mut settings = channel.preview_settings.clone().unwrap_or_default();
+            settings.output_mode = Some(PreviewOutputMode::Encoded);
+            channel.preview_settings = Some(settings);
+        }
+    }
+    for available in session.available_devices.iter_mut() {
+        for channel in available.current.channels.iter_mut() {
+            if channel.kind != DeviceType::Camera || !channel.preview_enabled {
+                continue;
+            }
+            let mut settings = channel.preview_settings.clone().unwrap_or_default();
+            settings.output_mode = Some(PreviewOutputMode::Encoded);
+            channel.preview_settings = Some(settings);
+        }
+    }
+
+    let preview = super::overview::build_preview_project_config(
+        &session,
+        4242,
+        "ws://127.0.0.1:4242",
+        crate::cli::SetupBackend::Web,
+    )
+    .expect("preview config builds for camera identify");
+
+    for device in &preview.devices {
+        for channel in &device.channels {
+            if channel.kind != DeviceType::Camera || !channel.preview_enabled {
+                continue;
+            }
+            let output_mode = channel
+                .preview_settings
+                .as_ref()
+                .and_then(|s| s.output_mode)
+                .expect("preview_settings.output_mode must be set after preview build");
+            assert_eq!(
+                output_mode,
+                PreviewOutputMode::Encoded,
+                "web setup must honor the configured preview output mode \
+                 (no JPEG forcing)",
             );
         }
     }
@@ -2776,4 +2858,128 @@ port = 19090
 "#;
     rollio_types::config::ProjectConfig::from_str(toml_text)
         .expect("template should parse before mutation")
+}
+
+/// `build_setup_ui_spec_web` produces a `rollio-web-gateway` ChildSpec
+/// that carries `--mode setup`, an `--asset-dir` pointing at the
+/// `ui/web/dist` bundle under the share root, and an inline
+/// `UiRuntimeConfig` TOML with the reserved control/preview ports.
+///
+/// This is the contract the controller's setup runtime relies on when
+/// spawning the gateway in `--backend web` mode (see
+/// `controller/src/setup/runtime.rs`). If any of these args drift
+/// out of sync with the gateway's `Args` parser, this test fails
+/// before a user ever launches `rollio setup --backend web`.
+#[test]
+fn build_setup_ui_spec_web_emits_gateway_command() {
+    use std::ffi::OsStr;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let share_root = temp.path();
+    let dist_dir = share_root.join("ui/web/dist");
+    std::fs::create_dir_all(&dist_dir).expect("dist dir");
+    std::fs::write(
+        dist_dir.join("index.html"),
+        "<!doctype html><title>Rollio setup</title>",
+    )
+    .expect("index.html");
+
+    let spec = super::runtime::build_setup_ui_spec_web(
+        share_root,
+        share_root,
+        share_root,
+        "ws://127.0.0.1:9100",
+        "ws://127.0.0.1:9200",
+        "127.0.0.1",
+        38421,
+    )
+    .expect("spec builds when dist exists");
+
+    assert_eq!(spec.id, "setup-ui");
+    assert!(
+        spec.command
+            .program
+            .as_os_str()
+            .to_string_lossy()
+            .contains("rollio-web-gateway"),
+        "expected rollio-web-gateway program, got: {:?}",
+        spec.command.program
+    );
+
+    let args: Vec<String> = spec
+        .command
+        .args
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    let positions = |needle: &str| {
+        args.iter()
+            .position(|a| a == needle)
+            .unwrap_or_else(|| panic!("arg `{needle}` missing from {args:?}"))
+    };
+
+    let asset_idx = positions("--asset-dir");
+    let asset_value = args[asset_idx + 1].as_str();
+    assert!(
+        std::path::Path::new(asset_value).ends_with("ui/web/dist"),
+        "expected --asset-dir to point at ui/web/dist, got `{asset_value}`"
+    );
+
+    let mode_idx = positions("--mode");
+    assert_eq!(
+        args[mode_idx + 1],
+        "setup",
+        "gateway must boot in setup mode"
+    );
+
+    let config_idx = positions("--config-inline");
+    let inline_toml = args[config_idx + 1].as_str();
+    assert!(
+        inline_toml.contains("ws://127.0.0.1:9100"),
+        "inlined ui runtime config must carry the control ws url: {inline_toml}"
+    );
+    assert!(
+        inline_toml.contains("ws://127.0.0.1:9200"),
+        "inlined ui runtime config must carry the preview ws url: {inline_toml}"
+    );
+    assert!(
+        inline_toml.contains("http_port = 38421"),
+        "inlined ui runtime config must carry the http port: {inline_toml}"
+    );
+    assert!(
+        inline_toml.contains("http_host = \"127.0.0.1\""),
+        "inlined ui runtime config must carry the http host: {inline_toml}"
+    );
+
+    assert!(
+        !spec.command.args.iter().any(|s| s == OsStr::new("node")),
+        "web backend must not depend on node — saw args {args:?}"
+    );
+}
+
+/// `build_setup_ui_spec_web` surfaces a clear error pointing at the
+/// expected `ui/web/dist` location when the SPA bundle is missing,
+/// instead of letting the gateway fail at child-spawn time. Mirrors
+/// the equivalent error in `build_setup_ui_spec_tui`.
+#[test]
+fn build_setup_ui_spec_web_errors_when_dist_missing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let err = super::runtime::build_setup_ui_spec_web(
+        temp.path(),
+        temp.path(),
+        temp.path(),
+        "ws://127.0.0.1:9100",
+        "ws://127.0.0.1:9200",
+        "127.0.0.1",
+        38421,
+    )
+    .expect_err("spec build should fail when the web bundle is absent");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ui/web/dist"),
+        "error should point at the missing dist path, got: {msg}"
+    );
+    assert!(
+        msg.contains("npm run build"),
+        "error should tell the developer how to rebuild it, got: {msg}"
+    );
 }

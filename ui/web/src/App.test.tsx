@@ -18,6 +18,7 @@ function setViewport(width: number, height: number) {
 
 function runtimeConfigStub() {
   return {
+    mode: "collect" as const,
     controlWebsocketUrl: "ws://127.0.0.1:9091",
     previewWebsocketUrl: "ws://127.0.0.1:19090",
     episodeKeyBindings: {

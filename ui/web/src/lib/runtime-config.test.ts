@@ -51,6 +51,60 @@ describe("runtime config", () => {
     ).toBe("wss://rollio.example/ws/preview");
   });
 
+  it("defaults mode to `collect` when the field is absent (backward compat)", () => {
+    const runtimeConfig = normalizeRuntimeConfig(
+      {
+        controlWebsocketUrl: "/ws/control",
+        previewWebsocketUrl: "/ws/preview",
+        episodeKeyBindings: {
+          startKey: "s",
+          stopKey: "e",
+          keepKey: "k",
+          discardKey: "x",
+        },
+      },
+      httpLocation,
+    );
+    expect(runtimeConfig.mode).toBe("collect");
+  });
+
+  it("preserves an explicit `setup` mode from the runtime config endpoint", () => {
+    const runtimeConfig = normalizeRuntimeConfig(
+      {
+        mode: "setup",
+        controlWebsocketUrl: "/ws/control",
+        previewWebsocketUrl: "/ws/preview",
+        episodeKeyBindings: {
+          startKey: "s",
+          stopKey: "e",
+          keepKey: "k",
+          discardKey: "x",
+        },
+      },
+      httpLocation,
+    );
+    expect(runtimeConfig.mode).toBe("setup");
+  });
+
+  it("rejects an unknown mode string", () => {
+    expect(() =>
+      normalizeRuntimeConfig(
+        {
+          mode: "wizard",
+          controlWebsocketUrl: "/ws/control",
+          previewWebsocketUrl: "/ws/preview",
+          episodeKeyBindings: {
+            startKey: "s",
+            stopKey: "e",
+            keepKey: "k",
+            discardKey: "x",
+          },
+        },
+        httpLocation,
+      ),
+    ).toThrow(/mode/);
+  });
+
   it("loads runtime config from the backend endpoint", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

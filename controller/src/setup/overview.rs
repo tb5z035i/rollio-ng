@@ -2,6 +2,7 @@ use super::runtime::{
     spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT,
 };
 use super::state::{AvailableDevice, CameraProfile, SetupSession, SetupStep};
+use crate::cli::SetupBackend;
 use crate::process::{terminate_children, ChildSpec};
 use crate::runtime_plan::build_preview_specs;
 use rollio_types::config::{
@@ -100,6 +101,7 @@ pub(super) fn sync_identify_mode(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start_preview_runtime(
     session: &mut SetupSession,
     preview_port: u16,
@@ -108,9 +110,10 @@ pub(super) fn start_preview_runtime(
     child_working_dir: &Path,
     current_exe_dir: &Path,
     log_dir: &Path,
+    backend: SetupBackend,
 ) -> Result<SetupRuntimeState, Box<dyn Error>> {
     let preview_config =
-        build_preview_project_config(session, preview_port, preview_websocket_url)?;
+        build_preview_project_config(session, preview_port, preview_websocket_url, backend)?;
     let temp_config_path = write_setup_temp_config(
         &preview_config,
         log_dir,
@@ -177,6 +180,7 @@ pub(super) fn build_preview_project_config(
     session: &SetupSession,
     websocket_port: u16,
     websocket_url: &str,
+    backend: SetupBackend,
 ) -> Result<ProjectConfig, Box<dyn Error>> {
     let mut preview = if session.current_step == SetupStep::Devices {
         if let Some(target_name) = session.identify_device_name.as_deref() {
@@ -209,14 +213,15 @@ pub(super) fn build_preview_project_config(
     };
     preview.visualizer.port = websocket_port;
     preview.ui.preview_websocket_url = Some(websocket_url.into());
-    // The setup wizard renders previews through the Ink terminal UI,
-    // which only decodes the legacy JPEG binary message kind. The
-    // default `PreviewOutputMode::Encoded` (H.264) is web-UI-only;
-    // forcing JPEG here is what makes camera identify / Step-4 live
-    // preview show anything at all in the wizard. Each camera channel's
-    // `preview_settings` is overridden in-place so the encoder and
-    // visualizer agree on the wire format the terminal UI expects.
-    force_jpeg_preview_for_terminal_ui(&mut preview);
+    // The Ink terminal UI only decodes the legacy JPEG binary message kind;
+    // H.264 / Annex B packets from `PreviewOutputMode::Encoded` are silently
+    // dropped at `parseBinaryMessage`. Force JPEG only on the TUI path so
+    // camera identify / Step-4 live preview show anything at all in the
+    // terminal. The web SPA has a WebCodecs decoder and honors whatever
+    // `preview_output_mode` the project config specifies.
+    if matches!(backend, SetupBackend::Tui) {
+        force_jpeg_preview_for_terminal_ui(&mut preview);
+    }
     Ok(preview)
 }
 

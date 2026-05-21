@@ -6,6 +6,7 @@ import {
   type EpisodeStatusMessage,
   type RobotStateKind,
   type RobotStateMessage,
+  type SetupStateMessage,
   type StreamInfoMessage,
 } from "./protocol";
 import {
@@ -88,6 +89,11 @@ export interface AggregatedRobotChannel {
 
 export interface ControlSocketState {
   episodeStatus: EpisodeStatusMessage | null;
+  /** Latest `setup_state` snapshot from `rollio-control-server` when
+   *  the SPA is running in setup mode. `null` while waiting for the
+   *  first publish (the wizard polls the controller every loop tick,
+   *  so this fills in within ~50 ms of connect). */
+  setupState: SetupStateMessage | null;
   connected: boolean;
   send: (msg: string) => void;
 }
@@ -121,6 +127,11 @@ export interface UsePreviewSocketOptions {
    *  `PreviewDecoderRegistry`. Tests substitute a fake here to avoid
    *  needing the WebCodecs API in jsdom. */
   decoderRegistryFactory?: () => DecoderRegistry;
+  /** When `false`, skip opening the WebSocket entirely. Used by the
+   *  setup wizard to gate the preview socket on identify / preview
+   *  steps so we don't spam the gateway with "upstream absent" reconnect
+   *  loops when no visualizer process is running. Defaults to `true`. */
+  enabled?: boolean;
 }
 
 const WS_OPEN = 1;
@@ -195,6 +206,9 @@ interface UseReconnectOptions {
   websocketFactory: WebSocketFactory;
   binaryType: BinaryType;
   handlers: SocketHandlers;
+  /** When `false`, the hook returns a no-op `send` and never opens a
+   *  socket. Toggling back to `true` (re-)connects on the next render. */
+  enabled?: boolean;
 }
 
 function useReconnectingSocket(url: string, options: UseReconnectOptions) {
@@ -204,6 +218,7 @@ function useReconnectingSocket(url: string, options: UseReconnectOptions) {
   const mountedRef = useRef(true);
   const handlersRef = useRef(options.handlers);
   handlersRef.current = options.handlers;
+  const enabled = options.enabled ?? true;
 
   const send = useCallback((msg: string) => {
     if (wsRef.current?.readyState === WS_OPEN) {
@@ -212,6 +227,20 @@ function useReconnectingSocket(url: string, options: UseReconnectOptions) {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      // Tear down any open socket from a previous `enabled=true` render
+      // so the gateway sees a clean close, not a dangling subscriber.
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimerRef.current != null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      handlersRef.current.onConnectedChange?.(false);
+      return;
+    }
     mountedRef.current = true;
     const factory = options.websocketFactory;
     const binaryType = options.binaryType;
@@ -285,7 +314,7 @@ function useReconnectingSocket(url: string, options: UseReconnectOptions) {
         wsRef.current = null;
       }
     };
-  }, [options.binaryType, options.websocketFactory, url]);
+  }, [enabled, options.binaryType, options.websocketFactory, url]);
 
   return { send };
 }
@@ -304,8 +333,10 @@ export function useControlSocket(
   const [episodeStatus, setEpisodeStatus] = useState<EpisodeStatusMessage | null>(
     null,
   );
+  const [setupState, setSetupState] = useState<SetupStateMessage | null>(null);
 
   const episodeStatusRef = useRef<EpisodeStatusMessage | null>(null);
+  const setupStateRef = useRef<SetupStateMessage | null>(null);
   const dirtyRef = useRef(false);
 
   const handlers = useRef<SocketHandlers>({
@@ -315,6 +346,7 @@ export function useControlSocket(
       } else {
         setGauge("ws.control.connected", "Disconnected");
         setGauge("ws.episode_status", "Unavailable");
+        setGauge("ws.setup_status", "Unavailable");
       }
       setConnected(value);
     },
@@ -328,6 +360,11 @@ export function useControlSocket(
         setGauge("ws.episode_status", msg.state);
         setGauge("ws.episode_count", msg.episode_count);
         setGauge("ws.episode_elapsed_ms", msg.elapsed_ms);
+      } else if (msg?.type === "setup_state") {
+        setupStateRef.current = msg;
+        dirtyRef.current = true;
+        setGauge("ws.setup_status", msg.status);
+        setGauge("ws.setup_step", `${msg.step_index}/${msg.total_steps}`);
       }
     },
   }).current;
@@ -344,11 +381,12 @@ export function useControlSocket(
       if (!dirtyRef.current) return;
       dirtyRef.current = false;
       setEpisodeStatus(episodeStatusRef.current);
+      setSetupState(setupStateRef.current);
     }, BATCH_INTERVAL_MS);
     return () => window.clearInterval(flushInterval);
   }, []);
 
-  return { episodeStatus, connected, send };
+  return { episodeStatus, setupState, connected, send };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +640,7 @@ export function usePreviewSocket(
     websocketFactory,
     binaryType: "arraybuffer",
     handlers,
+    enabled: options.enabled,
   });
 
   useEffect(() => {

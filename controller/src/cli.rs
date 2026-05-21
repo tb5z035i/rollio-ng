@@ -1,7 +1,17 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rollio_types::config::ProjectConfig;
 use std::error::Error;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum SetupBackend {
+    /// Ink/React terminal UI spawned via `node`. Requires Node.js on PATH.
+    #[default]
+    Tui,
+    /// `rollio-web-gateway` serving the browser SPA. No Node.js needed at runtime.
+    Web,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "rollio")]
@@ -64,6 +74,14 @@ pub struct SetupArgs {
     /// based on its `--count` arg.
     #[arg(long = "sim-pseudo", default_value_t = 0)]
     pub sim_pseudo: usize,
+    /// Which interactive UI to run. `tui` (default) keeps the Ink terminal
+    /// wizard; `web` launches `rollio-web-gateway` and opens the browser.
+    #[arg(long, value_enum, default_value_t = SetupBackend::Tui)]
+    pub backend: SetupBackend,
+    /// With `--backend web`, print the gateway URL but don't auto-open the
+    /// browser. Useful over SSH and in headless CI. Ignored under `tui`.
+    #[arg(long, default_value_t = false)]
+    pub no_open: bool,
 }
 
 impl SetupArgs {
@@ -81,5 +99,50 @@ impl SetupArgs {
         self.output
             .clone()
             .unwrap_or_else(|| PathBuf::from("config.toml"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse_setup(args: &[&str]) -> SetupArgs {
+        let cli = Cli::try_parse_from(
+            std::iter::once("rollio")
+                .chain(std::iter::once("setup"))
+                .chain(args.iter().copied()),
+        )
+        .expect("setup args parse");
+        match cli.command {
+            Command::Setup(setup) => setup,
+            other => panic!("expected Setup command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn setup_defaults_to_tui_backend_with_no_open_false() {
+        let args = parse_setup(&[]);
+        assert_eq!(args.backend, SetupBackend::Tui);
+        assert!(!args.no_open);
+    }
+
+    #[test]
+    fn setup_accepts_backend_web() {
+        let args = parse_setup(&["--backend", "web"]);
+        assert_eq!(args.backend, SetupBackend::Web);
+    }
+
+    #[test]
+    fn setup_no_open_flag_parses_with_web_backend() {
+        let args = parse_setup(&["--backend", "web", "--no-open"]);
+        assert_eq!(args.backend, SetupBackend::Web);
+        assert!(args.no_open);
+    }
+
+    #[test]
+    fn setup_rejects_unknown_backend_value() {
+        let err = Cli::try_parse_from(["rollio", "setup", "--backend", "gui"]).unwrap_err();
+        assert!(err.to_string().contains("backend"));
     }
 }

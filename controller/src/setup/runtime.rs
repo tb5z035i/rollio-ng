@@ -7,13 +7,13 @@ use super::overview::{
 };
 use super::save::save_project_config;
 use super::state::{SessionMutation, SetupExitKind, SetupSession, SetupStep};
-use crate::cli::SetupArgs;
+use crate::cli::{SetupArgs, SetupBackend};
 use crate::discovery::DiscoveryOptions;
 use crate::process::{
     poll_children_once, spawn_child, terminate_children, ChildSpec, ManagedChild,
 };
 use crate::runtime_paths::{
-    current_executable_dir, resolve_share_root, resolve_state_dir, workspace_root,
+    current_executable_dir, resolve_program, resolve_share_root, resolve_state_dir, workspace_root,
 };
 use crate::runtime_plan::build_control_server_spec;
 use iceoryx2::prelude::*;
@@ -22,6 +22,7 @@ use rollio_bus::{
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
+use rollio_types::config::UiRuntimeConfig;
 use rollio_types::messages::{
     ControlEvent, DeviceChannelMode, SetupCommandMessage, SetupStateMessage,
 };
@@ -146,15 +147,16 @@ pub(super) fn ensure_setup_dev_runtime_binaries_built(
 }
 
 pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
-    // The interactive wizard spawns the Ink terminal UI via `node`. Fail
-    // fast with a pointer to https://nodejs.org/en/download so the operator
-    // doesn't sit through device discovery + IPC bring-up only to die at
+    // The TUI backend spawns the Ink terminal UI via `node`. Fail fast with
+    // a pointer to https://nodejs.org/en/download so the operator doesn't
+    // sit through device discovery + IPC bring-up only to die at
     // child-spawn time. The rollio .deb deliberately does not pin `nodejs`
     // as a Debian Depends because Ubuntu's package is too old for Ink, so
     // this is the first place we surface a missing/broken Node install.
-    // `--accept-defaults` skips the UI entirely, so the check is only
-    // mandatory in the interactive path.
-    if !args.accept_defaults {
+    // `--accept-defaults` skips the UI entirely, and `--backend web` swaps
+    // node for the pre-built browser SPA, so the check is only mandatory
+    // on the interactive TUI path.
+    if !args.accept_defaults && args.backend == SetupBackend::Tui {
         ensure_node_available()?;
     }
 
@@ -242,6 +244,8 @@ pub fn run(args: SetupArgs) -> Result<(), Box<dyn Error>> {
         share_root.as_path(),
         state_dir.as_path(),
         &current_exe_dir,
+        args.backend,
+        args.no_open,
     )
 }
 
@@ -256,6 +260,8 @@ pub(super) fn run_interactive_setup(
     share_root: &Path,
     child_working_dir: &Path,
     current_exe_dir: &Path,
+    backend: SetupBackend,
+    no_open: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Reserve two distinct loopback ports up front:
     // - control_port: long-lived `rollio-control-server` for setup_command/setup_state
@@ -264,6 +270,14 @@ pub(super) fn run_interactive_setup(
     // control plane, so identify swaps don't freeze the wizard.
     let control_port = reserve_loopback_port()?;
     let preview_port = reserve_loopback_port()?;
+    // With the web backend we also need a port for the `rollio-web-gateway`
+    // HTTP server. Reserve it up-front so we can print/open the URL before
+    // axum has finished binding (the gateway race is bounded — child spawn
+    // gives axum a few ms head start and the browser retries on connect).
+    let gateway_http_port = match backend {
+        SetupBackend::Tui => None,
+        SetupBackend::Web => Some(reserve_loopback_port()?),
+    };
     let control_websocket_url = format!("ws://127.0.0.1:{control_port}");
     let preview_websocket_url = format!("ws://127.0.0.1:{preview_port}");
 
@@ -296,13 +310,27 @@ pub(super) fn run_interactive_setup(
         )?;
         control_children = spawn_setup_children(std::slice::from_ref(&control_spec), &log_dir)?;
 
-        let ui_spec = build_setup_ui_spec(
-            share_root,
-            child_working_dir,
-            &control_websocket_url,
-            &preview_websocket_url,
-        )?;
+        let ui_spec = match backend {
+            SetupBackend::Tui => build_setup_ui_spec_tui(
+                share_root,
+                child_working_dir,
+                &control_websocket_url,
+                &preview_websocket_url,
+            )?,
+            SetupBackend::Web => build_setup_ui_spec_web(
+                share_root,
+                child_working_dir,
+                current_exe_dir,
+                &control_websocket_url,
+                &preview_websocket_url,
+                "127.0.0.1",
+                gateway_http_port.expect("gateway port reserved when backend == Web"),
+            )?,
+        };
         ui_children = spawn_setup_children(std::slice::from_ref(&ui_spec), &log_dir)?;
+        if let Some(port) = gateway_http_port {
+            open_browser_if_requested(&format!("http://127.0.0.1:{port}"), no_open);
+        }
 
         let mut last_state_publish: Option<Instant> = None;
         let mut state_dirty = true;
@@ -406,6 +434,7 @@ pub(super) fn run_interactive_setup(
                     child_working_dir,
                     current_exe_dir,
                     &log_dir,
+                    backend,
                 )?);
                 preview_runtime_restarted = true;
                 mutations.state_changed = true;
@@ -538,7 +567,7 @@ pub(super) fn spawn_setup_children(
     Ok(children)
 }
 
-pub(super) fn build_setup_ui_spec(
+pub(super) fn build_setup_ui_spec_tui(
     share_root: &Path,
     child_working_dir: &Path,
     control_websocket_url: &str,
@@ -571,6 +600,80 @@ pub(super) fn build_setup_ui_spec(
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: true,
     })
+}
+
+/// Build the spec for the web-backend UI process: `rollio-web-gateway`
+/// pointed at the same control/preview websockets the TUI would use, plus
+/// `--mode setup` so the SPA at `ui/web/dist` boots into the wizard view
+/// instead of the collect view. End users do not need Node.js — the SPA
+/// ships pre-built in the `.deb`.
+pub(super) fn build_setup_ui_spec_web(
+    share_root: &Path,
+    child_working_dir: &Path,
+    current_exe_dir: &Path,
+    control_websocket_url: &str,
+    preview_websocket_url: &str,
+    http_bind: &str,
+    http_port: u16,
+) -> Result<ChildSpec, Box<dyn Error>> {
+    let web_bundle_dir = share_root.join("ui/web/dist");
+    let web_index = web_bundle_dir.join("index.html");
+    if !web_index.exists() {
+        return Err(format!(
+            "Web UI bundle not found at {}. Run `cd ui/web && npm run build` first, \
+             or set ROLLIO_SHARE_DIR.",
+            web_index.display()
+        )
+        .into());
+    }
+
+    // Hand the gateway a UiRuntimeConfig pointing back at the controller's
+    // already-reserved control/preview ports. The gateway's preview proxy
+    // is tolerant of an absent upstream, so it's fine to publish the URL
+    // even when `start_preview_runtime` has not yet fired.
+    let ui_runtime_config = UiRuntimeConfig {
+        control_websocket_url: Some(control_websocket_url.to_string()),
+        preview_websocket_url: Some(preview_websocket_url.to_string()),
+        http_host: http_bind.to_string(),
+        http_port,
+        ..UiRuntimeConfig::default()
+    };
+    let inline_config = toml::to_string(&ui_runtime_config)?;
+
+    Ok(ChildSpec {
+        id: "setup-ui".into(),
+        command: crate::ResolvedCommand {
+            program: resolve_program(
+                current_exe_dir.join("rollio-web-gateway"),
+                "rollio-web-gateway",
+            ),
+            args: vec![
+                OsString::from("--config-inline"),
+                OsString::from(inline_config),
+                OsString::from("--asset-dir"),
+                web_bundle_dir.into_os_string(),
+                OsString::from("--mode"),
+                OsString::from("setup"),
+            ],
+        },
+        working_directory: child_working_dir.to_path_buf(),
+        inherit_stdio: false,
+    })
+}
+
+/// Always print the URL so SSH/headless still works, and try to spawn the
+/// system browser unless the operator passed `--no-open`. `webbrowser`
+/// shells out to `xdg-open` / `open` / etc. — best-effort, never fatal.
+fn open_browser_if_requested(url: &str, no_open: bool) {
+    eprintln!("rollio: setup ready at {url}");
+    if no_open {
+        return;
+    }
+    if let Err(err) = webbrowser::open(url) {
+        eprintln!(
+            "rollio: could not auto-open browser ({err}); paste {url} into your browser to continue"
+        );
+    }
 }
 
 pub(super) fn reserve_loopback_port() -> Result<u16, Box<dyn Error>> {

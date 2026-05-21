@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use rollio_types::config::UiRuntimeConfig;
 use serde::Serialize;
@@ -18,6 +18,18 @@ use tower_http::services::{ServeDir, ServeFile};
 
 const BROWSER_CONTROL_WEBSOCKET_PATH: &str = "/ws/control";
 const BROWSER_PREVIEW_WEBSOCKET_PATH: &str = "/ws/preview";
+
+/// Which view the SPA should render. `Collect` (default) drives `rollio
+/// collect` recording; `Setup` drives the wizard launched by
+/// `rollio setup --backend web`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum GatewayMode {
+    #[default]
+    Collect,
+    Setup,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "rollio-web-gateway")]
@@ -34,6 +46,13 @@ struct Args {
     /// Path to the built frontend assets
     #[arg(long, value_name = "PATH", default_value = "ui/web/dist")]
     asset_dir: PathBuf,
+
+    /// Which SPA view to surface — `collect` (default) for recording or
+    /// `setup` for the configuration wizard. Inlined into the
+    /// `/api/runtime-config` payload so the SPA can render the right
+    /// top-level component without separate builds.
+    #[arg(long, value_enum, default_value_t = GatewayMode::Collect)]
+    mode: GatewayMode,
 }
 
 #[derive(Clone)]
@@ -46,6 +65,7 @@ struct AppState {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct BrowserRuntimeConfig {
+    mode: GatewayMode,
     control_websocket_url: String,
     preview_websocket_url: String,
     episode_key_bindings: BrowserEpisodeKeyBindings,
@@ -90,8 +110,9 @@ fn resolve_asset_dir(asset_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     Ok(resolved)
 }
 
-fn browser_runtime_config(config: &UiRuntimeConfig) -> BrowserRuntimeConfig {
+fn browser_runtime_config(config: &UiRuntimeConfig, mode: GatewayMode) -> BrowserRuntimeConfig {
     BrowserRuntimeConfig {
+        mode,
         control_websocket_url: BROWSER_CONTROL_WEBSOCKET_PATH.to_string(),
         preview_websocket_url: BROWSER_PREVIEW_WEBSOCKET_PATH.to_string(),
         episode_key_bindings: BrowserEpisodeKeyBindings {
@@ -103,7 +124,10 @@ fn browser_runtime_config(config: &UiRuntimeConfig) -> BrowserRuntimeConfig {
     }
 }
 
-fn build_app_state(config: &UiRuntimeConfig) -> Result<AppState, Box<dyn Error>> {
+fn build_app_state(
+    config: &UiRuntimeConfig,
+    mode: GatewayMode,
+) -> Result<AppState, Box<dyn Error>> {
     let upstream_control_websocket_url = config
         .control_websocket_url
         .clone()
@@ -114,7 +138,7 @@ fn build_app_state(config: &UiRuntimeConfig) -> Result<AppState, Box<dyn Error>>
         .ok_or("ui runtime config did not produce an upstream preview websocket url")?;
 
     Ok(AppState {
-        browser_runtime_config: browser_runtime_config(config),
+        browser_runtime_config: browser_runtime_config(config, mode),
         upstream_control_websocket_url,
         upstream_preview_websocket_url,
     })
@@ -281,7 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let state = build_app_state(&runtime_config)?;
+    let state = build_app_state(&runtime_config, args.mode)?;
     let app = build_app(state, asset_dir, index_file);
 
     let listener = tokio::net::TcpListener::bind((
@@ -314,6 +338,7 @@ mod tests {
             config: None,
             config_inline: None,
             asset_dir: PathBuf::from("ui/web/dist"),
+            mode: GatewayMode::Collect,
         }
     }
 
@@ -398,7 +423,8 @@ http_port = 3000
 
     #[test]
     fn browser_runtime_config_uses_same_origin_websocket_paths() {
-        let state = build_app_state(&sample_runtime_config()).expect("app state should be built");
+        let state = build_app_state(&sample_runtime_config(), GatewayMode::Collect)
+            .expect("app state should be built");
 
         assert_eq!(
             state.browser_runtime_config.control_websocket_url,
@@ -412,8 +438,26 @@ http_port = 3000
             state.browser_runtime_config.episode_key_bindings.start_key,
             "s"
         );
+        assert_eq!(
+            state.browser_runtime_config.mode,
+            GatewayMode::Collect,
+            "default gateway mode is collect"
+        );
         assert_eq!(state.upstream_control_websocket_url, "ws://127.0.0.1:9091");
         assert_eq!(state.upstream_preview_websocket_url, "ws://127.0.0.1:19090");
+    }
+
+    #[test]
+    fn browser_runtime_config_carries_setup_mode_when_requested() {
+        let state = build_app_state(&sample_runtime_config(), GatewayMode::Setup)
+            .expect("app state should be built");
+        assert_eq!(state.browser_runtime_config.mode, GatewayMode::Setup);
+        // Verify the serialized JSON the SPA reads renders `mode` as a
+        // kebab-case string ("setup"), so the TS side can discriminate
+        // on a stable string value rather than a numeric enum.
+        let payload =
+            serde_json::to_value(&state.browser_runtime_config).expect("config serializes");
+        assert_eq!(payload["mode"], "setup");
     }
 
     #[tokio::test]
@@ -427,7 +471,8 @@ http_port = 3000
 
         let asset_dir = temp_asset_dir("rollio-web-gateway-tests-paths");
         let app = build_app(
-            build_app_state(&runtime_config).expect("app state should be built"),
+            build_app_state(&runtime_config, GatewayMode::Collect)
+                .expect("app state should be built"),
             asset_dir.clone(),
             asset_dir.join("index.html"),
         );
