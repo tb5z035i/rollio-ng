@@ -1598,12 +1598,12 @@ impl ChannelRecordConfig {
             video_codec: self.video_codec.unwrap_or_default(),
             depth_codec: self.depth_codec.unwrap_or(EncoderCodec::Rvl),
             backend: self.backend.unwrap_or_default(),
-            video_backend: self.video_backend.unwrap_or(
-                self.backend.unwrap_or_default(),
-            ),
-            depth_backend: self.depth_backend.unwrap_or(
-                self.backend.unwrap_or_default(),
-            ),
+            video_backend: self
+                .video_backend
+                .unwrap_or(self.backend.unwrap_or_default()),
+            depth_backend: self
+                .depth_backend
+                .unwrap_or(self.backend.unwrap_or_default()),
             chroma_subsampling: self.chroma_subsampling.unwrap_or_default(),
             crf: self.crf,
             preset: self.preset.clone(),
@@ -3406,14 +3406,12 @@ impl ProjectConfig {
                     .is_some_and(|channel| channel.preview_enabled)
             })
             .map(|camera| {
-                let channel_cfg = self
-                    .device_named(&camera.device_name)
-                    .and_then(|device| {
-                        device
-                            .channels
-                            .iter()
-                            .find(|c| c.channel_type == camera.channel_type)
-                    });
+                let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                    device
+                        .channels
+                        .iter()
+                        .find(|c| c.channel_type == camera.channel_type)
+                });
                 let preview_cfg = channel_cfg
                     .and_then(|ch| ch.preview_settings.as_ref())
                     .map(|p| p.resolve())
@@ -3465,24 +3463,20 @@ impl ProjectConfig {
     pub fn encoder_runtime_configs_v2(&self) -> Vec<EncoderRuntimeConfigV2> {
         let mut configs = Vec::new();
         for camera in self.resolved_camera_channels() {
-            let channel_cfg = self
-                .device_named(&camera.device_name)
-                .and_then(|device| {
-                    device
-                        .channels
-                        .iter()
-                        .find(|c| c.channel_type == camera.channel_type)
-                });
+            let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                device
+                    .channels
+                    .iter()
+                    .find(|c| c.channel_type == camera.channel_type)
+            });
             let record_cfg = channel_cfg
                 .and_then(|ch| ch.record.as_ref())
                 .map(|r| r.resolve())
                 .unwrap_or_default();
             let codec = record_cfg.codec_for_pixel_format(camera.pixel_format);
             let backend = record_cfg.backend_for_pixel_format(camera.pixel_format);
-            let preview_enabled =
-                channel_cfg.is_some_and(|channel| channel.preview_enabled);
-            let record_enabled =
-                channel_cfg.is_some_and(|channel| channel.record_enabled);
+            let preview_enabled = channel_cfg.is_some_and(|channel| channel.preview_enabled);
+            let record_enabled = channel_cfg.is_some_and(|channel| channel.record_enabled);
 
             // Recording-role encoder for every camera with record_enabled.
             if record_enabled {
@@ -3521,16 +3515,11 @@ impl ProjectConfig {
                     .and_then(|ch| ch.preview_settings.as_ref())
                     .map(|p| p.resolve())
                     .unwrap_or_default();
-                let (preview_codec_color, preview_codec_depth) = (
-                    preview_cfg.color_codec,
-                    preview_cfg.depth_codec,
-                );
-                let resize_policy =
-                    preview_resize_policy(camera.pixel_format, &preview_cfg);
+                let (preview_codec_color, preview_codec_depth) =
+                    (preview_cfg.color_codec, preview_cfg.depth_codec);
+                let resize_policy = preview_resize_policy(camera.pixel_format, &preview_cfg);
                 let (preview_width, preview_height) = match resize_policy {
-                    PreviewResizePolicy::Dynamic => {
-                        (preview_cfg.width, preview_cfg.height)
-                    }
+                    PreviewResizePolicy::Dynamic => (preview_cfg.width, preview_cfg.height),
                     PreviewResizePolicy::FixedSource => (camera.width, camera.height),
                 };
                 let preview_backend = match resize_policy {
@@ -3544,28 +3533,27 @@ impl ProjectConfig {
                     preview_codec_color
                 };
 
-                let (config_topic, packet_topic, jpeg_topic) =
-                    match preview_cfg.output_mode {
-                        PreviewOutputMode::Encoded => (
-                            Some(rollio_bus::preview_config_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                            Some(rollio_bus::preview_packet_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                            None,
-                        ),
-                        PreviewOutputMode::Jpeg => (
-                            None,
-                            None,
-                            Some(rollio_bus::preview_jpeg_service_name(
-                                &camera.bus_root,
-                                &camera.channel_type,
-                            )),
-                        ),
-                    };
+                let (config_topic, packet_topic, jpeg_topic) = match preview_cfg.output_mode {
+                    PreviewOutputMode::Encoded => (
+                        Some(rollio_bus::preview_config_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                        Some(rollio_bus::preview_packet_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                        None,
+                    ),
+                    PreviewOutputMode::Jpeg => (
+                        None,
+                        None,
+                        Some(rollio_bus::preview_jpeg_service_name(
+                            &camera.bus_root,
+                            &camera.channel_type,
+                        )),
+                    ),
+                };
 
                 configs.push(EncoderRuntimeConfigV2 {
                     process_id: preview_encoder_process_id(&camera.channel_id),
@@ -3618,14 +3606,12 @@ impl ProjectConfig {
                     .is_some_and(|channel| channel.record_enabled)
             })
             .map(|camera| {
-                let channel_cfg = self
-                    .device_named(&camera.device_name)
-                    .and_then(|device| {
-                        device
-                            .channels
-                            .iter()
-                            .find(|c| c.channel_type == camera.channel_type)
-                    });
+                let channel_cfg = self.device_named(&camera.device_name).and_then(|device| {
+                    device
+                        .channels
+                        .iter()
+                        .find(|c| c.channel_type == camera.channel_type)
+                });
                 let record_cfg = channel_cfg
                     .and_then(|ch| ch.record.as_ref())
                     .map(|r| r.resolve())

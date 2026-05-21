@@ -92,7 +92,9 @@ fn load_runtime_config(args: &RunArgs) -> Result<StorageRuntimeConfig, Box<dyn E
     match (&args.config, &args.config_inline) {
         (Some(path), None) => Ok(StorageRuntimeConfig::from_file(path)?),
         (None, Some(inline)) => Ok(inline.parse::<StorageRuntimeConfig>()?),
-        (None, None) => Err("rollio-storage-local-lerobot requires --config or --config-inline".into()),
+        (None, None) => {
+            Err("rollio-storage-local-lerobot requires --config or --config-inline".into())
+        }
         (Some(_), Some(_)) => {
             Err("rollio-storage-local-lerobot config flags are mutually exclusive".into())
         }

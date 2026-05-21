@@ -106,13 +106,8 @@ impl McapEpisodeWriter {
             return Ok(id);
         }
         let bfbs_path = bfbs_dir.join(schema_type.bfbs_filename());
-        let schema_data = std::fs::read(&bfbs_path).map_err(|e| {
-            format!(
-                "Failed to read schema file {}: {}",
-                bfbs_path.display(),
-                e
-            )
-        })?;
+        let schema_data = std::fs::read(&bfbs_path)
+            .map_err(|e| format!("Failed to read schema file {}: {}", bfbs_path.display(), e))?;
         let schema_id =
             self.writer
                 .add_schema(schema_type.schema_name(), SCHEMA_ENCODING, &schema_data)?;

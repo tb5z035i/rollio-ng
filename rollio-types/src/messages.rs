@@ -252,7 +252,7 @@ impl PixelFormat {
             Self::Depth16 => 2,
             Self::Gray8 => 1,
             Self::H264AnnexB => 0, // variable-length compressed
-            Self::Nv12 => 0, // planar: 1.5 bytes/pixel average, not per-pixel addressable
+            Self::Nv12 => 0,       // planar: 1.5 bytes/pixel average, not per-pixel addressable
         }
     }
 }

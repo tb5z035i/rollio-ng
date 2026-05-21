@@ -2,11 +2,11 @@
 // Inputs: src/fbs/*_generated.rs (verbatim flatc output)
 // Namespace: discover
 
-
 extern crate alloc;
 
 pub use crate::fb::fbs_foxglove::foxglove;
 
+#[rustfmt::skip]
 pub mod discover {
 
 // ===== from Imu_generated.rs =====
@@ -265,8 +265,8 @@ pub fn finish_size_prefixed_imu_buffer<'a, 'b, A: ::flatbuffers::Allocator + 'a>
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct TactilePoint(pub [u8; 24]);
-impl Default for TactilePoint { 
-  fn default() -> Self { 
+impl Default for TactilePoint {
+  fn default() -> Self {
     Self([0; 24])
   }
 }

@@ -178,8 +178,7 @@ impl EpisodeManager {
             .map(|c| c.channel_id.clone())
             .collect();
         let staging_slots = config.staging_slots as usize;
-        let stale_after =
-            Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
+        let stale_after = Duration::from_millis(config.missing_eos_timeout_ms.saturating_mul(2));
         Self {
             config,
             active_episode_index: None,
@@ -677,10 +676,8 @@ fn create_episode_ready_publisher(
 
 fn create_backpressure_publisher(
     node: &Node<ipc::Service>,
-) -> Result<
-    iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>,
-    Box<dyn Error>,
-> {
+) -> Result<iceoryx2::port::publisher::Publisher<ipc::Service, BackpressureEvent, ()>, Box<dyn Error>>
+{
     let service_name: ServiceName = BACKPRESSURE_SERVICE.try_into()?;
     let service = node
         .service_builder(&service_name)
@@ -1129,11 +1126,18 @@ mod tests {
         );
         assert!(matches!(staged[0], WorkerCommand::Stage(_)));
 
-        assert_eq!(outcome.dropped.len(), 1, "the second episode must be dropped");
+        assert_eq!(
+            outcome.dropped.len(),
+            1,
+            "the second episode must be dropped"
+        );
         let drop = outcome.dropped[0];
         assert_eq!(drop.episode_index, 1);
         assert_eq!(drop.reason, "staging_slots_full");
-        assert!(drop.backpressure, "slot-full drop must also raise backpressure");
+        assert!(
+            drop.backpressure,
+            "slot-full drop must also raise backpressure"
+        );
 
         assert_eq!(manager.in_flight.len(), 1);
         assert!(manager.in_flight.contains_key(&0));

@@ -2,9 +2,9 @@
 // Inputs: src/fbs/*_generated.rs (verbatim flatc output)
 // Namespace: foxglove
 
-
 extern crate alloc;
 
+#[rustfmt::skip]
 pub mod foxglove {
 
 // ===== from ArrowPrimitive_generated.rs =====
@@ -531,7 +531,7 @@ impl<'a> CameraCalibration<'a> {
     unsafe { self._tab.get::<u32>(CameraCalibration::VT_HEIGHT, Some(0)).unwrap()}
   }
   /// Name of distortion model
-  /// 
+  ///
   /// Supported parameters: `plumb_bob` (k1, k2, p1, p2, k3), `rational_polynomial` (k1, k2, p1, p2, k3, k4, k5, k6), and `kannala_brandt` (k1, k2, k3, k4), and `fisheye62` (k0, k1, k2, k3, p0, p1, crit_theta [optional]). `plumb_bob` and `rational_polynomial` models are based on the pinhole model [OpenCV's](https://docs.opencv.org/4.11.0/d9/d0c/group__calib3d.html) [pinhole camera model](https://en.wikipedia.org/wiki/Distortion_%28optics%29#Software_correction). The `kannala_brandt` model matches the [OpenvCV fisheye](https://docs.opencv.org/4.11.0/db/d58/group__calib3d__fisheye.html) model. The `fisheye62` model matches the [Project Aria's Fisheye62 Model](https://facebookresearch.github.io/projectaria_tools/docs/tech_insights/camera_intrinsic_models).
   #[inline]
   pub fn distortion_model(&self) -> Option<&'a str> {
@@ -549,17 +549,17 @@ impl<'a> CameraCalibration<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, f64>>>(CameraCalibration::VT_D, None)}
   }
   /// Intrinsic camera matrix (3x3 row-major matrix)
-  /// 
+  ///
   /// A 3x3 row-major matrix for the raw (distorted) image.
-  /// 
+  ///
   /// Projects 3D points in the camera coordinate frame to 2D pixel coordinates using the focal lengths (fx, fy) and principal point (cx, cy).
-  /// 
+  ///
   /// ```
   ///     [fx  0 cx]
   /// K = [ 0 fy cy]
   ///     [ 0  0  1]
   /// ```
-  /// 
+  ///
   /// **Uncalibrated cameras:** Following ROS conventions for [CameraInfo](https://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/CameraInfo.html), Foxglove also treats K[0] == 0.0 as indicating an uncalibrated camera, and calibration data will be ignored.
   /// length 9
   #[inline]
@@ -570,7 +570,7 @@ impl<'a> CameraCalibration<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, f64>>>(CameraCalibration::VT_K, None)}
   }
   /// Rectification matrix (stereo cameras only, 3x3 row-major matrix)
-  /// 
+  ///
   /// A rotation matrix aligning the camera coordinate system to the ideal stereo image plane so that epipolar lines in both stereo images are parallel.
   /// length 9
   #[inline]
@@ -581,29 +581,29 @@ impl<'a> CameraCalibration<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, f64>>>(CameraCalibration::VT_R, None)}
   }
   /// Projection/camera matrix (3x4 row-major matrix)
-  /// 
+  ///
   /// ```
   ///     [fx'  0  cx' Tx]
   /// P = [ 0  fy' cy' Ty]
   ///     [ 0   0   1   0]
   /// ```
-  /// 
+  ///
   /// By convention, this matrix specifies the intrinsic (camera) matrix of the processed (rectified) image. That is, the left 3x3 portion is the normal camera intrinsic matrix for the rectified image.
-  /// 
+  ///
   /// It projects 3D points in the camera coordinate frame to 2D pixel coordinates using the focal lengths (fx', fy') and principal point (cx', cy') - these may differ from the values in K.
-  /// 
+  ///
   /// For monocular cameras, Tx = Ty = 0. Normally, monocular cameras will also have R = the identity and P[1:3,1:3] = K.
-  /// 
+  ///
   /// Foxglove currently does not support displaying stereo images, so Tx and Ty are ignored.
-  /// 
+  ///
   /// Given a 3D point [X Y Z]', the projection (x, y) of the point onto the rectified image is given by:
-  /// 
+  ///
   /// ```
   /// [u v w]' = P * [X Y Z 1]'
   ///        x = u / w
   ///        y = v / w
   /// ```
-  /// 
+  ///
   /// This holds for both images of a stereo pair.
   /// length 12
   #[inline]
@@ -1385,7 +1385,7 @@ impl<'a> CompressedImage<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(CompressedImage::VT_DATA, None)}
   }
   /// Image format
-  /// 
+  ///
   /// Supported values: `jpeg`, `png`, `webp`, `avif`
   #[inline]
   pub fn format(&self) -> Option<&'a str> {
@@ -1625,7 +1625,7 @@ impl<'a> CompressedPointCloud<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(CompressedPointCloud::VT_DATA, None)}
   }
   /// Point cloud compression format.
-  /// 
+  ///
   /// Supported values: `draco` ([Google Draco](https://google.github.io/draco/)).
   #[inline]
   pub fn format(&self) -> Option<&'a str> {
@@ -1847,7 +1847,7 @@ impl<'a> CompressedVideo<'a> {
     unsafe { self._tab.get::<Time>(CompressedVideo::VT_TIMESTAMP, None)}
   }
   /// Frame of reference for the video.
-  /// 
+  ///
   /// The origin of the frame is the optical center of the camera. +x points to the right in the video, +y points down, and +z points into the plane of the video.
   #[inline]
   pub fn frame_id(&self) -> Option<&'a str> {
@@ -1857,24 +1857,24 @@ impl<'a> CompressedVideo<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(CompressedVideo::VT_FRAME_ID, None)}
   }
   /// Compressed video frame data.
-  /// 
+  ///
   /// For packet-based video codecs this data must begin and end on packet boundaries (no partial packets), and must contain enough video packets to decode exactly one image (either a keyframe or delta frame). Note: Foxglove does not support video streams that include B frames because they require lookahead.
-  /// 
+  ///
   /// Specifically, the requirements for different `format` values are:
-  /// 
+  ///
   /// - `h264`
   ///   - Use Annex B formatted data
   ///   - Each CompressedVideo message should contain enough NAL units to decode exactly one video frame
   ///   - Each message containing a key frame (IDR) must also include a SPS NAL unit
-  /// 
+  ///
   /// - `h265` (HEVC)
   ///   - Use Annex B formatted data
   ///   - Each CompressedVideo message should contain enough NAL units to decode exactly one video frame
   ///   - Each message containing a key frame (IRAP) must also include relevant VPS/SPS/PPS NAL units
-  /// 
+  ///
   /// - `vp9`
   ///   - Each CompressedVideo message should contain exactly one video frame
-  /// 
+  ///
   /// - `av1`
   ///   - Use the "Low overhead bitstream format" (section 5.2)
   ///   - Each CompressedVideo message should contain enough OBUs to decode exactly one video frame
@@ -1887,9 +1887,9 @@ impl<'a> CompressedVideo<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(CompressedVideo::VT_DATA, None)}
   }
   /// Video format.
-  /// 
+  ///
   /// Supported values: `h264`, `h265`, `vp9`, `av1`.
-  /// 
+  ///
   /// Note: compressed video support is subject to hardware limitations and patent licensing, so not all encodings may be supported on all platforms. See more about [H.265 support](https://caniuse.com/hevc), [VP9 support](https://caniuse.com/webm), and [AV1 support](https://caniuse.com/av1).
   #[inline]
   pub fn format(&self) -> Option<&'a str> {
@@ -2514,8 +2514,8 @@ pub fn finish_size_prefixed_cylinder_primitive_buffer<'a, 'b, A: ::flatbuffers::
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct Duration(pub [u8; 8]);
-impl Default for Duration { 
-  fn default() -> Self { 
+impl Default for Duration {
+  fn default() -> Self {
     Self([0; 8])
   }
 }
@@ -2649,11 +2649,11 @@ pub enum FrameTransformOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
 /// A transform between two reference frames in 3D space. The transform defines the position and orientation of a child frame within a parent frame. Translation moves the origin of the child frame relative to the parent origin. The rotation changes the orientation of the child frame around its origin.
-/// 
+///
 /// Examples:
-/// 
+///
 /// - With translation (x=1, y=0, z=0) and identity rotation (x=0, y=0, z=0, w=1), a point at (x=0, y=0, z=0) in the child frame maps to (x=1, y=0, z=0) in the parent frame.
-/// 
+///
 /// - With translation (x=1, y=2, z=0) and a 90-degree rotation around the z-axis (x=0, y=0, z=0.707, w=0.707), a point at (x=1, y=0, z=0) in the child frame maps to (x=-1, y=3, z=0) in the parent frame.
 pub struct FrameTransform<'a> {
   pub _tab: ::flatbuffers::Table<'a>,
@@ -3353,20 +3353,20 @@ impl<'a> Grid<'a> {
   }
   /// Fields in `data`. `red`, `green`, `blue`, and `alpha` are optional for customizing the grid's color.
   /// To enable RGB color visualization in the [3D panel](https://docs.foxglove.dev/docs/visualization/panels/3d#rgba-separate-fields-color-mode), include **all four** of these fields in your `fields` array:
-  /// 
+  ///
   /// - `red` - Red channel value
   /// - `green` - Green channel value
   /// - `blue` - Blue channel value
   /// - `alpha` - Alpha/transparency channel value
-  /// 
+  ///
   /// **note:** All four fields must be present with these exact names for RGB visualization to work. The order of fields doesn't matter, but the names must match exactly.
-  /// 
+  ///
   /// Recommended type: `UINT8` (0-255 range) for standard 8-bit color channels.
-  /// 
+  ///
   /// Example field definitions:
-  /// 
+  ///
   /// **RGB color only:**
-  /// 
+  ///
   /// ```javascript
   /// fields: [
   ///  { name: "red", offset: 0, type: NumericType.UINT8 },
@@ -3375,9 +3375,9 @@ impl<'a> Grid<'a> {
   ///  { name: "alpha", offset: 3, type: NumericType.UINT8 },
   /// ];
   /// ```
-  /// 
+  ///
   /// **RGB color with elevation (for 3D terrain visualization):**
-  /// 
+  ///
   /// ```javascript
   /// fields: [
   ///  { name: "red", offset: 0, type: NumericType.UINT8 },
@@ -3387,7 +3387,7 @@ impl<'a> Grid<'a> {
   ///  { name: "elevation", offset: 4, type: NumericType.FLOAT32 },
   /// ];
   /// ```
-  /// 
+  ///
   /// When these fields are present, the 3D panel will offer additional "Color Mode" options including "RGBA (separate fields)" to visualize the RGB data directly. For elevation visualization, set the "Elevation field" to your elevation layer name.
   #[inline]
   pub fn fields(&self) -> Option<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<PackedElementField<'a>>>> {
@@ -3398,7 +3398,7 @@ impl<'a> Grid<'a> {
   }
   /// Grid cell data, interpreted using `fields`, in row-major (y-major) order.
   /// For the data element starting at byte offset i, the coordinates of its corner closest to the origin will be:
-  /// 
+  ///
   /// - y = i / row_stride * cell_size.y
   /// - x = (i % row_stride) / cell_stride * cell_size.x
   #[inline]
@@ -4959,7 +4959,7 @@ impl<'a> LinePrimitive<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<Color>>>>(LinePrimitive::VT_COLORS, None)}
   }
   /// Indices into the `points` and `colors` attribute arrays, which can be used to avoid duplicating attribute data.
-  /// 
+  ///
   /// If omitted or empty, indexing will not be used. This default behavior is equivalent to specifying [0, 1, ..., N-1] for the indices (where N is the number of `points` provided).
   #[inline]
   pub fn indices(&self) -> Option<::flatbuffers::Vector<'a, u32>> {
@@ -9547,9 +9547,9 @@ impl<'a> RawImage<'a> {
     unsafe { self._tab.get::<u32>(RawImage::VT_STEP, Some(0)).unwrap()}
   }
   /// Raw image data.
-  /// 
+  ///
   /// For each `encoding` value, the `data` field contains image pixel data serialized as follows:
-  /// 
+  ///
   /// - `yuv422` or `uyvy`:
   ///   - Pixel colors are decomposed into [Y'UV](https://en.wikipedia.org/wiki/Y%E2%80%B2UV) channels.
   ///   - Pixel channel values are represented as unsigned 8-bit integers.
@@ -11453,8 +11453,8 @@ pub fn finish_size_prefixed_text_primitive_buffer<'a, 'b, A: ::flatbuffers::Allo
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct Time(pub [u8; 8]);
-impl Default for Time { 
-  fn default() -> Self { 
+impl Default for Time {
+  fn default() -> Self {
     Self([0; 8])
   }
 }
@@ -11658,7 +11658,7 @@ impl<'a> TriangleListPrimitive<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<Color>>>>(TriangleListPrimitive::VT_COLORS, None)}
   }
   /// Indices into the `points` and `colors` attribute arrays, which can be used to avoid duplicating attribute data.
-  /// 
+  ///
   /// If omitted or empty, indexing will not be used. This default behavior is equivalent to specifying [0, 1, ..., N-1] for the indices (where N is the number of `points` provided).
   #[inline]
   pub fn indices(&self) -> Option<::flatbuffers::Vector<'a, u32>> {
@@ -12369,7 +12369,7 @@ impl<'a> VoxelGrid<'a> {
   }
   /// Grid cell data, interpreted using `fields`, in depth-major, row-major (Z-Y-X) order.
   /// For the data element starting at byte offset i, the coordinates of its corner closest to the origin will be:
-  /// 
+  ///
   /// - z = i / slice_stride * cell_size.z
   /// - y = (i % slice_stride) / row_stride * cell_size.y
   /// - x = (i % row_stride) / cell_stride * cell_size.x

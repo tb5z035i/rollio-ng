@@ -65,10 +65,8 @@ const RECORD_BACKENDS: &[EncoderBackend] = &[
     EncoderBackend::HorizonX5,
 ];
 
-const RECORD_CHROMA_SUBSAMPLINGS: &[ChromaSubsampling] = &[
-    ChromaSubsampling::S422,
-    ChromaSubsampling::S420,
-];
+const RECORD_CHROMA_SUBSAMPLINGS: &[ChromaSubsampling] =
+    &[ChromaSubsampling::S422, ChromaSubsampling::S420];
 
 const RECORD_BIT_DEPTHS: &[u8] = &[8, 10];
 
@@ -94,10 +92,8 @@ const RECORD_COLOR_SPACES: &[EncoderColorSpace] = &[
     EncoderColorSpace::Bt601Limited,
 ];
 
-const PREVIEW_OUTPUT_MODES: &[PreviewOutputMode] = &[
-    PreviewOutputMode::Jpeg,
-    PreviewOutputMode::Encoded,
-];
+const PREVIEW_OUTPUT_MODES: &[PreviewOutputMode] =
+    &[PreviewOutputMode::Jpeg, PreviewOutputMode::Encoded];
 
 impl SetupSession {
     /// Open the subpanel for the named available_device row. Returns
@@ -183,10 +179,7 @@ impl SetupSession {
             extra: toml::Table::new(),
         };
         let mut extra = toml::Table::new();
-        extra.insert(
-            "transport".into(),
-            toml::Value::String("simulated".into()),
-        );
+        extra.insert("transport".into(), toml::Value::String("simulated".into()));
         let device = BinaryDeviceConfig {
             name: id.clone(),
             executable: Some(default_device_executable_name("pseudo")),
@@ -196,10 +189,7 @@ impl SetupSession {
             channels: vec![channel.clone()],
             extra,
         };
-        let available_name = format!(
-            "camera|pseudo|{}|color|-",
-            id
-        );
+        let available_name = format!("camera|pseudo|{}|color|-", id);
         let available = AvailableDevice {
             name: available_name,
             display_name: display.clone(),
@@ -265,10 +255,7 @@ impl SetupSession {
             extra: toml::Table::new(),
         };
         let mut extra = toml::Table::new();
-        extra.insert(
-            "transport".into(),
-            toml::Value::String("simulated".into()),
-        );
+        extra.insert("transport".into(), toml::Value::String("simulated".into()));
         let device = BinaryDeviceConfig {
             name: id.clone(),
             executable: Some(default_device_executable_name("pseudo")),
@@ -410,8 +397,7 @@ impl SetupSession {
         &mut self,
         name: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         let channel = &mut self.config.devices[device_index].channels[channel_index];
@@ -441,8 +427,7 @@ impl SetupSession {
         &mut self,
         name: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         let channel = &mut self.config.devices[device_index].channels[channel_index];
@@ -496,8 +481,7 @@ impl SetupSession {
         field: &str,
         delta: i32,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         if self.config.devices[device_index].channels[channel_index].kind != DeviceType::Camera {
@@ -565,11 +549,7 @@ impl SetupSession {
                         _ => false,
                     })
                     .unwrap_or(0);
-                let next = RECORD_PRESETS[rotate_index(
-                    current_index,
-                    RECORD_PRESETS.len(),
-                    delta,
-                )];
+                let next = RECORD_PRESETS[rotate_index(current_index, RECORD_PRESETS.len(), delta)];
                 record.preset = next.map(|s| s.to_owned());
                 true
             }
@@ -606,8 +586,7 @@ impl SetupSession {
         field: &str,
         value: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         if self.config.devices[device_index].channels[channel_index].kind != DeviceType::Camera {
@@ -632,18 +611,24 @@ impl SetupSession {
                             record.crf = Some(v);
                             Ok(())
                         }
-                        _ => Err(format!(
-                            "crf = {value:?} is not in range 0..=51"
-                        )),
+                        _ => Err(format!("crf = {value:?} is not in range 0..=51")),
                     }
                 }
             }
             "preset" => {
-                record.preset = if empty { None } else { Some(trimmed.to_owned()) };
+                record.preset = if empty {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                };
                 Ok(())
             }
             "tune" => {
-                record.tune = if empty { None } else { Some(trimmed.to_owned()) };
+                record.tune = if empty {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                };
                 Ok(())
             }
             "queue_size" => {
@@ -690,8 +675,7 @@ impl SetupSession {
         field: &str,
         delta: i32,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         if self.config.devices[device_index].channels[channel_index].kind != DeviceType::Camera {
@@ -752,8 +736,7 @@ impl SetupSession {
         field: &str,
         value: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         if self.config.devices[device_index].channels[channel_index].kind != DeviceType::Camera {
@@ -794,7 +777,9 @@ impl SetupSession {
                             preview.gop_seconds = Some(v);
                             Ok(())
                         }
-                        _ => Err(format!("gop_seconds = {value:?} must be a positive integer")),
+                        _ => Err(format!(
+                            "gop_seconds = {value:?} must be a positive integer"
+                        )),
                     }
                 }
             }
@@ -855,8 +840,7 @@ impl SetupSession {
         name: &str,
         value: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let Some((device_index, channel_index)) = self.configured_device_channel_index(name)
-        else {
+        let Some((device_index, channel_index)) = self.configured_device_channel_index(name) else {
             return Ok(false);
         };
         if self.config.devices[device_index].channels[channel_index].kind != DeviceType::Robot {
@@ -871,8 +855,8 @@ impl SetupSession {
                 return Ok(false);
             }
         };
-        let previous = self.config.devices[device_index].channels[channel_index]
-            .control_frequency_hz;
+        let previous =
+            self.config.devices[device_index].channels[channel_index].control_frequency_hz;
         if previous == Some(parsed) {
             return Ok(false);
         }
@@ -960,6 +944,8 @@ fn parse_positive_u32(
             *slot = Some(v);
             Ok(())
         }
-        _ => Err(format!("{field} = {raw_value:?} must be a positive integer")),
+        _ => Err(format!(
+            "{field} = {raw_value:?} must be a positive integer"
+        )),
     }
 }

@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "rollio-storage-local-lerobot")]
-#[command(about = "Persist staged LeRobot episodes by merging them into a shared data/tb5z035i/workspaceset root")]
+#[command(
+    about = "Persist staged LeRobot episodes by merging them into a shared data/tb5z035i/workspaceset root"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

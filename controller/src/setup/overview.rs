@@ -1,4 +1,6 @@
-use super::runtime::{spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT};
+use super::runtime::{
+    spawn_setup_children, SetupIpc, SetupRuntimeState, SETUP_POLL_INTERVAL, SETUP_SHUTDOWN_TIMEOUT,
+};
 use super::state::{AvailableDevice, CameraProfile, SetupSession, SetupStep};
 use crate::process::{terminate_children, ChildSpec};
 use crate::runtime_plan::build_preview_specs;
@@ -29,7 +31,9 @@ pub(super) fn robot_mode_to_channel_mode(mode: RobotMode) -> DeviceChannelMode {
     }
 }
 
-pub(super) fn available_primary_channel(available: &AvailableDevice) -> Option<&DeviceChannelConfigV2> {
+pub(super) fn available_primary_channel(
+    available: &AvailableDevice,
+) -> Option<&DeviceChannelConfigV2> {
     available.current.channels.first()
 }
 
