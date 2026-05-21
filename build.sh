@@ -17,6 +17,8 @@
 #   TARGET_DIR          cargo profile target dir (default: target/release)
 #   CAMERAS_BUILD_DIR   cmake build dir for C++ camera drivers
 #                       (default: cameras/build)
+#   CORA_SDK_ROOT       extracted Cora SDK root used for packaging the
+#                       arm64 coracam runtime (default: prebuild/.../opt/cora)
 
 set -Eeuo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -30,6 +32,7 @@ DEB_DIST="${DEB_DIST:-dist}"
 STAGING="${STAGING:-.deb-staging}"
 TARGET_DIR="${TARGET_DIR:-target/release}"
 CAMERAS_BUILD_DIR="${CAMERAS_BUILD_DIR:-cameras/build}"
+CORA_SDK_ROOT="${CORA_SDK_ROOT:-prebuild/cora-sdk_1.2.0_20260517124657_linux_aarch64/opt/cora}"
 
 # Binaries omitted from dpkg-shlibdeps (still shipped). Encoder links the full
 # FFmpeg stack; Depends are not generated for it until packaging is finalized.
@@ -75,6 +78,7 @@ CORE_BINS=(
 # discoverable by the controller (see cameras/README.md).
 CAMERA_BINS=(
     "realsense/rollio-device-realsense"
+    "rollio-devices-coracam/rollio-device-coracam"
 )
 
 # On arm64, include the Horizon X5 VPU encoder binary.
@@ -231,6 +235,11 @@ EOF
     local host_arch
     host_arch="$(dpkg --print-architecture 2>/dev/null || echo "$DEB_ARCH")"
     local extra_args=()
+    local private_lib_dirs=()
+    if [[ -d "$root_abs/opt/cora/lib" ]]; then
+        private_lib_dirs+=("$root_abs/opt/cora/lib")
+        extra_args+=("-l$root_abs/opt/cora/lib")
+    fi
     if [[ "$DEB_ARCH" != "$host_arch" ]]; then
         extra_args+=(--ignore-missing-info)
         log "Cross-arch shlibdeps: DEB_ARCH=$DEB_ARCH host=$host_arch (multiarch :$DEB_ARCH packages required)"
@@ -238,7 +247,8 @@ EOF
 
     if [[ -n "${ROLLIO_DEB_SHLIBDEPS_CHROOT:-}" ]]; then
         run_shlibdeps_in_chroot \
-            "$ROLLIO_DEB_SHLIBDEPS_CHROOT" "$ctldir" "$subst_abs" "${elfs[@]}"
+            "$ROLLIO_DEB_SHLIBDEPS_CHROOT" "$ctldir" "$subst_abs" \
+            "${private_lib_dirs[@]}" -- "${elfs[@]}"
         return $?
     fi
 
@@ -256,6 +266,12 @@ EOF
 run_shlibdeps_in_chroot() {
     local chroot_root="$1" ctldir="$2" subst_abs="$3"
     shift 3
+    local private_lib_dirs=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do
+        private_lib_dirs+=("$1")
+        shift
+    done
+    [[ $# -gt 0 && "$1" == "--" ]] && shift
     local elfs=("$@")
     [[ -d "$chroot_root" ]] \
         || die "ROLLIO_DEB_SHLIBDEPS_CHROOT=$chroot_root is not a directory"
@@ -277,16 +293,51 @@ run_shlibdeps_in_chroot() {
         elf_args+=("/$rel_workdir/$rel")
         i=$((i+1))
     done
+    local private_args=()
+    i=0
+    for dir in "${private_lib_dirs[@]}"; do
+        [[ -d "$dir" ]] || continue
+        local rel="private-lib-$i"
+        sudo mkdir -p "$in_chroot_workdir/$rel"
+        sudo cp -a "$dir/." "$in_chroot_workdir/$rel/"
+        private_args+=("-l/$rel_workdir/$rel")
+        i=$((i+1))
+    done
     sudo cp "$subst_abs" "$in_chroot_workdir/substvars" 2>/dev/null || true
 
+    local shlibdeps_args=(--ignore-missing-info "${private_args[@]}" -Tsubstvars -pshlibs "${elf_args[@]}")
     sudo chroot "$chroot_root" \
-        /bin/sh -c "cd /$rel_workdir && dpkg-shlibdeps --ignore-missing-info -Tsubstvars -pshlibs $(printf ' %q' "${elf_args[@]}")"
+        /bin/sh -c "cd /$rel_workdir && dpkg-shlibdeps $(printf ' %q' "${shlibdeps_args[@]}")"
     local rc=$?
     if [[ $rc -eq 0 && -f "$in_chroot_workdir/substvars" ]]; then
         sudo cp "$in_chroot_workdir/substvars" "$subst_abs"
     fi
     sudo rm -rf "$in_chroot_workdir"
     return $rc
+}
+
+stage_cora_sdk_runtime() {
+    # The Cora SDK archive is committed as a prebuild tarball and extracted
+    # by Makefile's prepare-cora-sdk target. Package only the runtime
+    # closure that coracam needs, not the SDK headers, CMake metadata,
+    # Python bindings, or debug object trees. arm64-only; the SDK ships no
+    # x86_64 libs.
+    local root="$1"
+    [[ "$DEB_ARCH" == "arm64" ]] || return 0
+    [[ -x "$root/usr/bin/rollio-device-coracam" ]] || return 0
+
+    local src="$CORA_SDK_ROOT"
+    [[ -d "$src/lib" ]] || die "missing Cora SDK lib dir: $src/lib -- run \`make prepare-cora-sdk\`"
+
+    log "Staging Cora SDK runtime from $src -> $root/opt/cora"
+    install -d "$root/opt/cora/lib"
+    cp -a "$src/lib"/*.so* "$root/opt/cora/lib/"
+    if [[ -d "$src/lib/cora_framework" ]]; then
+        cp -a "$src/lib/cora_framework" "$root/opt/cora/lib/"
+    fi
+    if [[ -d "$src/share" ]]; then
+        cp -a "$src/share" "$root/opt/cora/"
+    fi
 }
 
 extract_shlibs_depends() {
@@ -355,6 +406,7 @@ build_core() {
             warn "skipping $entry (not built; ROLLIO_SKIP_CAMERAS=1)"
         fi
     done
+    stage_cora_sdk_runtime "$CORE_STAGING"
     cp -a ui/web/dist      "$CORE_STAGING/usr/share/rollio/ui/web/dist"
     cp -a ui/terminal/dist "$CORE_STAGING/usr/share/rollio/ui/terminal/dist"
 
