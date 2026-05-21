@@ -386,3 +386,116 @@ lt = 28.0
 # occurred = true
 # gap = 5.0
 # repeated = false
+
+# -----------------------------------------------------------------------------
+# Runtime — process-wide toggles forwarded to every pipeline child via env vars.
+# -----------------------------------------------------------------------------
+[runtime]
+# Verbose per-frame telemetry on the encoder, visualizer, and assembler.
+# Forwarded as ROLLIO_ADVANCED_PIPELINE_LOGS=1 to subprocesses; can also be
+# flipped at run time by setting that env var directly. (default: false)
+advanced_pipeline_logs = false
+
+# =============================================================================
+# Cora SDK device examples (commented out by default — uncomment after the
+# Cora runtime is installed via `make prepare-cora-sdk`).
+#
+# These four drivers all build on the same Cora SDK C++ shim and read
+# ROLLIO_DDS_DOMAIN_ID from their inherited environment so a single
+# `ROLLIO_DDS_DOMAIN_ID=5 rollio collect ...` shifts every cora process to
+# DDS domain 5. The per-device `dds_domain_id` below pins the domain when
+# the env var isn't set.
+# =============================================================================
+
+# --- camera-cora: H.264 bridge multiplexing head / lefthand / righthand ------
+#
+# [[devices]]
+# name = "cora_cam"
+# executable = "rollio-device-coracam"
+# driver = "coracam"
+# id = "cora-head"
+# bus_root = "cora_cam"
+# # DDS knobs (all optional; SDK defaults apply when unset)
+# dds_domain_id = 0
+# dds_shm_segment_size = 2097152
+# dds_callback_threads = 4
+#
+# [[devices.channels]]
+# channel_type = "rgb"
+# kind = "camera"
+# enabled = true
+# # H.264 Annex-B passthrough: the encoder skips re-encoding the preview tap.
+# preview_enabled = false
+# record_enabled = true
+# profile = { width = 1280, height = 720, fps = 30, pixel_format = "h264_annex_b" }
+# [devices.channels.extra]
+# # cora_topic / cora_qos can also come from the driver's `query --json`; the
+# # values here win on the next save.
+# cora_topic = "/cora/head/image_h264"
+# cora_qos = "best_effort"
+
+# --- imu-cora: sensor_msgs::Imu → ImuAccelGyro (6 f32 per sample) ------------
+#
+# [[devices]]
+# name = "imu_left"
+# executable = "rollio-device-imu-cora"
+# driver = "imu-cora"
+# id = "cora-imu-left"
+# bus_root = "imu_left"
+#
+# [[devices.channels]]
+# channel_type = "imu"
+# kind = "sensor"
+# enabled = true
+# sample_rate_hz = 200
+# # Sensor channels publish via `publish_sensors`, not `publish_states`.
+# publish_sensors = ["imu_accel_gyro"]
+# [devices.channels.extra]
+# cora_topic = "/cora/left_arm/imu"
+# cora_qos = "best_effort"
+
+# --- tactile-cora: sensor_msgs::PointCloud2 → TactilePointCloud2 (N×6) -------
+#
+# [[devices]]
+# name = "tactile_finger"
+# executable = "rollio-device-tactile-cora"
+# driver = "tactile-cora"
+# id = "cora-tactile-rh"
+# bus_root = "tactile_finger"
+#
+# [[devices.channels]]
+# channel_type = "tactile"
+# kind = "sensor"
+# enabled = true
+# sample_rate_hz = 100
+# publish_sensors = ["tactile_point_cloud2"]
+# [devices.channels.extra]
+# cora_topic = "/cora/finger/tactile_pc2"
+# cora_qos = "best_effort"
+# # 6 PointCloud2 field names mapped to the fixed [x, y, z, fx, fy, fz] layout.
+# pointcloud_field_map = ["x", "y", "z", "fx", "fy", "fz"]
+# # Fixed per-channel point count (drives the iceoryx2 sample sizing).
+# tactile_point_count = 16
+
+# --- gripper-cora: sensor_msgs::JointState → single-joint robot channel ------
+#
+# [[devices]]
+# name = "gripper_left"
+# executable = "rollio-device-gripper-cora"
+# driver = "gripper-cora"
+# id = "cora-gripper-l"
+# bus_root = "gripper_left"
+#
+# [[devices.channels]]
+# channel_type = "gripper"
+# kind = "robot"
+# enabled = true
+# dof = 1
+# mode = "command-following"
+# control_frequency_hz = 50
+# publish_states = ["joint_position", "joint_velocity", "joint_effort"]
+# recorded_states = ["joint_position"]
+# [devices.channels.extra]
+# cora_topic = "/cora/left_arm/gripper/joint_states"
+# # Selects which entry in JointState.name[] maps to the single Rollio joint.
+# joint_name = "gripper_finger_joint"
