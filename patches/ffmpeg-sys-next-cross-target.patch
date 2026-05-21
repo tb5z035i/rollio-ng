@@ -1,23 +1,31 @@
-Compile the ffmpeg-sys-next `check.c` version-detection probe for the
-target architecture instead of forcing it to host arch.
+Remap cross-compile include paths so the ffmpeg-sys-next feature probe
+compiles for the host architecture (no QEMU required).
 
-Upstream (zmwangx/rust-ffmpeg-sys 8.1.0) hard-codes
-`.target(&env::var("HOST").unwrap())` so the runtime probe binary can
-execute on the build host. This breaks cross-compilation on Linux:
-the probe is fed target-arch headers from pkg-config (e.g. arm64
-`/usr/include/aarch64-linux-gnu/libavutil/...`) but compiled by the
-host x86_64 clang, which chokes on aarch64-only attributes such as
-`__neon_vector_type__` and `__SVFloat32_t` in glibc 2.39's
-`<bits/math-vector.h>`.
+Upstream (zmwangx/rust-ffmpeg-sys 8.1.0) compiles the `check.c` feature
+probe with `.target(env::var("HOST"))` so the resulting ELF executes
+natively on the build host. This is correct in spirit -- the probe only
+reads compile-time `#define` constants from ffmpeg headers (feature
+flags, version macros), which are architecture-independent.
 
-The fix is one line: compile the probe for the target arch. The
-resulting target-arch ELF is then executed by the build script as
-usual; on Linux hosts with `qemu-user-static` + `binfmt_misc`
-registered the kernel routes the foreign-arch binary through QEMU
-emulation transparently. Rollio's `make deps TARGET_ARCH=arm64`
-recipe installs the qemu apt packages for host builds. Docker builds
-also need binfmt registered on the Docker host, e.g.
-`docker run --privileged --rm tonistiigi/binfmt --install arm64`.
+But cross-compile breaks because pkg-config returns the *target's*
+arch-specific include paths (e.g. `/usr/include/aarch64-linux-gnu`).
+Passing those to the host x86_64 compiler pulls in foreign-arch system
+headers transitively -- glibc 2.39's `<bits/math-vector.h>` declares
+`__neon_vector_type__` / `__SVFloat32_t` SVE types, and the host clang
+chokes.
+
+This patch remaps the target arch directory in each `-I` path to the
+host arch equivalent (e.g. `aarch64-linux-gnu` → `x86_64-linux-gnu`).
+The ffmpeg headers are byte-identical between Ubuntu's amd64 and arm64
+libavcodec-dev packages of the same version, so the probe produces the
+same feature-detection output. The host compiler now only sees its
+own system headers and compiles cleanly.
+
+Why not require qemu-user-static + binfmt: container/CI environments
+often lack the privileged binfmt registration step, and our Docker
+image already ships qemu-user-static but Docker hosts on bare metal
+frequently don't have it installed. Compiling natively removes the
+whole dependency chain.
 
 Patched into the vendored submodule by `make apply-vendored-patches`
 (invoked transitively by `rust-build` / `rust-test` / `rust-lint`).
@@ -25,17 +33,40 @@ Idempotent: skipped if the patched marker is already present.
 
 --- a/build.rs
 +++ b/build.rs
-@@ -788,7 +788,12 @@ fn check_features(
-     .expect("Write failed");
-
-     let executable = out_dir.join(if cfg!(windows) { "check.exe" } else { "check" });
-+    // Cross-compile the probe for the target arch. The resulting binary is
-+    // executed below; on Linux hosts with qemu-user-static + binfmt_misc
-+    // registered, foreign-arch binaries run transparently via QEMU emulation
-+    // (host builds: `make deps TARGET_ARCH=<arch>`; Docker builds: register
-+    // binfmt on the Docker host before running the cross image).
-     let mut compiler = cc::Build::new()
--        .target(&env::var("HOST").unwrap()) // don't cross-compile this
-+        .target(&env::var("TARGET").unwrap())
+@@ -793,9 +793,35 @@ fn check_features(
          .get_compiler()
          .to_command();
+
++    // When cross-compiling, pkg-config returns include paths for the target
++    // arch (e.g. /usr/include/aarch64-linux-gnu). Passing those to the host
++    // compiler pulls in foreign-arch system headers that fail to compile
++    // (aarch64 NEON intrinsics, SVE types, etc.). Since ffmpeg's public
++    // headers are arch-independent, remap target include paths to the host
++    // equivalent so the probe compiles natively.
++    let host = env::var("HOST").unwrap_or_default();
++    let target = env::var("TARGET").unwrap_or_default();
++    let cross = host != target;
++    let host_arch_dir = if host.starts_with("x86_64") {
++        "x86_64-linux-gnu"
++    } else if host.starts_with("aarch64") {
++        "aarch64-linux-gnu"
++    } else {
++        ""
++    };
++
+     for dir in include_paths {
+         compiler.arg("-I");
+-        compiler.arg(dir.to_string_lossy().into_owned());
++        let dir_str = dir.to_string_lossy().into_owned();
++        if cross && !host_arch_dir.is_empty() {
++            let remapped = dir_str
++                .replace("aarch64-linux-gnu", host_arch_dir)
++                .replace("x86_64-linux-gnu", host_arch_dir)
++                .replace("arm-linux-gnueabihf", host_arch_dir);
++            compiler.arg(remapped);
++        } else {
++            compiler.arg(dir_str);
++        }
+     }
+     if !compiler
+         .current_dir(&out_dir)

@@ -42,3 +42,5 @@ robots/nero/build
 rollio-logs/
 
 **/node_modules
+# Cross-compile sysroot (populated from prebuilt/ by scripts/setup-sysroot.sh)
+.sysroot/

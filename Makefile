@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt package set-env deps clean distclean
+.PHONY: build test lint fmt package set-env deps clean distclean sysroot
 
 # Top-level verbs. `make` with no args runs `build` -- it is the first
 # target declared below.
@@ -115,7 +115,7 @@ endif
 
 # ── Aggregate verbs ──────────────────────────────────────────────────
 
-build: rust-build cpp-build ui-build
+build: sysroot rust-build cpp-build ui-build
 
 # `cargo test` / `ctest` / `npm test` / `pytest` cannot run aarch64
 # binaries on an amd64 host without a runner shim, so cross-target tests
@@ -151,6 +151,9 @@ set-env:
 	@echo 'export PATH="$(CURDIR)/$(TARGET_BUILD_DIR):$$PATH"'
 	@echo 'export ROLLIO_SHARE_DIR="$(CURDIR)"'
 	@echo 'export ROLLIO_BFBS_DIR="$(CURDIR)/bfbs"'
+
+sysroot:
+	@scripts/setup-sysroot.sh
 
 # Apt-side prereqs. The host (amd64) list is always installed; arm64
 # layers the cross toolchain + multiarch :arm64 dev libs on top.
@@ -288,11 +291,11 @@ apply-airbot-pinocchio-patch:
 # ffmpeg-sys-next 8.1.0 hard-codes the version-detection probe to compile
 # for the host arch (`.target(env::var("HOST"))`). Cross builds need it
 # compiled for the target arch instead -- on Linux hosts with
-# qemu-user-static + binfmt_misc registered (installed by `make deps
-# TARGET_ARCH=arm64`), the resulting target ELF runs transparently via
-# QEMU. Workspace Cargo.toml's [patch.crates-io] points
-# `ffmpeg-sys-next` at the vendored submodule; this target applies the
-# one-line fix to that submodule's build.rs.
+# Workspace Cargo.toml's [patch.crates-io] points `ffmpeg-sys-next` at
+# the vendored submodule; this target applies the cross-compile fix to
+# that submodule's build.rs. The patch remaps the target's include
+# paths to the host arch so the feature-probe binary compiles natively
+# on the build host (no qemu binfmt required).
 FFMPEG_SYS_CROSS_PATCH := patches/ffmpeg-sys-next-cross-target.patch
 FFMPEG_SYS_DIR         := third_party/ffmpeg-sys-next
 
@@ -301,12 +304,10 @@ apply-ffmpeg-sys-cross-patch:
 		|| (echo "missing $(FFMPEG_SYS_CROSS_PATCH)" >&2; exit 1)
 	@test -d "$(FFMPEG_SYS_DIR)" \
 		|| (echo "missing $(FFMPEG_SYS_DIR); run git submodule update --init --recursive" >&2; exit 1)
-	@# Idempotency marker: the patched line replaces .target(env::var("HOST"))
-	@# with .target(env::var("TARGET")). We grep for the latter at the
-	@# call site (note the `.target(&env::var(` prefix -- it disambiguates
-	@# from the unrelated `let target = env::var("TARGET").unwrap();` at
-	@# build.rs:295).
-	@if ! grep -Fq '.target(&env::var("TARGET").unwrap())' "$(FFMPEG_SYS_DIR)/build.rs"; then \
+	@# Idempotency marker: the patch injects a `cross` variable and
+	@# remap logic just before the include-path loop. Grep for a unique
+	@# token from the patched block.
+	@if ! grep -Fq 'let host_arch_dir = if host.starts_with' "$(FFMPEG_SYS_DIR)/build.rs"; then \
 		patch --batch --no-backup-if-mismatch -d "$(FFMPEG_SYS_DIR)" -p1 < "$(FFMPEG_SYS_CROSS_PATCH)"; \
 	fi
 
