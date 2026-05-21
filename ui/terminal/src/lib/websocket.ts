@@ -334,7 +334,9 @@ export function usePreviewSocket(
     new Map(),
   );
   const streamInfoRef = useRef<StreamInfoMessage | null>(null);
-  const dirtyRef = useRef(false);
+  const framesDirtyRef = useRef(false);
+  const robotChannelsDirtyRef = useRef(false);
+  const streamInfoDirtyRef = useRef(false);
   const frameSequenceRef = useRef(0);
 
   const handlers = useRef<ReconnectHandlers>({
@@ -350,7 +352,9 @@ export function usePreviewSocket(
         robotChannelsRef.current = new Map();
         streamInfoRef.current = null;
         frameSequenceRef.current = 0;
-        dirtyRef.current = true;
+        framesDirtyRef.current = true;
+        robotChannelsDirtyRef.current = true;
+        streamInfoDirtyRef.current = true;
         setGauge("ws.frame_count", 0);
         setGauge("ws.robot_state_count", 0);
       }
@@ -379,7 +383,7 @@ export function usePreviewSocket(
         receivedAtWallTimeMs,
         sequence,
       });
-      dirtyRef.current = true;
+      framesDirtyRef.current = true;
       incrementGauge("ws.frames_received_total");
       incrementGauge(`ws.frames_received_total.${msg.name}`);
       setGauge("ws.frame_count", framesRef.current.size);
@@ -393,12 +397,12 @@ export function usePreviewSocket(
       recordTiming("ws.parse.json", nowMs() - parseStartMs);
       if (msg?.type === "robot_state") {
         applyRobotStateSample(robotChannelsRef.current, msg);
-        dirtyRef.current = true;
+        robotChannelsDirtyRef.current = true;
         incrementGauge("ws.robot_messages_total");
         setGauge("ws.robot_state_count", robotChannelsRef.current.size);
       } else if (msg?.type === "stream_info") {
         streamInfoRef.current = msg;
-        dirtyRef.current = true;
+        streamInfoDirtyRef.current = true;
         setGauge("ws.stream_info_status", "Ready");
         setGauge("ws.preview_output_mode", msg.preview_output_mode);
         setGauge(
@@ -415,12 +419,17 @@ export function usePreviewSocket(
     setGauge("ws.preview.connected", "Disconnected");
 
     const flushInterval = setInterval(() => {
-      if (!dirtyRef.current) return;
+      const framesDirty = framesDirtyRef.current;
+      const robotDirty = robotChannelsDirtyRef.current;
+      const streamDirty = streamInfoDirtyRef.current;
+      if (!framesDirty && !robotDirty && !streamDirty) return;
       const flushStartMs = nowMs();
-      dirtyRef.current = false;
-      setFrames(new Map(framesRef.current));
-      setRobotChannels(new Map(robotChannelsRef.current));
-      setStreamInfo(streamInfoRef.current);
+      framesDirtyRef.current = false;
+      robotChannelsDirtyRef.current = false;
+      streamInfoDirtyRef.current = false;
+      if (framesDirty) setFrames(new Map(framesRef.current));
+      if (robotDirty) setRobotChannels(new Map(robotChannelsRef.current));
+      if (streamDirty) setStreamInfo(streamInfoRef.current);
       recordTiming("ws.flush", nowMs() - flushStartMs);
       setGauge("ws.frame_count", framesRef.current.size);
       setGauge("ws.robot_state_count", robotChannelsRef.current.size);
