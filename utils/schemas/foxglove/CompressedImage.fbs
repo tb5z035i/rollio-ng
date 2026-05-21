@@ -16,7 +16,7 @@ table CompressedImage {
   data:[uint8] (id: 2);
 
   /// Image format
-  /// 
+  ///
   /// Supported values: `jpeg`, `png`, `webp`, `avif`
   format:string (id: 3);
 }

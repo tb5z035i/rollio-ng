@@ -26,6 +26,7 @@ Fix: drop the per-file `pub mod foxglove { ... }` wrapper and all the
 `pub mod foxglove { ... }` at crate root. All types live under
 `crate::fbs_foxglove::foxglove::*` after this.
 """
+
 from __future__ import annotations
 
 import re
@@ -118,11 +119,7 @@ def merge(src_dir: Path, out_path: Path, namespace: str) -> int:
     # `discover` schemas reference `super::foxglove::Time` etc. — pull the
     # foxglove module into scope at the file level so `super::foxglove`
     # resolves from inside `pub mod discover`. No-op for foxglove itself.
-    cross_use = (
-        "pub use crate::fbs_foxglove::foxglove;\n\n"
-        if namespace != "foxglove"
-        else ""
-    )
+    cross_use = "pub use crate::fbs_foxglove::foxglove;\n\n" if namespace != "foxglove" else ""
     header = (
         f"// AUTO-MERGED by tools/merge_fbs.py — DO NOT EDIT BY HAND.\n"
         f"// Inputs: src/fbs/*_generated.rs (verbatim flatc output)\n"

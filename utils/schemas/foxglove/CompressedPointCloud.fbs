@@ -20,7 +20,7 @@ table CompressedPointCloud {
   data:[uint8] (id: 3);
 
   /// Point cloud compression format.
-  /// 
+  ///
   /// Supported values: `draco` ([Google Draco](https://google.github.io/draco/)).
   format:string (id: 4);
 }
