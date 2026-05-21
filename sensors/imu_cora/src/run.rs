@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    channel_mode_info_service_name, channel_sample_service_name, CONTROL_EVENTS_SERVICE,
+    channel_mode_info_service_name, channel_sample_service_name, CONTROL_EVENTS_MAX_NODES,
+    CONTROL_EVENTS_MAX_PUBLISHERS, CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE,
     SAMPLE_BUFFER, SAMPLE_MAX_NODES, SAMPLE_MAX_PUBLISHERS, SAMPLE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
@@ -312,6 +313,9 @@ fn open_shutdown_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()
         .map_err(|e| -> Box<dyn Error + Send + Sync> {
             format!("imu-cora: open_or_create control/events: {e}").into()

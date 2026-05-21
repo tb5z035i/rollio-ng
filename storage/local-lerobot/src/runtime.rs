@@ -1,6 +1,10 @@
 use clap::Args;
 use iceoryx2::prelude::*;
-use rollio_bus::{CONTROL_EVENTS_SERVICE, EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE};
+use rollio_bus::{
+    CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS, CONTROL_EVENTS_MAX_SUBSCRIBERS,
+    CONTROL_EVENTS_SERVICE, EPISODE_LIFECYCLE_MAX_NODES, EPISODE_LIFECYCLE_MAX_PUBLISHERS,
+    EPISODE_LIFECYCLE_MAX_SUBSCRIBERS, EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE,
+};
 use rollio_types::config::{StorageBackend, StorageRuntimeConfig};
 use rollio_types::messages::{ControlEvent, EpisodeReady, EpisodeStored, FixedString256};
 use serde::{Deserialize, Serialize};
@@ -183,6 +187,9 @@ fn create_control_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -195,6 +202,9 @@ fn create_episode_ready_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeReady>()
+        .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+        .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+        .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -206,6 +216,9 @@ fn create_episode_stored_publisher(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeStored>()
+        .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+        .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+        .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
 }

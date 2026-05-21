@@ -9,7 +9,8 @@ use clap::{Args, Parser, Subcommand};
 use iceoryx2::prelude::*;
 use rollio_bus::{
     channel_command_service_name, channel_mode_control_service_name,
-    channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_SERVICE,
+    channel_mode_info_service_name, channel_state_service_name, CONTROL_EVENTS_MAX_NODES,
+    CONTROL_EVENTS_MAX_PUBLISHERS, CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE,
     STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS,
 };
 use rollio_types::config::{
@@ -1256,6 +1257,9 @@ fn open_shutdown_subscriber(
     let control_service = node
         .service_builder(&control_service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()?;
     Ok(control_service.subscriber_builder().create()?)
 }

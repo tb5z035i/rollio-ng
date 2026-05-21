@@ -18,7 +18,8 @@ use crate::runtime_paths::{
 use crate::runtime_plan::build_control_server_spec;
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    channel_mode_control_service_name, CONTROL_EVENTS_SERVICE, SETUP_COMMAND_SERVICE,
+    channel_mode_control_service_name, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE, SETUP_COMMAND_SERVICE,
     SETUP_STATE_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
@@ -633,9 +634,9 @@ impl SetupIpc {
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
-            .max_publishers(4)
-            .max_subscribers(32)
-            .max_nodes(32)
+            .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+            .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+            .max_nodes(CONTROL_EVENTS_MAX_NODES)
             .open_or_create()?;
 
         Ok(Self {

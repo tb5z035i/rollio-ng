@@ -29,8 +29,10 @@ use crate::preview::{JpegCompressor, PreviewBuilder};
 use crate::sink::{IpcPreviewJpegSink, IpcPreviewPacketSink};
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
-use rollio_bus::CAMERA_FRAMES_MAX_SUBSCRIBERS;
-use rollio_bus::CONTROL_EVENTS_SERVICE;
+use rollio_bus::{
+    CAMERA_FRAMES_MAX_SUBSCRIBERS, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE,
+};
 use rollio_types::config::{
     EncoderRuntimeConfigV2, PreviewEncoderConfig, PreviewOutputMode, PreviewResizePolicy,
 };
@@ -330,6 +332,9 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     let control_service = node
         .service_builder(&control_service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()
         .map_err(map_iceoryx_error)?;
     let control_subscriber = control_service

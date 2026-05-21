@@ -41,6 +41,47 @@ pub const STATE_MAX_SUBSCRIBERS: usize = 16;
 /// Default `max_nodes` cap for state / command services.
 pub const STATE_MAX_NODES: usize = 16;
 
+/// `max_publishers` cap for the global `CONTROL_EVENTS_SERVICE` fan-out bus.
+///
+/// `CONTROL_EVENTS_SERVICE` is opened with `open_or_create()` by every rollio
+/// process (controller, visualizer, assemblers, storage, encoders, every
+/// device/sensor bridge). iceoryx2 rejects `open_or_create` calls whose
+/// attributes do not match the existing service, so every caller must agree
+/// on these three caps. The controller is the typical publisher; everything
+/// else subscribes. Values match the historical hard-coded controller config.
+pub const CONTROL_EVENTS_MAX_PUBLISHERS: usize = 4;
+
+/// `max_subscribers` cap for the global `CONTROL_EVENTS_SERVICE` fan-out bus.
+pub const CONTROL_EVENTS_MAX_SUBSCRIBERS: usize = 32;
+
+/// `max_nodes` cap for the global `CONTROL_EVENTS_SERVICE` fan-out bus.
+pub const CONTROL_EVENTS_MAX_NODES: usize = 32;
+
+/// `max_publishers` cap for `BACKPRESSURE_SERVICE`. Opened by encoder
+/// (per-camera, one publisher each), assembler, controller, and
+/// control-server. Like `CONTROL_EVENTS_*` every opener must agree on
+/// attributes or `open_or_create` returns `ServiceInCorruptedState`.
+pub const BACKPRESSURE_MAX_PUBLISHERS: usize = 16;
+
+/// `max_subscribers` cap for `BACKPRESSURE_SERVICE`.
+pub const BACKPRESSURE_MAX_SUBSCRIBERS: usize = 8;
+
+/// `max_nodes` cap for `BACKPRESSURE_SERVICE`.
+pub const BACKPRESSURE_MAX_NODES: usize = 16;
+
+/// `max_publishers` cap for the episode-lifecycle services
+/// (`EPISODE_READY_SERVICE`, `EPISODE_STORED_SERVICE`,
+/// `EPISODE_DROPPED_SERVICE`). The assembler publishes ready/dropped,
+/// storage publishes stored, controller subscribes to all three. Every
+/// opener must agree on attributes.
+pub const EPISODE_LIFECYCLE_MAX_PUBLISHERS: usize = 8;
+
+/// `max_subscribers` cap for the episode-lifecycle services.
+pub const EPISODE_LIFECYCLE_MAX_SUBSCRIBERS: usize = 8;
+
+/// `max_nodes` cap for the episode-lifecycle services.
+pub const EPISODE_LIFECYCLE_MAX_NODES: usize = 16;
+
 /// Subscriber buffer for the strict per-camera recording packet topic.
 /// Recording packets cannot be dropped without corrupting the resulting
 /// video container, so producers configure these services with safe

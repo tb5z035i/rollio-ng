@@ -15,7 +15,11 @@ use crate::codec::{open_session, CodecSessionParams, EncoderSession, OwnedFrame}
 use crate::error::{map_iceoryx_error, EncoderError, Result};
 use crate::sink::IpcRecordingSink;
 use iceoryx2::prelude::*;
-use rollio_bus::{BACKPRESSURE_SERVICE, CAMERA_FRAMES_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE};
+use rollio_bus::{
+    BACKPRESSURE_MAX_NODES, BACKPRESSURE_MAX_PUBLISHERS, BACKPRESSURE_MAX_SUBSCRIBERS,
+    BACKPRESSURE_SERVICE, CAMERA_FRAMES_MAX_SUBSCRIBERS, CONTROL_EVENTS_MAX_NODES,
+    CONTROL_EVENTS_MAX_PUBLISHERS, CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE,
+};
 use rollio_types::config::EncoderRuntimeConfigV2;
 use rollio_types::messages::{BackpressureEvent, CameraFrameHeader, ControlEvent, FixedString64};
 use std::sync::mpsc;
@@ -71,6 +75,9 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     let control_service = node
         .service_builder(&control_service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()
         .map_err(map_iceoryx_error)?;
     let control_subscriber = control_service
@@ -83,9 +90,9 @@ pub fn run(config: EncoderRuntimeConfigV2) -> Result<()> {
     let backpressure_service = node
         .service_builder(&backpressure_service_name)
         .publish_subscribe::<BackpressureEvent>()
-        .max_publishers(16)
-        .max_subscribers(8)
-        .max_nodes(16)
+        .max_publishers(BACKPRESSURE_MAX_PUBLISHERS)
+        .max_subscribers(BACKPRESSURE_MAX_SUBSCRIBERS)
+        .max_nodes(BACKPRESSURE_MAX_NODES)
         .open_or_create()
         .map_err(map_iceoryx_error)?;
     let backpressure_publisher = backpressure_service

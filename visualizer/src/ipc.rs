@@ -18,7 +18,8 @@
 use iceoryx2::prelude::*;
 use rollio_bus::{
     preview_config_service_name, preview_control_service_name, preview_jpeg_service_name,
-    preview_packet_service_name, CONTROL_EVENTS_SERVICE, PREVIEW_PACKET_BUFFER, STATE_BUFFER,
+    preview_packet_service_name, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE, PREVIEW_PACKET_BUFFER, STATE_BUFFER,
     STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
@@ -232,6 +233,9 @@ impl IpcPoller {
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
+            .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+            .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+            .max_nodes(CONTROL_EVENTS_MAX_NODES)
             .open_or_create()?;
         let control_subscriber = control_service.subscriber_builder().create()?;
 

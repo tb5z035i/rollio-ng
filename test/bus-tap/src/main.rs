@@ -3,6 +3,7 @@ use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
     camera_frames_service_name, robot_command_service_name, robot_state_service_name,
+    CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS, CONTROL_EVENTS_MAX_SUBSCRIBERS,
     CONTROL_EVENTS_SERVICE, EPISODE_STATUS_SERVICE,
 };
 use rollio_types::messages::{
@@ -140,6 +141,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let control_service = node
         .service_builder(&control_service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()?;
     let control_subscriber = control_service.subscriber_builder().create()?;
 

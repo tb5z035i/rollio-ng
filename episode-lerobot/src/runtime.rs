@@ -22,9 +22,12 @@ use clap::Args;
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE, EPISODE_READY_SERVICE,
-    EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
-    STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
+    BACKPRESSURE_MAX_NODES, BACKPRESSURE_MAX_PUBLISHERS, BACKPRESSURE_MAX_SUBSCRIBERS,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE,
+    EPISODE_LIFECYCLE_MAX_NODES, EPISODE_LIFECYCLE_MAX_PUBLISHERS,
+    EPISODE_LIFECYCLE_MAX_SUBSCRIBERS, EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE, STATE_BUFFER,
+    STATE_MAX_NODES, STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
@@ -659,6 +662,9 @@ fn create_control_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<ControlEvent>()
+        .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+        .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+        .max_nodes(CONTROL_EVENTS_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -670,6 +676,9 @@ fn create_episode_ready_publisher(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeReady>()
+        .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+        .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+        .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
 }
@@ -682,6 +691,9 @@ fn create_backpressure_publisher(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<BackpressureEvent>()
+        .max_publishers(BACKPRESSURE_MAX_PUBLISHERS)
+        .max_subscribers(BACKPRESSURE_MAX_SUBSCRIBERS)
+        .max_nodes(BACKPRESSURE_MAX_NODES)
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
 }
@@ -694,6 +706,9 @@ fn create_episode_dropped_publisher(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeDropped>()
+        .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+        .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+        .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
         .open_or_create()?;
     Ok(service.publisher_builder().create()?)
 }
@@ -706,6 +721,9 @@ fn create_episode_stored_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeStored>()
+        .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+        .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+        .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }

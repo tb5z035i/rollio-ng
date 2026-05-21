@@ -7,6 +7,7 @@
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
+    BACKPRESSURE_MAX_NODES, BACKPRESSURE_MAX_PUBLISHERS, BACKPRESSURE_MAX_SUBSCRIBERS,
     BACKPRESSURE_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_STATUS_SERVICE, SETUP_COMMAND_SERVICE,
     SETUP_STATE_SERVICE,
 };
@@ -113,6 +114,9 @@ impl RoleIo {
                 let backpressure_service = node
                     .service_builder(&backpressure_service_name)
                     .publish_subscribe::<BackpressureEvent>()
+                    .max_publishers(BACKPRESSURE_MAX_PUBLISHERS)
+                    .max_subscribers(BACKPRESSURE_MAX_SUBSCRIBERS)
+                    .max_nodes(BACKPRESSURE_MAX_NODES)
                     .open_or_create()?;
                 let backpressure_subscriber = backpressure_service.subscriber_builder().create()?;
 

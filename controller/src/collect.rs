@@ -10,8 +10,11 @@ use crate::runtime_paths::{
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_DROPPED_SERVICE,
-    EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
+    BACKPRESSURE_MAX_NODES, BACKPRESSURE_MAX_PUBLISHERS, BACKPRESSURE_MAX_SUBSCRIBERS,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE,
+    EPISODE_DROPPED_SERVICE, EPISODE_LIFECYCLE_MAX_NODES, EPISODE_LIFECYCLE_MAX_PUBLISHERS,
+    EPISODE_LIFECYCLE_MAX_SUBSCRIBERS, EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
 use rollio_types::messages::{
@@ -324,9 +327,9 @@ impl ControllerIpc {
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
-            .max_publishers(4)
-            .max_subscribers(32)
-            .max_nodes(32)
+            .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+            .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+            .max_nodes(CONTROL_EVENTS_MAX_NODES)
             .open_or_create()?;
 
         let command_service_name: ServiceName = EPISODE_COMMAND_SERVICE.try_into()?;
@@ -351,27 +354,27 @@ impl ControllerIpc {
         let backpressure_service = node
             .service_builder(&backpressure_service_name)
             .publish_subscribe::<BackpressureEvent>()
-            .max_publishers(16)
-            .max_subscribers(8)
-            .max_nodes(16)
+            .max_publishers(BACKPRESSURE_MAX_PUBLISHERS)
+            .max_subscribers(BACKPRESSURE_MAX_SUBSCRIBERS)
+            .max_nodes(BACKPRESSURE_MAX_NODES)
             .open_or_create()?;
 
         let stored_service_name: ServiceName = EPISODE_STORED_SERVICE.try_into()?;
         let stored_service = node
             .service_builder(&stored_service_name)
             .publish_subscribe::<EpisodeStored>()
-            .max_publishers(8)
-            .max_subscribers(8)
-            .max_nodes(16)
+            .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+            .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+            .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
             .open_or_create()?;
 
         let dropped_service_name: ServiceName = EPISODE_DROPPED_SERVICE.try_into()?;
         let dropped_service = node
             .service_builder(&dropped_service_name)
             .publish_subscribe::<EpisodeDropped>()
-            .max_publishers(8)
-            .max_subscribers(8)
-            .max_nodes(16)
+            .max_publishers(EPISODE_LIFECYCLE_MAX_PUBLISHERS)
+            .max_subscribers(EPISODE_LIFECYCLE_MAX_SUBSCRIBERS)
+            .max_nodes(EPISODE_LIFECYCLE_MAX_NODES)
             .open_or_create()?;
 
         Ok(Self {
