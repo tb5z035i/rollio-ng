@@ -146,6 +146,13 @@ pub(super) struct DiscoveredChannelMeta {
     #[serde(default)]
     pub(super) sensor_shape_hints:
         std::collections::BTreeMap<rollio_types::config::SensorStateKind, Vec<u32>>,
+    /// Free-form per-channel metadata the driver carries on
+    /// `query --json -> channels[*].optional_info`. The wizard merges
+    /// this into `DeviceChannelConfigV2.extra` so driver-reported fields
+    /// (cora_topic, pointcloud_field_map, joint_name, ...) reach the
+    /// runtime without operator intervention.
+    #[serde(default)]
+    pub(super) optional_info: toml::Table,
 }
 
 pub(super) fn default_channel_kind() -> DeviceType {

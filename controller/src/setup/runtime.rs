@@ -432,6 +432,13 @@ pub(super) fn run_interactive_setup(
             }
 
             if session.should_exit() {
+                // The last publish_state_json carried status=Saved (or
+                // Cancelled) and the colored "Saved <path>" toast. Give
+                // the TUI a beat to receive the WS frame, flush its
+                // 16ms batch, and paint before terminate_children sends
+                // SIGTERM — otherwise the operator sees a frozen screen
+                // even though the config wrote successfully.
+                thread::sleep(SETUP_UI_SUCCESS_DELAY);
                 break;
             }
 

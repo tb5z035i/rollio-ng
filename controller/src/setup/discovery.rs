@@ -16,7 +16,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
-pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(2_000);
+pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(5_000);
 pub(super) const VALIDATION_TIMEOUT: Duration = Duration::from_millis(1_000);
 
 /// One channel + chosen profile + final user-visible name for a camera
@@ -116,7 +116,7 @@ pub(super) fn build_channel_config_from_meta(
                 publish_sensors: Vec::new(),
                 sample_rate_hz: None,
                 sensor_shape_hints: Default::default(),
-                extra: toml::Table::new(),
+                extra: meta.optional_info.clone(),
             }
         }
         DeviceType::Robot => {
@@ -147,7 +147,7 @@ pub(super) fn build_channel_config_from_meta(
                 publish_sensors: Vec::new(),
                 sample_rate_hz: None,
                 sensor_shape_hints: Default::default(),
-                extra: toml::Table::new(),
+                extra: meta.optional_info.clone(),
             }
         }
         DeviceType::Sensor => DeviceChannelConfigV2 {
@@ -173,7 +173,7 @@ pub(super) fn build_channel_config_from_meta(
             publish_sensors: meta.supported_sensor_kinds.clone(),
             sample_rate_hz: meta.default_sample_rate_hz,
             sensor_shape_hints: meta.sensor_shape_hints.clone(),
-            extra: toml::Table::new(),
+            extra: meta.optional_info.clone(),
         },
     }
 }
@@ -843,6 +843,7 @@ pub(super) fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, Disco
             let default_sample_rate_hz = value_as_f64(channel.get("default_sample_rate_hz"));
             let sensor_shape_hints =
                 parse_query_sensor_shape_hints(channel.get("sensor_shape_hints"));
+            let optional_info = parse_query_optional_info(channel.get("optional_info"));
             Some((
                 channel_type,
                 DiscoveredChannelMeta {
@@ -861,6 +862,7 @@ pub(super) fn parse_query_channel_meta(device: &Value) -> BTreeMap<String, Disco
                     supported_sensor_kinds,
                     default_sample_rate_hz,
                     sensor_shape_hints,
+                    optional_info,
                 },
             ))
         })
@@ -901,6 +903,46 @@ fn parse_sensor_kind_name(name: &str) -> Option<rollio_types::config::SensorStat
         "imu_accel_gyro" => Some(SensorStateKind::ImuAccelGyro),
         "tactile_point_cloud2" => Some(SensorStateKind::TactilePointCloud2),
         _ => None,
+    }
+}
+
+/// Convert a driver `optional_info` JSON object to a `toml::Table` so the
+/// wizard can persist it on `DeviceChannelConfigV2.extra` without losing
+/// nested arrays/tables. Null values are dropped (TOML has no null).
+pub(super) fn parse_query_optional_info(value: Option<&Value>) -> toml::Table {
+    let mut table = toml::Table::new();
+    let Some(obj) = value.and_then(Value::as_object) else {
+        return table;
+    };
+    for (key, val) in obj {
+        if let Some(toml_val) = json_value_to_toml(val) {
+            table.insert(key.clone(), toml_val);
+        }
+    }
+    table
+}
+
+fn json_value_to_toml(value: &Value) -> Option<toml::Value> {
+    match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        Value::Number(n) => n
+            .as_i64()
+            .map(toml::Value::Integer)
+            .or_else(|| n.as_f64().map(toml::Value::Float)),
+        Value::String(s) => Some(toml::Value::String(s.clone())),
+        Value::Array(arr) => Some(toml::Value::Array(
+            arr.iter().filter_map(json_value_to_toml).collect(),
+        )),
+        Value::Object(obj) => {
+            let mut t = toml::Table::new();
+            for (k, v) in obj {
+                if let Some(tv) = json_value_to_toml(v) {
+                    t.insert(k.clone(), tv);
+                }
+            }
+            Some(toml::Value::Table(t))
+        }
     }
 }
 
@@ -977,6 +1019,15 @@ pub(super) fn enrich_current_device_from_discovery(
         if let Some(meta) = discovery.channel_meta_by_channel.get(&channel.channel_type) {
             if !meta.value_limits.is_empty() {
                 channel.value_limits = meta.value_limits.clone();
+            }
+            // Forward newly-reported driver metadata (cora_topic,
+            // pointcloud_field_map, joint_name, ...) into channel.extra
+            // without clobbering operator-edited keys.
+            for (key, value) in &meta.optional_info {
+                channel
+                    .extra
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
     }

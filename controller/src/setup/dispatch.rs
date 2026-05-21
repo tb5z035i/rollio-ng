@@ -279,6 +279,9 @@ impl SetupSession {
             "setup_cycle_collection_mode" => Ok(SessionMutation::config_changed(
                 self.cycle_collection_mode(delta)?,
             )),
+            "setup_toggle_advanced_pipeline_logs" => Ok(SessionMutation::config_changed(
+                self.toggle_advanced_pipeline_logs()?,
+            )),
             "setup_set_project_name" => {
                 let Some(value) = command.value.as_deref() else {
                     return Ok(SessionMutation::default());

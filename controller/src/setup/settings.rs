@@ -88,6 +88,12 @@ impl SetupSession {
         Ok(true)
     }
 
+    pub(super) fn toggle_advanced_pipeline_logs(&mut self) -> Result<bool, Box<dyn Error>> {
+        self.config.runtime.advanced_pipeline_logs = !self.config.runtime.advanced_pipeline_logs;
+        self.config.validate()?;
+        Ok(true)
+    }
+
     pub(super) fn set_project_name(&mut self, value: &str) -> Result<bool, Box<dyn Error>> {
         let trimmed = value.trim();
         if trimmed.is_empty() {

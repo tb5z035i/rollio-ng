@@ -216,6 +216,29 @@ fn forward_runtime_env(spec: &mut ChildSpec, config: &ProjectConfig) {
     }
 }
 
+fn is_cora_device(executable_name: &str) -> bool {
+    matches!(
+        executable_name,
+        "rollio-device-coracam"
+            | "rollio-device-imu-cora"
+            | "rollio-device-tactile-cora"
+            | "rollio-device-gripper-cora"
+    )
+}
+
+/// Pick the DDS domain id forwarded to a cora driver: the controller's
+/// own `ROLLIO_DDS_DOMAIN_ID` env wins (operator-level override), then
+/// the per-device `dds_domain_id` in config. Returns `None` so the
+/// driver falls back to its SDK default when neither is set.
+fn resolve_cora_dds_domain(device: &BinaryDeviceConfig) -> Option<u32> {
+    if let Ok(raw) = std::env::var("ROLLIO_DDS_DOMAIN_ID") {
+        if let Ok(parsed) = raw.trim().parse::<u32>() {
+            return Some(parsed);
+        }
+    }
+    device.dds_domain_id
+}
+
 pub(crate) fn build_visualizer_spec(
     config: &ProjectConfig,
     _workspace_root: &Path,
@@ -305,6 +328,20 @@ pub(crate) fn build_device_spec(
         OsString::from(inline_config),
     ];
 
+    // Cora-backed drivers consult ROLLIO_DDS_DOMAIN_ID at startup. Prefer
+    // the controller's inherited value, then the per-device override on
+    // BinaryDeviceConfig.dds_domain_id, so a single ROLLIO_DDS_DOMAIN_ID
+    // in the operator's shell flows through to every cora child.
+    let mut env = Vec::new();
+    if is_cora_device(&executable_name) {
+        if let Some(domain) = resolve_cora_dds_domain(device) {
+            env.push((
+                OsString::from("ROLLIO_DDS_DOMAIN_ID"),
+                OsString::from(domain.to_string()),
+            ));
+        }
+    }
+
     Ok(ChildSpec {
         id: format!("device-{}", device.name),
         command: ResolvedCommand {
@@ -313,7 +350,7 @@ pub(crate) fn build_device_spec(
         },
         working_directory: child_working_dir.to_path_buf(),
         inherit_stdio: false,
-        env: Vec::new(),
+        env,
     })
 }
 
