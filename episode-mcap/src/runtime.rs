@@ -17,9 +17,10 @@ use clap::Args;
 use iceoryx2::node::NodeWaitFailure;
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE, EPISODE_READY_SERVICE,
-    EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES, STATE_MAX_PUBLISHERS,
-    STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_DROPPED_SERVICE,
+    EPISODE_METADATA_BUFFER, EPISODE_METADATA_ENTRIES_SERVICE, EPISODE_METADATA_HISTORY_SIZE,
+    EPISODE_READY_SERVICE, EPISODE_STORED_SERVICE, STATE_BUFFER, STATE_MAX_NODES,
+    STATE_MAX_PUBLISHERS, STATE_MAX_SUBSCRIBERS, STREAM_CONFIG_HISTORY_SIZE,
 };
 use rollio_types::config::{
     AssemblerActionRuntimeConfigV2, AssemblerObservationRuntimeConfigV2, AssemblerRuntimeConfigV2,
@@ -27,10 +28,10 @@ use rollio_types::config::{
 };
 use rollio_types::messages::{
     BackpressureEvent, ControlEvent, EncodedPacketHeader, EncodedPacketKind, EpisodeDropped,
-    EpisodeReady, EpisodeStored, FixedString256, FixedString64, JointMitCommand15, JointVector15,
-    ParallelMitCommand2, ParallelVector2, Pose7,
+    EpisodeMetadataEntry, EpisodeReady, EpisodeStored, FixedString256, FixedString64,
+    JointMitCommand15, JointVector15, ParallelMitCommand2, ParallelVector2, Pose7,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -160,6 +161,8 @@ struct PendingEpisode {
     action_samples: BTreeMap<String, Vec<Sample>>,
     camera_streams: BTreeMap<String, CameraStreamBuffer>,
     failed_cameras: Vec<String>,
+    /// Station metadata entries accumulated during recording, written to MCAP on Keep.
+    metadata_entries: Vec<EpisodeMetadataEntry>,
 }
 
 impl PendingEpisode {
@@ -178,6 +181,7 @@ impl PendingEpisode {
             action_samples: BTreeMap::new(),
             camera_streams,
             failed_cameras: Vec::new(),
+            metadata_entries: Vec::new(),
         }
     }
 
@@ -206,6 +210,9 @@ struct EpisodeManager {
     in_flight: BTreeMap<u32, Instant>,
     staging_slots: usize,
     stale_after: Duration,
+    /// Per-episode accumulator for EpisodeMetadataEntry messages from the station.
+    /// Entries are moved into PendingEpisode on EpisodeKeep, or dropped on EpisodeDiscard.
+    metadata_accumulators: HashMap<u32, Vec<EpisodeMetadataEntry>>,
 }
 
 impl EpisodeManager {
@@ -225,11 +232,26 @@ impl EpisodeManager {
             in_flight: BTreeMap::new(),
             staging_slots,
             stale_after,
+            metadata_accumulators: HashMap::new(),
         }
     }
 
     fn release_slot(&mut self, episode_index: u32) -> bool {
         self.in_flight.remove(&episode_index).is_some()
+    }
+
+    fn on_metadata_entry(&mut self, entry: EpisodeMetadataEntry) {
+        let idx = entry.episode_index;
+        if !self.episodes.contains_key(&idx) {
+            log::warn!(
+                "rollio-episode-mcap: EpisodeMetadataEntry for unknown episode {idx}; discarding"
+            );
+            return;
+        }
+        self.metadata_accumulators
+            .entry(idx)
+            .or_default()
+            .push(entry);
     }
 
     fn sweep_stale_slots(&mut self, now: Instant) -> Vec<u32> {
@@ -277,11 +299,15 @@ impl EpisodeManager {
                     episode
                         .ready_wait_started_us
                         .get_or_insert_with(unix_timestamp_us);
+                    if let Some(entries) = self.metadata_accumulators.remove(&episode_index) {
+                        episode.metadata_entries = entries;
+                    }
                 }
                 false
             }
             ControlEvent::EpisodeDiscard { episode_index } => {
                 self.episodes.remove(&episode_index);
+                self.metadata_accumulators.remove(&episode_index);
                 if self.active_episode_index == Some(episode_index) {
                     self.active_episode_index = None;
                 }
@@ -617,6 +643,18 @@ fn stage_episode_mcap(
     }
     writer.write_metadata("episode", meta)?;
 
+    // Write station metadata entries, grouped by source (one record per source).
+    let mut by_source: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for entry in &episode.metadata_entries {
+        let source = decode_null_terminated(&entry.source);
+        let key = decode_null_terminated(&entry.key);
+        let value = decode_null_terminated(&entry.value);
+        by_source.entry(source).or_default().insert(key, value);
+    }
+    for (source, kv) in by_source {
+        writer.write_metadata(&source, kv)?;
+    }
+
     writer.finish()?;
 
     log::info!(
@@ -671,6 +709,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
     let backpressure_publisher = create_backpressure_publisher(&node)?;
     let episode_dropped_publisher = create_episode_dropped_publisher(&node)?;
     let episode_stored_subscriber = create_episode_stored_subscriber(&node)?;
+    let metadata_subscriber = create_metadata_subscriber(&node)?;
     let observation_subscribers = create_observation_subscribers(&node, &config)?;
     let action_subscribers = create_action_subscribers(&node, &config)?;
 
@@ -689,6 +728,7 @@ pub fn run_with_config(config: AssemblerRuntimeConfigV2) -> Result<(), Box<dyn E
         made_progress |= drain_camera_packets(&camera_subscribers, &mut manager)?;
         made_progress |= drain_observations(&observation_subscribers, &mut manager)?;
         made_progress |= drain_actions(&action_subscribers, &mut manager)?;
+        drain_metadata(&metadata_subscriber, &mut manager);
 
         let outcome = manager.dispatch_ready_episodes(&worker_tx)?;
         made_progress |= outcome.changed;
@@ -844,6 +884,25 @@ fn create_episode_stored_subscriber(
     let service = node
         .service_builder(&service_name)
         .publish_subscribe::<EpisodeStored>()
+        .open_or_create()?;
+    Ok(service.subscriber_builder().create()?)
+}
+
+fn create_metadata_subscriber(
+    node: &Node<ipc::Service>,
+) -> Result<
+    iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeMetadataEntry, ()>,
+    Box<dyn Error>,
+> {
+    let service_name: ServiceName = EPISODE_METADATA_ENTRIES_SERVICE.try_into()?;
+    let service = node
+        .service_builder(&service_name)
+        .publish_subscribe::<EpisodeMetadataEntry>()
+        .history_size(EPISODE_METADATA_HISTORY_SIZE)
+        .subscriber_max_buffer_size(EPISODE_METADATA_BUFFER)
+        .max_publishers(STATE_MAX_PUBLISHERS)
+        .max_subscribers(STATE_MAX_SUBSCRIBERS)
+        .max_nodes(STATE_MAX_NODES)
         .open_or_create()?;
     Ok(service.subscriber_builder().create()?)
 }
@@ -1074,6 +1133,15 @@ fn drain_control_events(
     }
 }
 
+fn drain_metadata(
+    subscriber: &iceoryx2::port::subscriber::Subscriber<ipc::Service, EpisodeMetadataEntry, ()>,
+    manager: &mut EpisodeManager,
+) {
+    while let Ok(Some(sample)) = subscriber.receive() {
+        manager.on_metadata_entry(*sample.payload());
+    }
+}
+
 fn drain_camera_packets(
     subscribers: &[CameraSubscriber],
     manager: &mut EpisodeManager,
@@ -1231,4 +1299,76 @@ fn unix_timestamp_us() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64
+}
+
+/// Decode a fixed-size null-terminated UTF-8 byte array, truncating at the first `\0`.
+fn decode_null_terminated(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rollio_types::config::EpisodeFormat;
+
+    fn make_entry(episode_index: u32, source: &str, key: &str, value: &str) -> EpisodeMetadataEntry {
+        let mut entry = EpisodeMetadataEntry {
+            episode_index,
+            source: [0u8; 32],
+            key: [0u8; 64],
+            value: [0u8; 256],
+            timestamp_us: 0,
+        };
+        let b = source.as_bytes();
+        entry.source[..b.len().min(32)].copy_from_slice(&b[..b.len().min(32)]);
+        let b = key.as_bytes();
+        entry.key[..b.len().min(64)].copy_from_slice(&b[..b.len().min(64)]);
+        let b = value.as_bytes();
+        entry.value[..b.len().min(256)].copy_from_slice(&b[..b.len().min(256)]);
+        entry
+    }
+
+    #[test]
+    fn metadata_entries_written_on_keep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging_dir = tmp.path().to_string_lossy().into_owned();
+
+        let config = AssemblerRuntimeConfigV2 {
+            process_id: "test".into(),
+            format: EpisodeFormat::Mcap,
+            fps: 30,
+            chunk_size: 1,
+            missing_eos_timeout_ms: 5000,
+            staging_dir,
+            staging_slots: 1,
+            cameras: vec![],
+            observations: vec![],
+            actions: vec![],
+            embedded_config_toml: String::new(),
+        };
+
+        let mut episode = PendingEpisode::new(42, 1_000_000, &[]);
+        episode.stop_time_us = Some(2_000_000);
+        episode.keep_requested = true;
+        episode.metadata_entries = vec![
+            make_entry(42, "station", "task_id", "abc-123"),
+            make_entry(42, "station", "operator", "alice"),
+        ];
+
+        let result = stage_episode_mcap(&config, tmp.path(), &episode).unwrap();
+        let bytes = std::fs::read(result.staging_dir.join("episode.mcap")).unwrap();
+
+        let metas: Vec<mcap::records::Metadata> = mcap::read::LinearReader::new(&bytes)
+            .unwrap()
+            .filter_map(|record| match record.unwrap() {
+                mcap::records::Record::Metadata(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+
+        let station = metas.iter().find(|m| m.name == "station").expect("station metadata record missing");
+        assert_eq!(station.metadata.get("task_id").map(String::as_str), Some("abc-123"));
+        assert_eq!(station.metadata.get("operator").map(String::as_str), Some("alice"));
+    }
 }

@@ -10,7 +10,10 @@ use crate::runtime_paths::{
 pub(crate) use crate::runtime_plan::{build_collect_specs, build_preview_specs, build_teleop_spec};
 use iceoryx2::prelude::*;
 use rollio_bus::{
-    BACKPRESSURE_SERVICE, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_SERVICE, EPISODE_DROPPED_SERVICE,
+    BACKPRESSURE_SERVICE, CONTROL_EVENTS_MAX_NODES, CONTROL_EVENTS_MAX_PUBLISHERS,
+    CONTROL_EVENTS_MAX_SUBSCRIBERS, CONTROL_EVENTS_SERVICE, EPISODE_COMMAND_MAX_NODES,
+    EPISODE_COMMAND_MAX_PUBLISHERS, EPISODE_COMMAND_MAX_SUBSCRIBERS, EPISODE_COMMAND_SERVICE,
+    EPISODE_DROPPED_SERVICE,
     EPISODE_STATUS_SERVICE, EPISODE_STORED_SERVICE,
 };
 use rollio_types::config::ProjectConfig;
@@ -324,18 +327,18 @@ impl ControllerIpc {
         let control_service = node
             .service_builder(&control_service_name)
             .publish_subscribe::<ControlEvent>()
-            .max_publishers(4)
-            .max_subscribers(32)
-            .max_nodes(32)
+            .max_publishers(CONTROL_EVENTS_MAX_PUBLISHERS)
+            .max_subscribers(CONTROL_EVENTS_MAX_SUBSCRIBERS)
+            .max_nodes(CONTROL_EVENTS_MAX_NODES)
             .open_or_create()?;
 
         let command_service_name: ServiceName = EPISODE_COMMAND_SERVICE.try_into()?;
         let command_service = node
             .service_builder(&command_service_name)
             .publish_subscribe::<EpisodeCommand>()
-            .max_publishers(4)
-            .max_subscribers(8)
-            .max_nodes(8)
+            .max_publishers(EPISODE_COMMAND_MAX_PUBLISHERS)
+            .max_subscribers(EPISODE_COMMAND_MAX_SUBSCRIBERS)
+            .max_nodes(EPISODE_COMMAND_MAX_NODES)
             .open_or_create()?;
 
         let status_service_name: ServiceName = EPISODE_STATUS_SERVICE.try_into()?;

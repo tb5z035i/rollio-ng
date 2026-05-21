@@ -69,6 +69,26 @@ pub const STREAM_CONFIG_HISTORY_SIZE: usize = 1;
 /// (`test/bus-tap`) and future tools.
 pub const CAMERA_FRAMES_MAX_SUBSCRIBERS: usize = 4;
 
+pub const EPISODE_METADATA_ENTRIES_SERVICE: &str = "episode/metadata/entries";
+pub const EPISODE_METADATA_HISTORY_SIZE: usize = 64;
+pub const EPISODE_METADATA_BUFFER: usize = 256;
+
+/// Capacity caps for the `control/events` fan-out service.
+/// Every device driver, encoder, teleop router, visualizer and assembler
+/// subscribes here for `Shutdown` / `RecordingStart` / etc.  A moderately
+/// large rig (2 robots + 3-stream RealSense + 2 webcams + encoder pool)
+/// exhausts the iceoryx2 default of 16 nodes, so these are set generously.
+pub const CONTROL_EVENTS_MAX_PUBLISHERS: usize = 4;
+pub const CONTROL_EVENTS_MAX_SUBSCRIBERS: usize = 32;
+pub const CONTROL_EVENTS_MAX_NODES: usize = 32;
+
+/// Capacity caps for the `control/episode-command` service.
+/// Published by the station, consumed by the controller and a small number
+/// of interested observers (e.g. storage backends).
+pub const EPISODE_COMMAND_MAX_PUBLISHERS: usize = 4;
+pub const EPISODE_COMMAND_MAX_SUBSCRIBERS: usize = 8;
+pub const EPISODE_COMMAND_MAX_NODES: usize = 8;
+
 pub fn camera_frames_service_name(device_name: &str) -> String {
     format!("camera/{device_name}/frames")
 }

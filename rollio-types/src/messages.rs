@@ -959,3 +959,21 @@ pub struct BackpressureEvent {
     pub process_id: FixedString64,
     pub queue_name: FixedString64,
 }
+
+// ---------------------------------------------------------------------------
+// EpisodeMetadataEntry
+// ---------------------------------------------------------------------------
+
+/// Published by the station during recording (after ControlEvent::RecordingStart).
+/// episode-mcap accumulates entries by episode_index and writes them as MCAP
+/// metadata records on EpisodeKeep, grouped by source.
+#[derive(Debug, Clone, Copy, ZeroCopySend)]
+#[type_name("EpisodeMetadataEntry")]
+#[repr(C)]
+pub struct EpisodeMetadataEntry {
+    pub episode_index: u32,
+    pub source: [u8; 32],
+    pub key: [u8; 64],
+    pub value: [u8; 256],
+    pub timestamp_us: u64,
+}
